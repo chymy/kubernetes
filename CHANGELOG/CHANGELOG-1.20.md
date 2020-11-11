@@ -164,7 +164,8 @@ filename | sha512 hash
   - [KEP]: <link>
   - [Usage]: <link>
   - [Other doc]: <link>
-  --> ([#95856](https://github.com/kubernetes/kubernetes/pull/95856), [@knight42](https://github.com/knight42)) [SIG API Machinery, Node and Testing]
+  --> 
+  ([#95856](https://github.com/kubernetes/kubernetes/pull/95856), [@knight42](https://github.com/knight42)) [SIG API Machinery, Node and Testing]
 
 ### API Change
 
