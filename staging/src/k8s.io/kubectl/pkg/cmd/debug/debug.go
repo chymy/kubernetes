@@ -30,7 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -652,7 +651,7 @@ func waitForContainer(ctx context.Context, podClient corev1client.PodsGetter, ns
 		ev, err := watchtools.UntilWithSync(ctx, lw, &corev1.Pod{}, nil, func(ev watch.Event) (bool, error) {
 			switch ev.Type {
 			case watch.Deleted:
-				return false, errors.NewNotFound(schema.GroupResource{Resource: "pods"}, "")
+				return false, fmt.Errorf("the pod %q has been deleted", podName)
 			}
 
 			p, ok := ev.Object.(*corev1.Pod)
