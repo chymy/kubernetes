@@ -144,6 +144,7 @@ type timeoutWriter interface {
 func newTimeoutWriter(w http.ResponseWriter) timeoutWriter {
 	base := &baseTimeoutWriter{w: w}
 
+	//lint:ignore SA1019 There are places in the code base requiring the CloseNotifier interface to be implemented.
 	_, notifiable := w.(http.CloseNotifier)
 	_, hijackable := w.(http.Hijacker)
 
@@ -264,6 +265,7 @@ func (tw *baseTimeoutWriter) closeNotify() <-chan bool {
 		return done
 	}
 
+	//lint:ignore SA1019 There are places in the code base requiring the CloseNotifier interface to be implemented.
 	return tw.w.(http.CloseNotifier).CloseNotify()
 }
 
@@ -284,6 +286,9 @@ func (tw *baseTimeoutWriter) hijack() (net.Conn, *bufio.ReadWriter, error) {
 type closeTimeoutWriter struct {
 	*baseTimeoutWriter
 }
+
+//lint:ignore SA1019 Interface implementation check to make sure we don't drop CloseNotifier again
+var _ http.CloseNotifier = &closeTimeoutWriter{}
 
 func (tw *closeTimeoutWriter) CloseNotify() <-chan bool {
 	return tw.closeNotify()

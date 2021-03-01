@@ -693,7 +693,7 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 			t.Logf("Waiting for the request: %q to time out", firstRequestTimesOutPath)
 			resp1, firstReqErr = requestGetter(firstRequestTimesOutPath)
 			if isClientTimeout(firstReqErr) {
-				t.Fatalf("the client has unexpectedly timed out - request: %q error: %s", firstRequestTimesOutPath, firstReqErr.Error())
+				t.Errorf("the client has unexpectedly timed out - request: %q error: %s", firstRequestTimesOutPath, firstReqErr.Error())
 			}
 		}()
 		func() {
@@ -1007,6 +1007,6 @@ func hardStop(t *testing.T, stopCh <-chan struct{}, testTimeout time.Duration, c
 		// The test has completed normally.
 	case <-time.After(testTimeout):
 		cleanup()
-		t.Fatalf("the test did not finish within %s", testTimeout)
+		t.Errorf("the test did not finish within %s", testTimeout)
 	}
 }
