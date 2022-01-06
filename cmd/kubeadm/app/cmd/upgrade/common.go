@@ -34,6 +34,7 @@ import (
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/validation"
 	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
@@ -125,11 +126,6 @@ func enforceRequirements(flags *applyPlanFlags, args []string, dryRun bool, upgr
 	client, err := getClient(flags.kubeConfigPath, dryRun)
 	if err != nil {
 		return nil, nil, nil, errors.Wrapf(err, "couldn't create a Kubernetes client from file %q", flags.kubeConfigPath)
-	}
-
-	// Check if the cluster is self-hosted
-	if upgrade.IsControlPlaneSelfHosted(client) {
-		return nil, nil, nil, errors.New("cannot upgrade a self-hosted control plane")
 	}
 
 	// Fetch the configuration from a file or ConfigMap and validate it
@@ -246,7 +242,7 @@ func runPreflightChecks(client clientset.Interface, ignorePreflightErrors sets.S
 	if err != nil {
 		return err
 	}
-	err = upgrade.RunCoreDNSMigrationCheck(client, ignorePreflightErrors, cfg.DNS.Type)
+	err = upgrade.RunCoreDNSMigrationCheck(client, ignorePreflightErrors)
 	if err != nil {
 		return err
 	}

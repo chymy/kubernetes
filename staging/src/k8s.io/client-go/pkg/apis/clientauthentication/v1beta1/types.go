@@ -46,6 +46,9 @@ type ExecCredentialSpec struct {
 	// ExecConfig.ProvideClusterInfo).
 	// +optional
 	Cluster *Cluster `json:"cluster,omitempty"`
+
+	// Interactive declares whether stdin has been passed to this exec plugin.
+	Interactive bool `json:"interactive"`
 }
 
 // ExecCredentialStatus holds credentials for the transport to use.
@@ -58,11 +61,11 @@ type ExecCredentialStatus struct {
 	// +optional
 	ExpirationTimestamp *metav1.Time `json:"expirationTimestamp,omitempty"`
 	// Token is a bearer token used by the client for request authentication.
-	Token string `json:"token,omitempty"`
+	Token string `json:"token,omitempty" datapolicy:"token"`
 	// PEM-encoded client TLS certificates (including intermediates, if any).
 	ClientCertificateData string `json:"clientCertificateData,omitempty"`
 	// PEM-encoded private key for the above certificate.
-	ClientKeyData string `json:"clientKeyData,omitempty"`
+	ClientKeyData string `json:"clientKeyData,omitempty" datapolicy:"security-key"`
 }
 
 // Cluster contains information to allow an exec plugin to communicate

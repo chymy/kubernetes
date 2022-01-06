@@ -25,14 +25,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/uuid"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	core "k8s.io/client-go/testing"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 	"k8s.io/kubernetes/pkg/volume/util"
-	"os"
-	"path"
-	"path/filepath"
 )
 
 func TestListVolumesForPod(t *testing.T) {
@@ -96,6 +95,8 @@ func TestListVolumesForPod(t *testing.T) {
 }
 
 func TestPodVolumesExist(t *testing.T) {
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIMigrationGCE, false)()
+
 	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
 	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
@@ -200,28 +201,14 @@ func TestPodVolumesExist(t *testing.T) {
 	}
 
 	for _, pod := range pods {
-		podVolumesExist := kubelet.podMountedVolumesExistInCacheOrDisk(pod.UID)
+		podVolumesExist := kubelet.podVolumesExist(pod.UID)
 		assert.True(t, podVolumesExist, "pod %q", pod.UID)
 	}
 }
 
-func TestPodVolumePathsExist(t *testing.T) {
-	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
-	defer testKubelet.Cleanup()
-	kubelet := testKubelet.kubelet
-	pod := podWithUIDNameNs(uuid.NewUUID(), "pod1", "ns")
-
-	// To pass volumeManager GetMountedVolumesForPod control create pod volume data directory directly
-	podVolumeDir := kubelet.getPodVolumeDir(pod.UID, "volumePlugin1", "volume1")
-	podDataDir := filepath.Join(podVolumeDir, "data1")
-	os.MkdirAll(path.Dir(podDataDir), 0755)
-	defer os.RemoveAll(path.Dir(kubelet.getPodDir(pod.UID)))
-
-	podVolumePathsExist := kubelet.podVolumePathsExistInCacheOrDisk(pod.UID)
-	assert.True(t, podVolumePathsExist, "pod %q", pod.UID)
-}
-
 func TestVolumeAttachAndMountControllerDisabled(t *testing.T) {
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIMigrationGCE, false)()
+
 	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
 	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
@@ -277,6 +264,8 @@ func TestVolumeAttachAndMountControllerDisabled(t *testing.T) {
 }
 
 func TestVolumeUnmountAndDetachControllerDisabled(t *testing.T) {
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIMigrationGCE, false)()
+
 	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
 	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
@@ -335,9 +324,14 @@ func TestVolumeUnmountAndDetachControllerDisabled(t *testing.T) {
 		1 /* expectedSetUpCallCount */, testKubelet.volumePlugin))
 
 	// Remove pod
+	// TODO: technically waitForVolumeUnmount
+	kubelet.podWorkers.(*fakePodWorkers).setPodRuntimeBeRemoved(pod.UID)
 	kubelet.podManager.SetPods([]*v1.Pod{})
 
-	assert.NoError(t, waitForVolumeUnmount(kubelet.volumeManager, pod))
+	assert.NoError(t, kubelet.volumeManager.WaitForUnmount(pod))
+	if actual := kubelet.volumeManager.GetMountedVolumesForPod(util.GetUniquePodName(pod)); len(actual) > 0 {
+		t.Fatalf("expected volume unmount to wait for no volumes: %v", actual)
+	}
 
 	// Verify volumes unmounted
 	podVolumes = kubelet.volumeManager.GetMountedVolumesForPod(
@@ -357,6 +351,8 @@ func TestVolumeUnmountAndDetachControllerDisabled(t *testing.T) {
 }
 
 func TestVolumeAttachAndMountControllerEnabled(t *testing.T) {
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIMigrationGCE, false)()
+
 	testKubelet := newTestKubelet(t, true /* controllerAttachDetachEnabled */)
 	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
@@ -417,6 +413,9 @@ func TestVolumeAttachAndMountControllerEnabled(t *testing.T) {
 
 	podVolumes := kubelet.volumeManager.GetMountedVolumesForPod(
 		util.GetUniquePodName(pod))
+	allPodVolumes := kubelet.volumeManager.GetPossiblyMountedVolumesForPod(
+		util.GetUniquePodName(pod))
+	assert.Equal(t, podVolumes, allPodVolumes, "GetMountedVolumesForPod and GetPossiblyMountedVolumesForPod should return the same volumes")
 
 	expectedPodVolumes := []string{"vol1"}
 	assert.Len(t, podVolumes, len(expectedPodVolumes), "Volumes for pod %+v", pod)
@@ -434,6 +433,8 @@ func TestVolumeAttachAndMountControllerEnabled(t *testing.T) {
 }
 
 func TestVolumeUnmountAndDetachControllerEnabled(t *testing.T) {
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIMigrationGCE, false)()
+
 	testKubelet := newTestKubelet(t, true /* controllerAttachDetachEnabled */)
 	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
@@ -496,6 +497,9 @@ func TestVolumeUnmountAndDetachControllerEnabled(t *testing.T) {
 
 	podVolumes := kubelet.volumeManager.GetMountedVolumesForPod(
 		util.GetUniquePodName(pod))
+	allPodVolumes := kubelet.volumeManager.GetPossiblyMountedVolumesForPod(
+		util.GetUniquePodName(pod))
+	assert.Equal(t, podVolumes, allPodVolumes, "GetMountedVolumesForPod and GetPossiblyMountedVolumesForPod should return the same volumes")
 
 	expectedPodVolumes := []string{"vol1"}
 	assert.Len(t, podVolumes, len(expectedPodVolumes), "Volumes for pod %+v", pod)
@@ -513,6 +517,7 @@ func TestVolumeUnmountAndDetachControllerEnabled(t *testing.T) {
 		1 /* expectedSetUpCallCount */, testKubelet.volumePlugin))
 
 	// Remove pod
+	kubelet.podWorkers.(*fakePodWorkers).setPodRuntimeBeRemoved(pod.UID)
 	kubelet.podManager.SetPods([]*v1.Pod{})
 
 	assert.NoError(t, waitForVolumeUnmount(kubelet.volumeManager, pod))
@@ -520,6 +525,9 @@ func TestVolumeUnmountAndDetachControllerEnabled(t *testing.T) {
 	// Verify volumes unmounted
 	podVolumes = kubelet.volumeManager.GetMountedVolumesForPod(
 		util.GetUniquePodName(pod))
+	allPodVolumes = kubelet.volumeManager.GetPossiblyMountedVolumesForPod(
+		util.GetUniquePodName(pod))
+	assert.Equal(t, podVolumes, allPodVolumes, "GetMountedVolumesForPod and GetPossiblyMountedVolumesForPod should return the same volumes")
 
 	assert.Len(t, podVolumes, 0,
 		"Expected volumes to be unmounted and detached. But some volumes are still mounted: %#v", podVolumes)
@@ -585,4 +593,12 @@ func (f *stubBlockVolume) TearDownDevice(mapPath string, devicePath string) erro
 
 func (f *stubBlockVolume) UnmapPodDevice() error {
 	return nil
+}
+
+func (f *stubBlockVolume) SupportsMetrics() bool {
+	return false
+}
+
+func (f *stubBlockVolume) GetMetrics() (*volume.Metrics, error) {
+	return nil, nil
 }

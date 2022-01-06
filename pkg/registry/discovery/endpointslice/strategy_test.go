@@ -17,9 +17,13 @@ limitations under the License.
 package endpointslice
 
 import (
+	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/kubernetes/pkg/apis/discovery"
@@ -27,15 +31,16 @@ import (
 	utilpointer "k8s.io/utils/pointer"
 )
 
-func Test_dropConditionsOnCreate(t *testing.T) {
+func Test_dropDisabledFieldsOnCreate(t *testing.T) {
 	testcases := []struct {
 		name                   string
 		terminatingGateEnabled bool
+		hintsGateEnabled       bool
 		eps                    *discovery.EndpointSlice
 		expectedEPS            *discovery.EndpointSlice
 	}{
 		{
-			name:                   "gate enabled, field should be allowed",
+			name:                   "terminating gate enabled, field should be allowed",
 			terminatingGateEnabled: true,
 			eps: &discovery.EndpointSlice{
 				Endpoints: []discovery.Endpoint{
@@ -83,7 +88,7 @@ func Test_dropConditionsOnCreate(t *testing.T) {
 			},
 		},
 		{
-			name:                   "gate disabled, field should be set to nil",
+			name:                   "terminating gate disabled, field should be set to nil",
 			terminatingGateEnabled: false,
 			eps: &discovery.EndpointSlice{
 				Endpoints: []discovery.Endpoint{
@@ -130,13 +135,37 @@ func Test_dropConditionsOnCreate(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "node name gate enabled, field should be allowed",
+			eps: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2"),
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2"),
+					},
+				},
+			},
+		},
 	}
 
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
 			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EndpointSliceTerminatingCondition, testcase.terminatingGateEnabled)()
+			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.TopologyAwareHints, testcase.hintsGateEnabled)()
 
-			dropDisabledConditionsOnCreate(testcase.eps)
+			dropDisabledFieldsOnCreate(testcase.eps)
 			if !apiequality.Semantic.DeepEqual(testcase.eps, testcase.expectedEPS) {
 				t.Logf("actual endpointslice: %v", testcase.eps)
 				t.Logf("expected endpointslice: %v", testcase.expectedEPS)
@@ -146,16 +175,17 @@ func Test_dropConditionsOnCreate(t *testing.T) {
 	}
 }
 
-func Test_dropTerminatingConditionOnUpdate(t *testing.T) {
+func Test_dropDisabledFieldsOnUpdate(t *testing.T) {
 	testcases := []struct {
 		name                   string
 		terminatingGateEnabled bool
+		hintsGateEnabled       bool
 		oldEPS                 *discovery.EndpointSlice
 		newEPS                 *discovery.EndpointSlice
 		expectedEPS            *discovery.EndpointSlice
 	}{
 		{
-			name:                   "gate enabled, field should be allowed",
+			name:                   "terminating gate enabled, field should be allowed",
 			terminatingGateEnabled: true,
 			oldEPS: &discovery.EndpointSlice{
 				Endpoints: []discovery.Endpoint{
@@ -225,7 +255,7 @@ func Test_dropTerminatingConditionOnUpdate(t *testing.T) {
 			},
 		},
 		{
-			name:                   "gate disabled, and not set on existing EPS",
+			name:                   "terminating gate disabled, and not set on existing EPS",
 			terminatingGateEnabled: false,
 			oldEPS: &discovery.EndpointSlice{
 				Endpoints: []discovery.Endpoint{
@@ -295,7 +325,7 @@ func Test_dropTerminatingConditionOnUpdate(t *testing.T) {
 			},
 		},
 		{
-			name:                   "gate disabled, and set on existing EPS",
+			name:                   "terminating gate disabled, and set on existing EPS",
 			terminatingGateEnabled: false,
 			oldEPS: &discovery.EndpointSlice{
 				Endpoints: []discovery.Endpoint{
@@ -365,7 +395,7 @@ func Test_dropTerminatingConditionOnUpdate(t *testing.T) {
 			},
 		},
 		{
-			name:                   "gate disabled, and set on existing EPS with new values",
+			name:                   "terminating gate disabled, and set on existing EPS with new values",
 			terminatingGateEnabled: false,
 			oldEPS: &discovery.EndpointSlice{
 				Endpoints: []discovery.Endpoint{
@@ -426,6 +456,198 @@ func Test_dropTerminatingConditionOnUpdate(t *testing.T) {
 					{
 						Conditions: discovery.EndpointConditions{
 							Terminating: utilpointer.BoolPtr(false),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "node name gate enabled, set on new EPS",
+			oldEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: nil,
+					},
+					{
+						NodeName: nil,
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2"),
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2"),
+					},
+				},
+			},
+		},
+		{
+			name: "node name gate disabled, set on old and updated EPS",
+			oldEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1-old"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2-old"),
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2"),
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName: utilpointer.StringPtr("node-1"),
+					},
+					{
+						NodeName: utilpointer.StringPtr("node-2"),
+					},
+				},
+			},
+		},
+		{
+			name:             "hints gate enabled, set on new EPS",
+			hintsGateEnabled: true,
+			oldEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: nil,
+					},
+					{
+						Hints: nil,
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-a"}},
+						},
+					},
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-b"}},
+						},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-a"}},
+						},
+					},
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-b"}},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:             "hints gate disabled, set on new EPS",
+			hintsGateEnabled: false,
+			oldEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: nil,
+					},
+					{
+						Hints: nil,
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-a"}},
+						},
+					},
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-b"}},
+						},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: nil,
+					},
+					{
+						Hints: nil,
+					},
+				},
+			},
+		},
+		{
+			name:             "hints gate disabled, set on new and old EPS",
+			hintsGateEnabled: false,
+			oldEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-a-old"}},
+						},
+					},
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-b-old"}},
+						},
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-a"}},
+						},
+					},
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-b"}},
+						},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-a"}},
+						},
+					},
+					{
+						Hints: &discovery.EndpointHints{
+							ForZones: []discovery.ForZone{{Name: "zone-b"}},
 						},
 					},
 				},
@@ -436,12 +658,342 @@ func Test_dropTerminatingConditionOnUpdate(t *testing.T) {
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
 			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EndpointSliceTerminatingCondition, testcase.terminatingGateEnabled)()
+			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.TopologyAwareHints, testcase.hintsGateEnabled)()
 
-			dropDisabledConditionsOnUpdate(testcase.oldEPS, testcase.newEPS)
+			dropDisabledFieldsOnUpdate(testcase.oldEPS, testcase.newEPS)
 			if !apiequality.Semantic.DeepEqual(testcase.newEPS, testcase.expectedEPS) {
 				t.Logf("actual endpointslice: %v", testcase.newEPS)
 				t.Logf("expected endpointslice: %v", testcase.expectedEPS)
 				t.Errorf("unexpected EndpointSlice from update API strategy")
+			}
+		})
+	}
+}
+
+func TestPrepareForUpdate(t *testing.T) {
+	testCases := []struct {
+		name        string
+		oldEPS      *discovery.EndpointSlice
+		newEPS      *discovery.EndpointSlice
+		expectedEPS *discovery.EndpointSlice
+	}{
+		{
+			name: "unchanged EPS should not increment generation",
+			oldEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+			newEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+		},
+		{
+			name: "changed endpoints should increment generation",
+			oldEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+			newEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.5"},
+				}},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.5"},
+				}},
+			},
+		},
+		{
+			name: "changed labels should increment generation",
+			oldEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Generation: 1,
+					Labels:     map[string]string{"example": "one"},
+				},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+			newEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Generation: 1,
+					Labels:     map[string]string{"example": "two"},
+				},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Generation: 2,
+					Labels:     map[string]string{"example": "two"},
+				},
+				Endpoints: []discovery.Endpoint{{
+					Addresses: []string{"1.2.3.4"},
+				}},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			Strategy.PrepareForUpdate(context.TODO(), tc.newEPS, tc.oldEPS)
+			if !apiequality.Semantic.DeepEqual(tc.newEPS, tc.expectedEPS) {
+				t.Errorf("Expected %+v\nGot: %+v", tc.expectedEPS, tc.newEPS)
+			}
+		})
+	}
+}
+
+func Test_dropTopologyOnV1(t *testing.T) {
+	testcases := []struct {
+		name        string
+		v1Request   bool
+		newEPS      *discovery.EndpointSlice
+		originalEPS *discovery.EndpointSlice
+		expectedEPS *discovery.EndpointSlice
+	}{
+		{
+			name:      "v1 request, without deprecated topology",
+			v1Request: true,
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+				},
+			},
+		},
+		{
+			name: "v1beta1 request, without deprecated topology",
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+				},
+			},
+		},
+		{
+			name:      "v1 request, with deprecated topology",
+			v1Request: true,
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{{}, {}},
+			},
+		},
+		{
+			name: "v1beta1 request, with deprecated topology",
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+				},
+			},
+		},
+		{
+			name:      "v1 request, updated metadata",
+			v1Request: true,
+			originalEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"example": "one"},
+				},
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"example": "one"},
+				},
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+				},
+			},
+		},
+		{
+			name: "v1beta1 request, updated metadata",
+			originalEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"example": "one"},
+				},
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"example": "one"},
+				},
+				Endpoints: []discovery.Endpoint{
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+					{
+						NodeName:           utilpointer.StringPtr("node-1"),
+						DeprecatedTopology: map[string]string{"key": "value"},
+					},
+				},
+			},
+		},
+		{
+			name:      "v1 request, updated endpoints",
+			v1Request: true,
+			originalEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hostname:           utilpointer.StringPtr("hostname-1"),
+						DeprecatedTopology: map[string]string{corev1.LabelHostname: "node-1"},
+					},
+					{
+						Hostname:           utilpointer.StringPtr("hostname-1"),
+						DeprecatedTopology: map[string]string{corev1.LabelHostname: "node-1"},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+					{Hostname: utilpointer.StringPtr("hostname-1")},
+				},
+			},
+		},
+		{
+			name: "v1beta1 request, updated endpoints",
+			originalEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+					{DeprecatedTopology: map[string]string{"key": "value"}},
+				},
+			},
+			newEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hostname:           utilpointer.StringPtr("hostname-1"),
+						DeprecatedTopology: map[string]string{corev1.LabelHostname: "node-1"},
+					},
+					{
+						Hostname:           utilpointer.StringPtr("hostname-1"),
+						DeprecatedTopology: map[string]string{corev1.LabelHostname: "node-1"},
+					},
+				},
+			},
+			expectedEPS: &discovery.EndpointSlice{
+				Endpoints: []discovery.Endpoint{
+					{
+						Hostname:           utilpointer.StringPtr("hostname-1"),
+						DeprecatedTopology: map[string]string{corev1.LabelHostname: "node-1"},
+					},
+					{
+						Hostname:           utilpointer.StringPtr("hostname-1"),
+						DeprecatedTopology: map[string]string{corev1.LabelHostname: "node-1"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := genericapirequest.WithRequestInfo(genericapirequest.NewContext(), &genericapirequest.RequestInfo{APIGroup: "discovery.k8s.io", APIVersion: "v1beta1", Resource: "endpointslices"})
+			if tc.v1Request {
+				ctx = genericapirequest.WithRequestInfo(genericapirequest.NewContext(), &genericapirequest.RequestInfo{APIGroup: "discovery.k8s.io", APIVersion: "v1", Resource: "endpointslices"})
+			}
+
+			dropTopologyOnV1(ctx, tc.originalEPS, tc.newEPS)
+			if !apiequality.Semantic.DeepEqual(tc.newEPS, tc.expectedEPS) {
+				t.Logf("actual endpointslice: %v", tc.newEPS)
+				t.Logf("expected endpointslice: %v", tc.expectedEPS)
+				t.Errorf("unexpected EndpointSlice on API topology strategy")
 			}
 		})
 	}

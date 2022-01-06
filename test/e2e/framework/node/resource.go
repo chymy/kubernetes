@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	netutil "k8s.io/utils/net"
 	"net"
 	"strings"
 	"time"
@@ -42,6 +41,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	clientretry "k8s.io/client-go/util/retry"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
+	netutil "k8s.io/utils/net"
 )
 
 const (
@@ -247,6 +247,17 @@ func GetInternalIP(node *v1.Node) (string, error) {
 		return "", fmt.Errorf("Couldn't get the internal IP of host %s with addresses %v", node.Name, node.Status.Addresses)
 	}
 	return host, nil
+}
+
+// FirstAddressByTypeAndFamily returns the first address that matches the given type and family of the list of nodes
+func FirstAddressByTypeAndFamily(nodelist *v1.NodeList, addrType v1.NodeAddressType, family v1.IPFamily) string {
+	for _, n := range nodelist.Items {
+		addresses := GetAddressesByTypeAndFamily(&n, addrType, family)
+		if len(addresses) > 0 {
+			return addresses[0]
+		}
+	}
+	return ""
 }
 
 // GetAddressesByTypeAndFamily returns a list of addresses of the given addressType for the given node
@@ -550,6 +561,28 @@ func GetClusterZones(c clientset.Interface) (sets.String, error) {
 	return zones, nil
 }
 
+// GetSchedulableClusterZones returns the values of zone label collected from all nodes which are schedulable.
+func GetSchedulableClusterZones(c clientset.Interface) (sets.String, error) {
+	// GetReadySchedulableNodes already filters our tainted and unschedulable nodes.
+	nodes, err := GetReadySchedulableNodes(c)
+	if err != nil {
+		return nil, fmt.Errorf("error getting nodes while attempting to list cluster zones: %v", err)
+	}
+
+	// collect values of zone label from all nodes
+	zones := sets.NewString()
+	for _, node := range nodes.Items {
+		if zone, found := node.Labels[v1.LabelFailureDomainBetaZone]; found {
+			zones.Insert(zone)
+		}
+
+		if zone, found := node.Labels[v1.LabelTopologyZone]; found {
+			zones.Insert(zone)
+		}
+	}
+	return zones, nil
+}
+
 // CreatePodsPerNodeForSimpleApp creates pods w/ labels.  Useful for tests which make a bunch of pods w/o any networking.
 func CreatePodsPerNodeForSimpleApp(c clientset.Interface, namespace, appName string, podSpec func(n v1.Node) v1.PodSpec, maxCount int) map[string]string {
 	nodes, err := GetBoundedReadySchedulableNodes(c, maxCount)
@@ -571,6 +604,14 @@ func CreatePodsPerNodeForSimpleApp(c clientset.Interface, namespace, appName str
 		gomega.ExpectWithOffset(2, err).NotTo(gomega.HaveOccurred())
 	}
 	return podLabels
+}
+
+// RemoveTaintsOffNode removes a list of taints from the given node
+// It is simply a helper wrapper for RemoveTaintOffNode
+func RemoveTaintsOffNode(c clientset.Interface, nodeName string, taints []v1.Taint) {
+	for _, taint := range taints {
+		RemoveTaintOffNode(c, nodeName, taint)
+	}
 }
 
 // RemoveTaintOffNode removes the given taint from the given node.

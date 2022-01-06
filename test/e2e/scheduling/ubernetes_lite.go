@@ -20,10 +20,11 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -42,6 +43,7 @@ var _ = SIGDescribe("Multi-AZ Clusters", func() {
 	f := framework.NewDefaultFramework("multi-az")
 	var zoneCount int
 	var err error
+	var cleanUp func()
 	ginkgo.BeforeEach(func() {
 		e2eskipper.SkipUnlessProviderIs("gce", "gke", "aws")
 		if zoneCount <= 0 {
@@ -52,12 +54,26 @@ var _ = SIGDescribe("Multi-AZ Clusters", func() {
 		msg := fmt.Sprintf("Zone count is %d, only run for multi-zone clusters, skipping test", zoneCount)
 		e2eskipper.SkipUnlessAtLeast(zoneCount, 2, msg)
 		// TODO: SkipUnlessDefaultScheduler() // Non-default schedulers might not spread
+
+		cs := f.ClientSet
+		e2enode.WaitForTotalHealthy(cs, time.Minute)
+		nodeList, err := e2enode.GetReadySchedulableNodes(cs)
+		framework.ExpectNoError(err)
+
+		// make the nodes have balanced cpu,mem usage
+		cleanUp, err = createBalancedPodForNodes(f, cs, f.Namespace.Name, nodeList.Items, podRequestedResource, 0.0)
+		framework.ExpectNoError(err)
 	})
-	ginkgo.It("should spread the pods of a service across zones", func() {
+	ginkgo.AfterEach(func() {
+		if cleanUp != nil {
+			cleanUp()
+		}
+	})
+	ginkgo.It("should spread the pods of a service across zones [Serial]", func() {
 		SpreadServiceOrFail(f, 5*zoneCount, imageutils.GetPauseImageName())
 	})
 
-	ginkgo.It("should spread the pods of a replication controller across zones", func() {
+	ginkgo.It("should spread the pods of a replication controller across zones [Serial]", func() {
 		SpreadRCOrFail(f, int32(5*zoneCount), framework.ServeHostnameImage, []string{"serve-hostname"})
 	})
 })
@@ -120,13 +136,13 @@ func SpreadServiceOrFail(f *framework.Framework, replicaCount int, image string)
 
 // Find the name of the zone in which a Node is running
 func getZoneNameForNode(node v1.Node) (string, error) {
-	for key, value := range node.Labels {
-		if key == v1.LabelFailureDomainBetaZone {
-			return value, nil
-		}
+	if z, ok := node.Labels[v1.LabelFailureDomainBetaZone]; ok {
+		return z, nil
+	} else if z, ok := node.Labels[v1.LabelTopologyZone]; ok {
+		return z, nil
 	}
-	return "", fmt.Errorf("Zone name for node %s not found. No label with key %s",
-		node.Name, v1.LabelFailureDomainBetaZone)
+	return "", fmt.Errorf("node %s doesn't have zone label %s or %s",
+		node.Name, v1.LabelFailureDomainBetaZone, v1.LabelTopologyZone)
 }
 
 // Return the number of zones in which we have nodes in this cluster.

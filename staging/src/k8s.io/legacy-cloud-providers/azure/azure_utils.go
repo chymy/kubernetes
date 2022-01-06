@@ -1,3 +1,4 @@
+//go:build !providerless
 // +build !providerless
 
 /*
@@ -23,6 +24,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/Azure/go-autorest/autorest/to"
+
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -114,4 +119,48 @@ func convertMapToMapPointer(origin map[string]string) map[string]*string {
 		newly[k] = &value
 	}
 	return newly
+}
+
+func parseTags(tags string) map[string]*string {
+	kvs := strings.Split(tags, ",")
+	formatted := make(map[string]*string)
+	for _, kv := range kvs {
+		res := strings.Split(kv, "=")
+		if len(res) != 2 {
+			klog.Warningf("parseTags: error when parsing key-value pair %s, would ignore this one", kv)
+			continue
+		}
+		k, v := strings.TrimSpace(res[0]), strings.TrimSpace(res[1])
+		if k == "" || v == "" {
+			klog.Warningf("parseTags: error when parsing key-value pair %s-%s, would ignore this one", k, v)
+			continue
+		}
+		formatted[strings.ToLower(k)] = to.StringPtr(v)
+	}
+	return formatted
+}
+
+func findKeyInMapCaseInsensitive(targetMap map[string]*string, key string) (bool, string) {
+	for k := range targetMap {
+		if strings.EqualFold(k, key) {
+			return true, k
+		}
+	}
+
+	return false, ""
+}
+
+func reconcileTags(currentTagsOnResource, newTags map[string]*string) (reconciledTags map[string]*string, changed bool) {
+	for k, v := range newTags {
+		found, key := findKeyInMapCaseInsensitive(currentTagsOnResource, k)
+		if !found {
+			currentTagsOnResource[k] = v
+			changed = true
+		} else if !strings.EqualFold(to.String(v), to.String(currentTagsOnResource[key])) {
+			currentTagsOnResource[key] = v
+			changed = true
+		}
+	}
+
+	return currentTagsOnResource, changed
 }

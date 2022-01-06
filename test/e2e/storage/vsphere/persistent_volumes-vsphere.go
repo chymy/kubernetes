@@ -94,9 +94,9 @@ var _ = utils.SIGDescribe("PersistentVolumes:vsphere [Feature:vsphere]", func() 
 			}
 		}
 		ginkgo.By("Creating the PV and PVC")
-		pv, pvc, err = e2epv.CreatePVPVC(c, pvConfig, pvcConfig, ns, false)
+		pv, pvc, err = e2epv.CreatePVPVC(c, f.Timeouts, pvConfig, pvcConfig, ns, false)
 		framework.ExpectNoError(err)
-		framework.ExpectNoError(e2epv.WaitOnPVandPVC(c, ns, pv, pvc))
+		framework.ExpectNoError(e2epv.WaitOnPVandPVC(c, f.Timeouts, ns, pv, pvc))
 
 		ginkgo.By("Creating the Client Pod")
 		clientPod, err = e2epod.CreateClientPod(c, ns, pvc)

@@ -16,14 +16,6 @@ The image was created for testing purposes, reducing the need for having differe
 cases for the same tested behaviour.
 
 
-## Developer notes
-
-We've introduced versioning into the `agnhost` binary for debugging purposes (e.g.: if the
-image and binary versions do not match, see [here](https://github.com/kubernetes/kubernetes/pull/79667#discussion_r304198370)).
-
-Whenever the image `VERSION` is bumped, the `Version` in `agnhost.go` will also have to be bumped.
-
-
 ## Usage
 
 The `agnhost` binary has several subcommands which are can be used to test different
@@ -292,20 +284,17 @@ Examples:
 
 ```console
 docker run -i \
-  k8s.gcr.io/e2e-test-images/agnhost:2.14 \
+  k8s.gcr.io/e2e-test-images/agnhost:2.29 \
   logs-generator --log-lines-total 10 --run-duration 1s
 ```
 
 ```console
 kubectl run logs-generator \
   --generator=run-pod/v1 \
-  --image=k8s.gcr.io/e2e-test-images/agnhost:2.14 \
+  --image=k8s.gcr.io/e2e-test-images/agnhost:2.29 \
   --restart=Never \
   -- logs-generator -t 10 -d 1s
 ```
-
-[![Analytics](https://kubernetes-site.appspot.com/UA-36037335-10/GitHub/test/images/logs-generator/README.md?pixel)]()
-
 
 ### mounttest
 
@@ -373,8 +362,6 @@ HTTP server:
         -d '{"LocalAddr":"127.0.0.1:9999"}'
 ```
 
-[![Analytics](https://kubernetes-site.appspot.com/UA-36037335-10/GitHub/test/images/net/README.md?pixel)]()
-
 ### netexec
 
 Starts a HTTP(S) server on given port with the following endpoints:
@@ -429,6 +416,8 @@ It will also start a UDP server on the indicated UDP port that responds to the f
 - `hostname`: Returns the server's hostname
 - `echo <msg>`: Returns the given `<msg>`
 - `clientip`: Returns the request's IP address
+
+The UDP server can be disabled by setting `--udp-port -1`.
 
 Additionally, if (and only if) `--sctp-port` is passed, it will start an SCTP server on that port,
 responding to the same commands as the UDP server.
@@ -536,7 +525,7 @@ Usage:
 ```console
     kubectl run test-agnhost \
       --generator=run-pod/v1 \
-      --image=k8s.gcr.io/e2e-test-images/agnhost:2.14 \
+      --image=k8s.gcr.io/e2e-test-images/agnhost:2.21 \
       --restart=Never \
       --env "BIND_ADDRESS=localhost" \
       --env "BIND_PORT=8080" \
@@ -570,9 +559,6 @@ Usage:
 ```console
     kubectl exec test-agnhost -- /agnhost porter
 ```
-
-[![Analytics](https://kubernetes-site.appspot.com/UA-36037335-10/GitHub/test/images/porter/README.md?pixel)]()
-
 
 ### resource-consumer-controller
 
@@ -612,11 +598,6 @@ Usage:
 ```console
     kubectl exec test-agnhost -- /agnhost serve-hostname [--tcp] [--udp] [--http] [--close] [--port <port>]
 ```
-
-[![Analytics](https://kubernetes-site.appspot.com/UA-36037335-10/GitHub/contrib/for-demos/serve_hostname/README.md?pixel)]()
-
-[![Analytics](https://kubernetes-site.appspot.com/UA-36037335-10/GitHub/test/images/serve_hostname/README.md?pixel)]()
-
 
 ### test-webserver
 
@@ -664,6 +645,7 @@ The Windows `agnhost` image includes a `nc` binary that is 100% compliant with i
 
 ## Image
 
-The image can be found at `k8s.gcr.io/e2e-test-images/agnhost:2.14` for both Linux and
-Windows containers (based on `mcr.microsoft.com/windows/servercore:ltsc2019`,
-`mcr.microsoft.com/windows/servercore:1903`, and `mcr.microsoft.com/windows/servercore:1909`).
+The image can be found at `k8s.gcr.io/e2e-test-images/agnhost:2.33` for both Linux and
+Windows containers (based on `mcr.microsoft.com/windows/nanoserver:1809`,
+`mcr.microsoft.com/windows/nanoserver:2004`, `mcr.microsoft.com/windows/nanoserver:20H2`, and
+`mcr.microsoft.com/windows/nanoserver:ltsc2022`).

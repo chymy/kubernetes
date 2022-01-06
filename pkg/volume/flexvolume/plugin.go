@@ -133,7 +133,7 @@ func (plugin *flexVolumePlugin) GetVolumeName(spec *volume.Spec) (string, error)
 		return "", err
 	}
 
-	klog.V(4).Infof(logPrefix(plugin), "GetVolumeName is not supported yet. Defaulting to PV or volume name: ", name)
+	klog.V(4).Info(logPrefix(plugin), "GetVolumeName is not supported yet. Defaulting to PV or volume name: ", name)
 
 	return name, nil
 }
@@ -148,7 +148,7 @@ func (plugin *flexVolumePlugin) CanSupport(spec *volume.Spec) bool {
 }
 
 // RequiresRemount is part of the volume.VolumePlugin interface.
-func (plugin *flexVolumePlugin) RequiresRemount() bool {
+func (plugin *flexVolumePlugin) RequiresRemount(spec *volume.Spec) bool {
 	return false
 }
 

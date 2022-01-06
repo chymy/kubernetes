@@ -18,13 +18,14 @@ package reconcilers
 
 import (
 	"context"
+
 	corev1 "k8s.io/api/core/v1"
-	discovery "k8s.io/api/discovery/v1beta1"
+	discovery "k8s.io/api/discovery/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
-	discoveryclient "k8s.io/client-go/kubernetes/typed/discovery/v1beta1"
+	discoveryclient "k8s.io/client-go/kubernetes/typed/discovery/v1"
 	utilnet "k8s.io/utils/net"
 )
 
@@ -166,17 +167,17 @@ func getEndpointsFromAddresses(addresses []corev1.EndpointAddress, addressType d
 
 // endpointFromAddress generates an Endpoint from an EndpointAddress resource.
 func endpointFromAddress(address corev1.EndpointAddress, ready bool) discovery.Endpoint {
-	topology := map[string]string{}
-	if address.NodeName != nil {
-		topology["kubernetes.io/hostname"] = *address.NodeName
-	}
-
-	return discovery.Endpoint{
+	ep := discovery.Endpoint{
 		Addresses:  []string{address.IP},
 		Conditions: discovery.EndpointConditions{Ready: &ready},
 		TargetRef:  address.TargetRef,
-		Topology:   topology,
 	}
+
+	if address.NodeName != nil {
+		ep.NodeName = address.NodeName
+	}
+
+	return ep
 }
 
 // allAddressesIPv6 returns true if all provided addresses are IPv6.

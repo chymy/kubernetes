@@ -32,11 +32,10 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
-	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2evolume "k8s.io/kubernetes/test/e2e/framework/volume"
-	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
-	imageutils "k8s.io/kubernetes/test/utils/image"
+	storageframework "k8s.io/kubernetes/test/e2e/storage/framework"
+	storageutils "k8s.io/kubernetes/test/e2e/storage/utils"
 )
 
 const (
@@ -54,24 +53,16 @@ const (
 )
 
 type volumeExpandTestSuite struct {
-	tsInfo TestSuiteInfo
+	tsInfo storageframework.TestSuiteInfo
 }
 
-var _ TestSuite = &volumeExpandTestSuite{}
-
-// InitVolumeExpandTestSuite returns volumeExpandTestSuite that implements TestSuite interface
-func InitVolumeExpandTestSuite() TestSuite {
+// InitCustomVolumeExpandTestSuite returns volumeExpandTestSuite that implements TestSuite interface
+// using custom test patterns
+func InitCustomVolumeExpandTestSuite(patterns []storageframework.TestPattern) storageframework.TestSuite {
 	return &volumeExpandTestSuite{
-		tsInfo: TestSuiteInfo{
-			Name: "volume-expand",
-			TestPatterns: []testpatterns.TestPattern{
-				testpatterns.DefaultFsDynamicPV,
-				testpatterns.BlockVolModeDynamicPV,
-				testpatterns.DefaultFsDynamicPVAllowExpansion,
-				testpatterns.BlockVolModeDynamicPVAllowExpansion,
-				testpatterns.NtfsDynamicPV,
-				testpatterns.NtfsDynamicPVAllowExpansion,
-			},
+		tsInfo: storageframework.TestSuiteInfo{
+			Name:         "volume-expand",
+			TestPatterns: patterns,
 			SupportedSizeRange: e2evolume.SizeRange{
 				Min: "1Gi",
 			},
@@ -79,19 +70,41 @@ func InitVolumeExpandTestSuite() TestSuite {
 	}
 }
 
-func (v *volumeExpandTestSuite) GetTestSuiteInfo() TestSuiteInfo {
+// InitVolumeExpandTestSuite returns volumeExpandTestSuite that implements TestSuite interface
+// using testsuite default patterns
+func InitVolumeExpandTestSuite() storageframework.TestSuite {
+	patterns := []storageframework.TestPattern{
+		storageframework.DefaultFsDynamicPV,
+		storageframework.BlockVolModeDynamicPV,
+		storageframework.DefaultFsDynamicPVAllowExpansion,
+		storageframework.BlockVolModeDynamicPVAllowExpansion,
+		storageframework.NtfsDynamicPV,
+		storageframework.NtfsDynamicPVAllowExpansion,
+	}
+	return InitCustomVolumeExpandTestSuite(patterns)
+}
+
+func (v *volumeExpandTestSuite) GetTestSuiteInfo() storageframework.TestSuiteInfo {
 	return v.tsInfo
 }
 
-func (v *volumeExpandTestSuite) SkipRedundantSuite(driver TestDriver, pattern testpatterns.TestPattern) {
+func (v *volumeExpandTestSuite) SkipUnsupportedTests(driver storageframework.TestDriver, pattern storageframework.TestPattern) {
+	// Check preconditions.
+	if !driver.GetDriverInfo().Capabilities[storageframework.CapControllerExpansion] {
+		e2eskipper.Skipf("Driver %q does not support volume expansion - skipping", driver.GetDriverInfo().Name)
+	}
+	// Check preconditions.
+	if !driver.GetDriverInfo().Capabilities[storageframework.CapBlock] && pattern.VolMode == v1.PersistentVolumeBlock {
+		e2eskipper.Skipf("Driver %q does not support block volume mode - skipping", driver.GetDriverInfo().Name)
+	}
 }
 
-func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatterns.TestPattern) {
+func (v *volumeExpandTestSuite) DefineTests(driver storageframework.TestDriver, pattern storageframework.TestPattern) {
 	type local struct {
-		config        *PerTestConfig
+		config        *storageframework.PerTestConfig
 		driverCleanup func()
 
-		resource *VolumeResource
+		resource *storageframework.VolumeResource
 		pod      *v1.Pod
 		pod2     *v1.Pod
 
@@ -99,30 +112,18 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 	}
 	var l local
 
-	ginkgo.BeforeEach(func() {
-		// Check preconditions.
-		if !driver.GetDriverInfo().Capabilities[CapBlock] && pattern.VolMode == v1.PersistentVolumeBlock {
-			e2eskipper.Skipf("Driver %q does not support block volume mode - skipping", driver.GetDriverInfo().Name)
-		}
-		if !driver.GetDriverInfo().Capabilities[CapControllerExpansion] {
-			e2eskipper.Skipf("Driver %q does not support volume expansion - skipping", driver.GetDriverInfo().Name)
-		}
-	})
-
-	// This intentionally comes after checking the preconditions because it
-	// registers its own BeforeEach which creates the namespace. Beware that it
-	// also registers an AfterEach which renders f unusable. Any code using
+	// Beware that it also registers an AfterEach which renders f unusable. Any code using
 	// f must run inside an It or Context callback.
-	f := framework.NewDefaultFramework("volume-expand")
+	f := framework.NewFrameworkWithCustomTimeouts("volume-expand", storageframework.GetDriverTimeouts(driver))
 
 	init := func() {
 		l = local{}
 
 		// Now do the more expensive test initialization.
 		l.config, l.driverCleanup = driver.PrepareTest(f)
-		l.migrationCheck = newMigrationOpCheck(f.ClientSet, driver.GetDriverInfo().InTreePluginName)
+		l.migrationCheck = newMigrationOpCheck(f.ClientSet, f.ClientConfig(), driver.GetDriverInfo().InTreePluginName)
 		testVolumeSizeRange := v.GetTestSuiteInfo().SupportedSizeRange
-		l.resource = CreateVolumeResource(driver, l.config, pattern, testVolumeSizeRange)
+		l.resource = storageframework.CreateVolumeResource(driver, l.config, pattern, testVolumeSizeRange)
 	}
 
 	cleanup := func() {
@@ -146,7 +147,7 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 			l.resource = nil
 		}
 
-		errs = append(errs, tryFunc(l.driverCleanup))
+		errs = append(errs, storageutils.TryFunc(l.driverCleanup))
 		l.driverCleanup = nil
 		framework.ExpectNoError(errors.NewAggregate(errs), "while cleaning up resource")
 		l.migrationCheck.validateMigrationVolumeOpCounts()
@@ -158,7 +159,9 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 			defer cleanup()
 
 			var err error
-			gomega.Expect(l.resource.Sc.AllowVolumeExpansion).To(gomega.BeNil())
+			gomega.Expect(l.resource.Sc.AllowVolumeExpansion).NotTo(gomega.BeNil())
+			allowVolumeExpansion := *l.resource.Sc.AllowVolumeExpansion
+			gomega.Expect(allowVolumeExpansion).To(gomega.BeFalse())
 			ginkgo.By("Expanding non-expandable pvc")
 			currentPvcSize := l.resource.Pvc.Spec.Resources.Requests[v1.ResourceStorage]
 			newSize := currentPvcSize.DeepCopy()
@@ -177,11 +180,11 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 			podConfig := e2epod.Config{
 				NS:            f.Namespace.Name,
 				PVCs:          []*v1.PersistentVolumeClaim{l.resource.Pvc},
-				SeLinuxLabel:  e2epv.SELinuxLabel,
+				SeLinuxLabel:  e2epod.GetLinuxLabel(),
 				NodeSelection: l.config.ClientNodeSelection,
-				ImageID:       getTestImage(),
+				ImageID:       e2epod.GetDefaultTestImageID(),
 			}
-			l.pod, err = e2epod.CreateSecPodWithNodeSelection(f.ClientSet, &podConfig, framework.PodStartTimeout)
+			l.pod, err = e2epod.CreateSecPodWithNodeSelection(f.ClientSet, &podConfig, f.Timeouts.PodStart)
 			defer func() {
 				err = e2epod.DeletePodWithWait(f.ClientSet, l.pod)
 				framework.ExpectNoError(err, "while cleaning up pod already deleted in resize test")
@@ -221,9 +224,9 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 			podConfig = e2epod.Config{
 				NS:            f.Namespace.Name,
 				PVCs:          []*v1.PersistentVolumeClaim{l.resource.Pvc},
-				SeLinuxLabel:  e2epv.SELinuxLabel,
+				SeLinuxLabel:  e2epod.GetLinuxLabel(),
 				NodeSelection: l.config.ClientNodeSelection,
-				ImageID:       getTestImage(),
+				ImageID:       e2epod.GetDefaultTestImageID(),
 			}
 			l.pod2, err = e2epod.CreateSecPodWithNodeSelection(f.ClientSet, &podConfig, resizedPodStartupTimeout)
 			defer func() {
@@ -244,16 +247,20 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 			init()
 			defer cleanup()
 
+			if !driver.GetDriverInfo().Capabilities[storageframework.CapOnlineExpansion] {
+				e2eskipper.Skipf("Driver %q does not support online volume expansion - skipping", driver.GetDriverInfo().Name)
+			}
+
 			var err error
 			ginkgo.By("Creating a pod with dynamically provisioned volume")
 			podConfig := e2epod.Config{
 				NS:            f.Namespace.Name,
 				PVCs:          []*v1.PersistentVolumeClaim{l.resource.Pvc},
-				SeLinuxLabel:  e2epv.SELinuxLabel,
+				SeLinuxLabel:  e2epod.GetLinuxLabel(),
 				NodeSelection: l.config.ClientNodeSelection,
-				ImageID:       getTestImage(),
+				ImageID:       e2epod.GetDefaultTestImageID(),
 			}
-			l.pod, err = e2epod.CreateSecPodWithNodeSelection(f.ClientSet, &podConfig, framework.PodStartTimeout)
+			l.pod, err = e2epod.CreateSecPodWithNodeSelection(f.ClientSet, &podConfig, f.Timeouts.PodStart)
 			defer func() {
 				err = e2epod.DeletePodWithWait(f.ClientSet, l.pod)
 				framework.ExpectNoError(err, "while cleaning up pod already deleted in resize test")
@@ -349,9 +356,9 @@ func WaitForResizingCondition(pvc *v1.PersistentVolumeClaim, c clientset.Interfa
 }
 
 // WaitForControllerVolumeResize waits for the controller resize to be finished
-func WaitForControllerVolumeResize(pvc *v1.PersistentVolumeClaim, c clientset.Interface, duration time.Duration) error {
+func WaitForControllerVolumeResize(pvc *v1.PersistentVolumeClaim, c clientset.Interface, timeout time.Duration) error {
 	pvName := pvc.Spec.VolumeName
-	waitErr := wait.PollImmediate(resizePollInterval, duration, func() (bool, error) {
+	waitErr := wait.PollImmediate(resizePollInterval, timeout, func() (bool, error) {
 		pvcSize := pvc.Spec.Resources.Requests[v1.ResourceStorage]
 
 		pv, err := c.CoreV1().PersistentVolumes().Get(context.TODO(), pvName, metav1.GetOptions{})
@@ -425,13 +432,4 @@ func WaitForFSResize(pvc *v1.PersistentVolumeClaim, c clientset.Interface) (*v1.
 		return nil, fmt.Errorf("error waiting for pvc %q filesystem resize to finish: %v", pvc.Name, waitErr)
 	}
 	return updatedPVC, nil
-}
-
-// TODO: after issue https://github.com/kubernetes/kubernetes/issues/81245 is resolved
-// this utility can be moved to e2epod
-func getTestImage() int {
-	if framework.NodeOSDistroIs("windows") {
-		return imageutils.Agnhost
-	}
-	return imageutils.BusyBox
 }

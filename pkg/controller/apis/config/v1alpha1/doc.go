@@ -18,7 +18,7 @@ limitations under the License.
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/apis/config
 // +k8s:conversion-gen=k8s.io/component-base/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/cloud-provider/config/v1alpha1
-// +k8s:conversion-gen=k8s.io/cloud-provider/service/config/v1alpha1
+// +k8s:conversion-gen=k8s.io/cloud-provider/controllers/service/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/controller-manager/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/certificates/signer/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/daemon/config/v1alpha1
@@ -41,10 +41,11 @@ limitations under the License.
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/statefulset/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/ttlafterfinished/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/volume/attachdetach/config/v1alpha1
+// +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/volume/ephemeral/config/v1alpha1
 // +k8s:conversion-gen=k8s.io/kubernetes/pkg/controller/volume/persistentvolume/config/v1alpha1
 // +k8s:conversion-gen-external-types=k8s.io/kube-controller-manager/config/v1alpha1
 // +k8s:defaulter-gen=TypeMeta
-// +k8s:defaulter-gen-input=../../../../../vendor/k8s.io/kube-controller-manager/config/v1alpha1
+// +k8s:defaulter-gen-input=k8s.io/kube-controller-manager/config/v1alpha1
 // +groupName=kubecontrollermanager.config.k8s.io
 
 package v1alpha1 // import "k8s.io/kubernetes/pkg/controller/apis/config/v1alpha1"

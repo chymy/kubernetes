@@ -108,7 +108,7 @@ func (p *flockerPlugin) CanSupport(spec *volume.Spec) bool {
 		(spec.Volume != nil && spec.Volume.Flocker != nil)
 }
 
-func (p *flockerPlugin) RequiresRemount() bool {
+func (p *flockerPlugin) RequiresRemount(spec *volume.Spec) bool {
 	return false
 }
 
@@ -200,7 +200,7 @@ func (b *flockerVolume) GetDatasetUUID() (datasetUUID string, err error) {
 	}
 
 	if b.flockerClient == nil {
-		return "", fmt.Errorf("Flocker client is not initialized")
+		return "", fmt.Errorf("flocker client is not initialized")
 	}
 
 	// lookup in flocker API otherwise
@@ -285,12 +285,12 @@ func (b *flockerVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArg
 
 	datasetUUID, err := b.GetDatasetUUID()
 	if err != nil {
-		return fmt.Errorf("The datasetUUID for volume with datasetName='%s' can not be found using flocker: %s", b.datasetName, err)
+		return fmt.Errorf("the datasetUUID for volume with datasetName='%s' can not be found using flocker: %s", b.datasetName, err)
 	}
 
 	datasetState, err := b.flockerClient.GetDatasetState(datasetUUID)
 	if err != nil {
-		return fmt.Errorf("The datasetState for volume with datasetUUID='%s' could not determinted uusing flocker: %s", datasetUUID, err)
+		return fmt.Errorf("the datasetState for volume with datasetUUID='%s' could not determinted uusing flocker: %s", datasetUUID, err)
 	}
 
 	primaryUUID, err := b.flockerClient.GetPrimaryUUID()
@@ -304,7 +304,7 @@ func (b *flockerVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArg
 		}
 		_, err := b.flockerClient.GetDatasetState(datasetUUID)
 		if err != nil {
-			return fmt.Errorf("The volume with datasetUUID='%s' migrated unsuccessfully", datasetUUID)
+			return fmt.Errorf("the volume with datasetUUID='%s' migrated unsuccessfully", datasetUUID)
 		}
 	}
 

@@ -16,7 +16,7 @@
 # to run Fluentd with an Elasticsearch plug-in and the
 # provided configuration file.
 # The image acts as an executable for the binary /usr/sbin/td-agent.
-# Note that fluentd is run with root permssion to allow access to
+# Note that fluentd is run with root permission to allow access to
 # log files with root only access under /var/log/containers/*
 
 # 1. Install & configure dependencies.
@@ -32,11 +32,12 @@ COPY Gemfile /Gemfile
 
 SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
+# hadolint ignore=DL3008,DL3028
 RUN apt-get update && \
     apt-get install -y --no-install-recommends g++ gcc make && \
+    rm -rf /var/lib/apt/lists/* && \
     echo 'gem: --no-document' >> /etc/gemrc && \
     gem install --file Gemfile
-
 
 FROM ruby:2.7-slim-buster
 
@@ -49,10 +50,11 @@ COPY --from=builder /usr/local/bundle/ /usr/local/bundle
 
 SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
+# hadolint ignore=DL3008
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libjemalloc2 && \
     apt-get clean -y && \
-    ulimit -n 65536 && \    
+    ulimit -n 65536 && \
     rm -rf \
         /var/cache/debconf/* \
         /var/lib/apt/lists/* \
@@ -62,8 +64,6 @@ RUN apt-get update && \
 
 # Expose prometheus metrics.
 EXPOSE 80
-
-ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
 
 # Start Fluentd to pick up our config that watches Docker container logs.
 CMD ["/entrypoint.sh"]

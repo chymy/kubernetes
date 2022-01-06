@@ -42,7 +42,7 @@ readonly node_ssh_supported_providers="gce gke aws"
 readonly gcloud_supported_providers="gce gke"
 
 readonly master_logfiles="kube-apiserver.log kube-apiserver-audit.log kube-scheduler.log kube-controller-manager.log etcd.log etcd-events.log glbc.log cluster-autoscaler.log kube-addon-manager.log konnectivity-server.log fluentd.log kubelet.cov"
-readonly node_logfiles="kube-proxy.log fluentd.log node-problem-detector.log kubelet.cov"
+readonly node_logfiles="kube-proxy.log containers/konnectivity-agent-*.log fluentd.log node-problem-detector.log kubelet.cov"
 readonly node_systemd_services="node-problem-detector"
 readonly hollow_node_logfiles="kubelet-hollow-node-*.log kubeproxy-hollow-node-*.log npd-hollow-node-*.log"
 readonly aws_logfiles="cloud-init-output.log"
@@ -71,11 +71,20 @@ logexporter_failed=0
 # process will exit with a non-zero exit code).
 readonly log_dump_expected_success_percentage="${LOG_DUMP_EXPECTED_SUCCESS_PERCENTAGE:-0}"
 
+function print-deprecation-note() {
+  local -r dashline=$(printf -- '-%.0s' {1..100})
+  echo "${dashline}"
+  echo "k/k version of the log-dump.sh script is deprecated!"
+  echo "Please migrate your test job to use test-infra's repo version of log-dump.sh!"
+  echo "Migration steps can be found in the readme file."
+  echo "${dashline}"
+}
+
 # TODO: Get rid of all the sourcing of bash dependencies eventually.
 function setup() {
   KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/../..
   if [[ -z "${use_custom_instance_list}" ]]; then
-    : "${KUBE_CONFIG_FILE:='config-test.sh'}"
+    : "${KUBE_CONFIG_FILE:=config-test.sh}"
     echo 'Sourcing kube-util.sh'
     source "${KUBE_ROOT}/cluster/kube-util.sh"
     echo 'Detecting project'
@@ -670,6 +679,7 @@ function detect_node_failures() {
 }
 
 function main() {
+  print-deprecation-note
   setup
   kube::util::ensure-temp-dir
   # Copy master logs to artifacts dir locally (through SSH).

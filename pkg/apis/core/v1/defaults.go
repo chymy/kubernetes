@@ -70,11 +70,6 @@ func SetDefaults_Volume(obj *v1.Volume) {
 		}
 	}
 }
-func SetDefaults_ContainerPort(obj *v1.ContainerPort) {
-	if obj.Protocol == "" {
-		obj.Protocol = v1.ProtocolTCP
-	}
-}
 func SetDefaults_Container(obj *v1.Container) {
 	if obj.ImagePullPolicy == "" {
 		// Ignore error and assume it has been validated elsewhere
@@ -136,45 +131,19 @@ func SetDefaults_Service(obj *v1.Service) {
 		obj.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.IPv6DualStack) {
-		// Default obj.Spec.IPFamilyPolicy if we *know* we can, otherwise it will
-		// be handled later in allocation.
-		if obj.Spec.Type != v1.ServiceTypeExternalName {
-			if obj.Spec.IPFamilyPolicy == nil {
-				if len(obj.Spec.ClusterIPs) == 2 || len(obj.Spec.IPFamilies) == 2 {
-					requireDualStack := v1.IPFamilyPolicyRequireDualStack
-					obj.Spec.IPFamilyPolicy = &requireDualStack
-				}
-			}
-
-			// If the user demanded dual-stack, but only specified one family, we add
-			// the other.
-			if obj.Spec.IPFamilyPolicy != nil && *(obj.Spec.IPFamilyPolicy) == v1.IPFamilyPolicyRequireDualStack && len(obj.Spec.IPFamilies) == 1 {
-				if obj.Spec.IPFamilies[0] == v1.IPv4Protocol {
-					obj.Spec.IPFamilies = append(obj.Spec.IPFamilies, v1.IPv6Protocol)
-				} else {
-					obj.Spec.IPFamilies = append(obj.Spec.IPFamilies, v1.IPv4Protocol)
-				}
-
-				// Any other dual-stack defaulting depends on cluster configuration.
-				// Further IPFamilies, IPFamilyPolicy defaulting is in ClusterIP alloc/reserve logic
-				// NOTE: strategy handles cases where ClusterIPs is used (but not ClusterIP).
+	if utilfeature.DefaultFeatureGate.Enabled(features.ServiceInternalTrafficPolicy) {
+		if obj.Spec.InternalTrafficPolicy == nil {
+			if obj.Spec.Type == v1.ServiceTypeNodePort || obj.Spec.Type == v1.ServiceTypeLoadBalancer || obj.Spec.Type == v1.ServiceTypeClusterIP {
+				serviceInternalTrafficPolicyCluster := v1.ServiceInternalTrafficPolicyCluster
+				obj.Spec.InternalTrafficPolicy = &serviceInternalTrafficPolicyCluster
 			}
 		}
 
-		// any other defaulting depends on cluster configuration.
-		// further IPFamilies, IPFamilyPolicy defaulting is in ClusterIP alloc/reserve logic
-		// note: conversion logic handles cases where ClusterIPs is used (but not ClusterIP).
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.LoadBalancerIPMode) &&
-		obj.Spec.Type == v1.ServiceTypeLoadBalancer {
-		ipMode := v1.LoadBalancerIPModeVIP
-
-		for i, ing := range obj.Status.LoadBalancer.Ingress {
-			if ing.IP != "" && ing.IPMode == nil {
-				obj.Status.LoadBalancer.Ingress[i].IPMode = &ipMode
-			}
+	if obj.Spec.Type == v1.ServiceTypeLoadBalancer {
+		if obj.Spec.AllocateLoadBalancerNodePorts == nil {
+			obj.Spec.AllocateLoadBalancerNodePorts = utilpointer.BoolPtr(true)
 		}
 	}
 }
@@ -357,6 +326,23 @@ func SetDefaults_HTTPGetAction(obj *v1.HTTPGetAction) {
 		obj.Scheme = v1.URISchemeHTTP
 	}
 }
+
+// SetDefaults_Namespace adds a default label for all namespaces
+func SetDefaults_Namespace(obj *v1.Namespace) {
+	// we can't SetDefaults for nameless namespaces (generateName).
+	// This code needs to be kept in sync with the implementation that exists
+	// in Namespace Canonicalize strategy (pkg/registry/core/namespace)
+
+	// note that this can result in many calls to feature enablement in some cases, but
+	// we assume that there's no real cost there.
+	if len(obj.Name) > 0 {
+		if obj.Labels == nil {
+			obj.Labels = map[string]string{}
+		}
+		obj.Labels[v1.LabelMetadataName] = obj.Name
+	}
+}
+
 func SetDefaults_NamespaceStatus(obj *v1.NamespaceStatus) {
 	if obj.Phase == "" {
 		obj.Phase = v1.NamespaceActive

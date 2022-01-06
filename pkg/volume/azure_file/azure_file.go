@@ -1,3 +1,4 @@
+//go:build !providerless
 // +build !providerless
 
 /*
@@ -55,7 +56,8 @@ var _ volume.PersistentVolumePlugin = &azureFilePlugin{}
 var _ volume.ExpandableVolumePlugin = &azureFilePlugin{}
 
 const (
-	azureFilePluginName = "kubernetes.io/azure-file"
+	azureFilePluginName     = "kubernetes.io/azure-file"
+	minimumPremiumShareSize = 100 // GB
 )
 
 func getPath(uid types.UID, volName string, host volume.VolumeHost) string {
@@ -86,7 +88,7 @@ func (plugin *azureFilePlugin) CanSupport(spec *volume.Spec) bool {
 		(spec.Volume != nil && spec.Volume.AzureFile != nil)
 }
 
-func (plugin *azureFilePlugin) RequiresRemount() bool {
+func (plugin *azureFilePlugin) RequiresRemount(spec *volume.Spec) bool {
 	return false
 }
 
@@ -396,7 +398,7 @@ func getSecretNameAndNamespace(spec *volume.Spec, defaultNamespace string) (stri
 func getAzureCloud(cloudProvider cloudprovider.Interface) (*azure.Cloud, error) {
 	azure, ok := cloudProvider.(*azure.Cloud)
 	if !ok || azure == nil {
-		return nil, fmt.Errorf("Failed to get Azure Cloud Provider. GetCloudProvider returned %v instead", cloudProvider)
+		return nil, fmt.Errorf("failed to get Azure Cloud Provider. GetCloudProvider returned %v instead", cloudProvider)
 	}
 
 	return azure, nil

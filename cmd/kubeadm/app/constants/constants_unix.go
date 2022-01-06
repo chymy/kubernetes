@@ -1,3 +1,4 @@
+//go:build !windows
 // +build !windows
 
 /*
@@ -20,8 +21,5 @@ package constants
 
 const (
 	// DefaultDockerCRISocket defines the default Docker CRI socket
-	DefaultDockerCRISocket = "/var/run/dockershim.sock"
-
-	// PauseVersion indicates the default pause image version for kubeadm
-	PauseVersion = "3.2"
+	DefaultDockerCRISocket = "unix:///var/run/dockershim.sock"
 )

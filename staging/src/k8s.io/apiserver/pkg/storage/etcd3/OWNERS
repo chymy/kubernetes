@@ -1,7 +1,5 @@
 # See the OWNERS docs at https://go.k8s.io/owners
 
 reviewers:
-- wojtek-t
-- timothysc
-- madhusudancs
-- hongchaodeng
+  - wojtek-t
+  - timothysc
