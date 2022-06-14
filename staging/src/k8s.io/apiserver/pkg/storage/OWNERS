@@ -3,7 +3,6 @@
 approvers:
   - lavalamp
   - liggitt
-  - timothysc
   - wojtek-t
 reviewers:
   - lavalamp
@@ -14,9 +13,9 @@ reviewers:
   - mikedanese
   - liggitt
   - ncdc
-  - timothysc
   - ingvagabund
-  - resouer
   - enj
+  - stevekuznetsov
 emeritus_approvers:
   - xiang90
+  - timothysc

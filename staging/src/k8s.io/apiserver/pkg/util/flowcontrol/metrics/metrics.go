@@ -105,8 +105,8 @@ var (
 		},
 		[]string{priorityLevel, flowSchema},
 	)
-	// PriorityLevelExecutionSeatsObserverGenerator creates observers of seats occupied throughout execution for priority levels
-	PriorityLevelExecutionSeatsObserverGenerator = NewSampleAndWaterMarkHistogramsGenerator(clock.RealClock{}, time.Millisecond,
+	// PriorityLevelExecutionSeatsGaugeVec creates observers of seats occupied throughout execution for priority levels
+	PriorityLevelExecutionSeatsGaugeVec = NewSampleAndWaterMarkHistogramsVec(clock.RealClock{}, time.Millisecond,
 		&compbasemetrics.HistogramOpts{
 			Namespace:      namespace,
 			Subsystem:      subsystem,
@@ -127,8 +127,8 @@ var (
 		},
 		[]string{priorityLevel},
 	)
-	// PriorityLevelConcurrencyObserverPairGenerator creates pairs that observe concurrency for priority levels
-	PriorityLevelConcurrencyObserverPairGenerator = NewSampleAndWaterMarkHistogramsPairGenerator(clock.RealClock{}, time.Millisecond,
+	// PriorityLevelConcurrencyGaugeVec creates gauges of concurrency broken down by phase, priority level
+	PriorityLevelConcurrencyGaugeVec = NewSampleAndWaterMarkHistogramsVec(clock.RealClock{}, time.Millisecond,
 		&compbasemetrics.HistogramOpts{
 			Namespace:      namespace,
 			Subsystem:      subsystem,
@@ -145,10 +145,10 @@ var (
 			Buckets:        []float64{0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1},
 			StabilityLevel: compbasemetrics.ALPHA,
 		},
-		[]string{priorityLevel},
+		[]string{LabelNamePhase, priorityLevel},
 	)
-	// ReadWriteConcurrencyObserverPairGenerator creates pairs that observe concurrency broken down by mutating vs readonly
-	ReadWriteConcurrencyObserverPairGenerator = NewSampleAndWaterMarkHistogramsPairGenerator(clock.RealClock{}, time.Millisecond,
+	// ReadWriteConcurrencyGaugeVec creates gauges of number of requests broken down by phase and mutating vs readonly
+	ReadWriteConcurrencyGaugeVec = NewSampleAndWaterMarkHistogramsVec(clock.RealClock{}, time.Millisecond,
 		&compbasemetrics.HistogramOpts{
 			Namespace:      namespace,
 			Subsystem:      subsystem,
@@ -165,7 +165,7 @@ var (
 			Buckets:        []float64{0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1},
 			StabilityLevel: compbasemetrics.ALPHA,
 		},
-		[]string{requestKind},
+		[]string{LabelNamePhase, requestKind},
 	)
 	apiserverCurrentR = compbasemetrics.NewGaugeVec(
 		&compbasemetrics.GaugeOpts{
@@ -324,6 +324,16 @@ var (
 		},
 		[]string{priorityLevel, flowSchema},
 	)
+	apiserverDispatchWithNoAccommodation = compbasemetrics.NewCounterVec(
+		&compbasemetrics.CounterOpts{
+			Namespace:      namespace,
+			Subsystem:      subsystem,
+			Name:           "request_dispatch_no_accommodation_total",
+			Help:           "Number of times a dispatch attempt resulted in a non accommodation due to lack of available seats",
+			StabilityLevel: compbasemetrics.ALPHA,
+		},
+		[]string{priorityLevel, flowSchema},
+	)
 
 	metrics = Registerables{
 		apiserverRejectedRequestsTotal,
@@ -343,10 +353,11 @@ var (
 		watchCountSamples,
 		apiserverEpochAdvances,
 		apiserverWorkEstimatedSeats,
+		apiserverDispatchWithNoAccommodation,
 	}.
-		Append(PriorityLevelExecutionSeatsObserverGenerator.metrics()...).
-		Append(PriorityLevelConcurrencyObserverPairGenerator.metrics()...).
-		Append(ReadWriteConcurrencyObserverPairGenerator.metrics()...)
+		Append(PriorityLevelExecutionSeatsGaugeVec.metrics()...).
+		Append(PriorityLevelConcurrencyGaugeVec.metrics()...).
+		Append(ReadWriteConcurrencyGaugeVec.metrics()...)
 )
 
 // AddRequestsInQueues adds the given delta to the gauge of the # of requests in the queues of the specified flowSchema and priorityLevel
@@ -427,4 +438,10 @@ func AddEpochAdvance(ctx context.Context, priorityLevel string, success bool) {
 // ObserveWorkEstimatedSeats notes a sampling of estimated seats associated with a request
 func ObserveWorkEstimatedSeats(priorityLevel, flowSchema string, seats int) {
 	apiserverWorkEstimatedSeats.WithLabelValues(priorityLevel, flowSchema).Observe(float64(seats))
+}
+
+// AddDispatchWithNoAccommodation keeps track of number of times dispatch attempt results
+// in a non accommodation due to lack of available seats.
+func AddDispatchWithNoAccommodation(priorityLevel, flowSchema string) {
+	apiserverDispatchWithNoAccommodation.WithLabelValues(priorityLevel, flowSchema).Inc()
 }

@@ -217,7 +217,10 @@ type Store struct {
 	// If the StorageVersioner is nil, apiserver will leave the
 	// storageVersionHash as empty in the discovery document.
 	StorageVersioner runtime.GroupVersioner
-	// Called to cleanup clients used by the underlying Storage; optional.
+
+	// DestroyFunc cleans up clients used by the underlying Storage; optional.
+	// If set, DestroyFunc has to be implemented in thread-safe way and
+	// be prepared for being called more than once.
 	DestroyFunc func()
 }
 
@@ -277,6 +280,13 @@ func NoNamespaceKeyFunc(ctx context.Context, prefix string, name string) (string
 // New implements RESTStorage.New.
 func (e *Store) New() runtime.Object {
 	return e.NewFunc()
+}
+
+// Destroy cleans up its resources on shutdown.
+func (e *Store) Destroy() {
+	if e.DestroyFunc != nil {
+		e.DestroyFunc()
+	}
 }
 
 // NewList implements rest.Lister.
@@ -343,16 +353,22 @@ func (e *Store) ListPredicate(ctx context.Context, p storage.SelectionPredicate,
 	p.Continue = options.Continue
 	list := e.NewListFunc()
 	qualifiedResource := e.qualifiedResourceFromContext(ctx)
-	storageOpts := storage.ListOptions{ResourceVersion: options.ResourceVersion, ResourceVersionMatch: options.ResourceVersionMatch, Predicate: p}
+	storageOpts := storage.ListOptions{
+		ResourceVersion:      options.ResourceVersion,
+		ResourceVersionMatch: options.ResourceVersionMatch,
+		Predicate:            p,
+		Recursive:            true,
+	}
 	if name, ok := p.MatchesSingle(); ok {
 		if key, err := e.KeyFunc(ctx, name); err == nil {
-			err := e.Storage.GetToList(ctx, key, storageOpts, list)
+			storageOpts.Recursive = false
+			err := e.Storage.GetList(ctx, key, storageOpts, list)
 			return list, storeerr.InterpretListError(err, qualifiedResource)
 		}
 		// if we cannot extract a key based on the current context, the optimization is skipped
 	}
 
-	err := e.Storage.List(ctx, e.KeyRootFunc(ctx), storageOpts, list)
+	err := e.Storage.GetList(ctx, e.KeyRootFunc(ctx), storageOpts, list)
 	return list, storeerr.InterpretListError(err, qualifiedResource)
 }
 
@@ -1427,11 +1443,14 @@ func (e *Store) CompleteWithOptions(options *generic.StoreOptions) error {
 		if opts.CountMetricPollPeriod > 0 {
 			stopFunc := e.startObservingCount(opts.CountMetricPollPeriod, opts.StorageObjectCountTracker)
 			previousDestroy := e.DestroyFunc
+			var once sync.Once
 			e.DestroyFunc = func() {
-				stopFunc()
-				if previousDestroy != nil {
-					previousDestroy()
-				}
+				once.Do(func() {
+					stopFunc()
+					if previousDestroy != nil {
+						previousDestroy()
+					}
+				})
 			}
 		}
 	}
