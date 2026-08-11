@@ -17,6 +17,7 @@ limitations under the License.
 package topologymanager
 
 import (
+	"context"
 	"sync"
 
 	"k8s.io/api/core/v1"
@@ -27,10 +28,12 @@ import (
 )
 
 const (
-	// containerTopologyScope specifies the TopologyManagerScope per container.
-	containerTopologyScope = "container"
-	// podTopologyScope specifies the TopologyManagerScope per pod.
-	podTopologyScope = "pod"
+	// ContainerTopologyScope specifies the TopologyManagerScope per container.
+	ContainerTopologyScope = "container"
+	// PodTopologyScope specifies the TopologyManagerScope per pod.
+	PodTopologyScope = "pod"
+	// noneTopologyScope specifies the TopologyManagerScope when topologyPolicyName is none.
+	NoneTopologyScope = "none"
 )
 
 type podTopologyHints map[string]map[string]TopologyHint
@@ -38,14 +41,15 @@ type podTopologyHints map[string]map[string]TopologyHint
 // Scope interface for Topology Manager
 type Scope interface {
 	Name() string
-	Admit(pod *v1.Pod) lifecycle.PodAdmitResult
+	GetPolicy() Policy
+	Admit(ctx context.Context, pod *v1.Pod, operation lifecycle.Operation) lifecycle.PodAdmitResult
 	// AddHintProvider adds a hint provider to manager to indicate the hint provider
 	// wants to be consoluted with when making topology hints
-	AddHintProvider(h HintProvider)
+	AddHintProvider(logger klog.Logger, h HintProvider)
 	// AddContainer adds pod to Manager for tracking
 	AddContainer(pod *v1.Pod, container *v1.Container, containerID string)
 	// RemoveContainer removes pod from Manager tracking
-	RemoveContainer(containerID string) error
+	RemoveContainer(logger klog.Logger, containerID string) error
 	// Store is the interface for storing pod topology hints
 	Store
 }
@@ -84,11 +88,15 @@ func (s *scope) setTopologyHints(podUID string, containerName string, th Topolog
 	s.podTopologyHints[podUID][containerName] = th
 }
 
-func (s *scope) GetAffinity(podUID string, containerName string) TopologyHint {
+func (s *scope) GetAffinity(_ klog.Logger, podUID string, containerName string) TopologyHint {
 	return s.getTopologyHints(podUID, containerName)
 }
 
-func (s *scope) AddHintProvider(h HintProvider) {
+func (s *scope) GetPolicy() Policy {
+	return s.policy
+}
+
+func (s *scope) AddHintProvider(_ klog.Logger, h HintProvider) {
 	s.hintProviders = append(s.hintProviders, h)
 }
 
@@ -103,11 +111,11 @@ func (s *scope) AddContainer(pod *v1.Pod, container *v1.Container, containerID s
 
 // It would be better to implement this function in topologymanager instead of scope
 // but topologymanager do not track mapping anymore
-func (s *scope) RemoveContainer(containerID string) error {
+func (s *scope) RemoveContainer(logger klog.Logger, containerID string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	klog.InfoS("RemoveContainer", "containerID", containerID)
+	logger.Info("RemoveContainer", "containerID", containerID)
 	// Get the podUID and containerName associated with the containerID to be removed and remove it
 	podUIDString, containerName, err := s.podMap.GetContainerRef(containerID)
 	if err != nil {
@@ -128,9 +136,9 @@ func (s *scope) RemoveContainer(containerID string) error {
 	return nil
 }
 
-func (s *scope) admitPolicyNone(pod *v1.Pod) lifecycle.PodAdmitResult {
+func (s *scope) admitPolicyNone(ctx context.Context, pod *v1.Pod, operation lifecycle.Operation) lifecycle.PodAdmitResult {
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
-		err := s.allocateAlignedResources(pod, &container)
+		err := s.allocateAlignedResources(ctx, pod, &container, operation)
 		if err != nil {
 			return admission.GetPodAdmitResult(err)
 		}
@@ -139,10 +147,20 @@ func (s *scope) admitPolicyNone(pod *v1.Pod) lifecycle.PodAdmitResult {
 }
 
 // It would be better to implement this function in topologymanager instead of scope
-// but topologymanager do not track providers anymore
-func (s *scope) allocateAlignedResources(pod *v1.Pod, container *v1.Container) error {
+// but topologymanager does not track providers anymore
+func (s *scope) allocateAlignedResources(ctx context.Context, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error {
 	for _, provider := range s.hintProviders {
-		err := provider.Allocate(pod, container)
+		err := provider.Allocate(ctx, pod, container, operation)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *scope) allocatePodAlignedResources(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) error {
+	for _, provider := range s.hintProviders {
+		err := provider.AllocatePod(logger, pod, operation)
 		if err != nil {
 			return err
 		}

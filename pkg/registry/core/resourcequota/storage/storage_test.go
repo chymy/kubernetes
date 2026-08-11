@@ -19,13 +19,12 @@ package storage
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/diff"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -89,9 +88,9 @@ func TestCreateSetsFields(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewDefaultContext()
+	ctx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault)
 	resourcequota := validNewResourceQuota()
-	_, err := storage.Create(genericapirequest.NewDefaultContext(), resourcequota, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
+	_, err := storage.Create(ctx, resourcequota, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +160,8 @@ func TestUpdateStatus(t *testing.T) {
 	storage, status, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewDefaultContext()
+	ctx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault)
+	statusCtx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault, "status")
 
 	key, _ := storage.KeyFunc(ctx, "foo")
 	resourcequotaStart := validNewResourceQuota()
@@ -195,7 +195,7 @@ func TestUpdateStatus(t *testing.T) {
 		},
 	}
 
-	_, _, err = status.Update(ctx, resourcequotaIn.Name, rest.DefaultUpdatedObjectInfo(resourcequotaIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	_, _, err = status.Update(statusCtx, resourcequotaIn.Name, rest.DefaultUpdatedObjectInfo(resourcequotaIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestUpdateStatus(t *testing.T) {
 	rqOut := obj.(*api.ResourceQuota)
 	// only compare the meaningful update b/c we can't compare due to metadata
 	if !apiequality.Semantic.DeepEqual(resourcequotaIn.Status, rqOut.Status) {
-		t.Errorf("unexpected object: %s", diff.ObjectDiff(resourcequotaIn, rqOut))
+		t.Errorf("unexpected object: %s", cmp.Diff(resourcequotaIn, rqOut))
 	}
 }
 

@@ -18,21 +18,25 @@ package clientcmd
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
+	utiltesting "k8s.io/client-go/util/testing"
+
+	"github.com/google/go-cmp/cmp"
 	"sigs.k8s.io/yaml"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
+	"k8s.io/client-go/util/homedir"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -74,8 +78,8 @@ var (
 			"red-user":    {Token: "a-different-red-token"},
 			"yellow-user": {Token: "yellow-token"}},
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"cow-cluster":    {Server: "http://a-different-cow.org:8080", InsecureSkipTLSVerify: true},
-			"donkey-cluster": {Server: "http://donkey.org:8080", InsecureSkipTLSVerify: true}},
+			"cow-cluster":    {Server: "http://a-different-cow.org:8080", InsecureSkipTLSVerify: true, DisableCompression: true},
+			"donkey-cluster": {Server: "http://donkey.org:8080", InsecureSkipTLSVerify: true, DisableCompression: true}},
 		CurrentContext: "federal-context",
 	}
 )
@@ -120,22 +124,88 @@ func TestNonExistentCommandLineFile(t *testing.T) {
 	}
 }
 
+//nolint:logcheck // Tests klog APIs.
 func TestToleratingMissingFiles(t *testing.T) {
+	envVarValue := "bogus"
 	loadingRules := ClientConfigLoadingRules{
-		Precedence: []string{"bogus1", "bogus2", "bogus3"},
+		Precedence:       []string{"bogus1", "bogus2", "bogus3"},
+		WarnIfAllMissing: true,
+		Warner:           func(err error) { klog.Warning(err) },
 	}
+
+	buffer := &bytes.Buffer{}
+
+	klog.LogToStderr(false)
+	klog.SetOutput(buffer)
 
 	_, err := loadingRules.Load()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	klog.Flush()
+	expectedLog := fmt.Sprintf("Config not found: %s", envVarValue)
+	if !strings.Contains(buffer.String(), expectedLog) {
+		t.Fatalf("expected log: \"%s\"", expectedLog)
+	}
+}
+
+//nolint:logcheck // Tests klog APIs.
+func TestWarningMissingFiles(t *testing.T) {
+	envVarValue := "bogus"
+	t.Setenv(RecommendedConfigPathEnvVar, envVarValue)
+	loadingRules := NewDefaultClientConfigLoadingRules()
+
+	buffer := &bytes.Buffer{}
+
+	flags := &flag.FlagSet{}
+	klog.InitFlags(flags)
+	flags.Set("v", "1")
+	klog.LogToStderr(false)
+	klog.SetOutput(buffer)
+
+	_, err := loadingRules.Load()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	klog.Flush()
+
+	expectedLog := fmt.Sprintf("Config not found: %s", envVarValue)
+	if !strings.Contains(buffer.String(), expectedLog) {
+		t.Fatalf("expected log: \"%s\"", expectedLog)
+	}
+}
+
+//nolint:logcheck // Tests klog APIs.
+func TestNoWarningMissingFiles(t *testing.T) {
+	envVarValue := "bogus"
+	t.Setenv(RecommendedConfigPathEnvVar, envVarValue)
+	loadingRules := NewDefaultClientConfigLoadingRules()
+
+	buffer := &bytes.Buffer{}
+
+	flags := &flag.FlagSet{}
+	klog.InitFlags(flags)
+	flags.Set("v", "0")
+	klog.LogToStderr(false)
+	klog.SetOutput(buffer)
+
+	_, err := loadingRules.Load()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	klog.Flush()
+
+	logNotExpected := fmt.Sprintf("Config not found: %s", envVarValue)
+	if strings.Contains(buffer.String(), logNotExpected) {
+		t.Fatalf("log not expected: \"%s\"", logNotExpected)
+	}
 }
 
 func TestErrorReadingFile(t *testing.T) {
-	commandLineFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(commandLineFile.Name())
+	commandLineFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, commandLineFile)
 
-	if err := ioutil.WriteFile(commandLineFile.Name(), []byte("bogus value"), 0644); err != nil {
+	if err := os.WriteFile(commandLineFile.Name(), []byte("bogus value"), 0644); err != nil {
 		t.Fatalf("Error creating tempfile: %v", err)
 	}
 
@@ -153,7 +223,7 @@ func TestErrorReadingFile(t *testing.T) {
 }
 
 func TestErrorReadingNonFile(t *testing.T) {
-	tmpdir, err := ioutil.TempDir("", "")
+	tmpdir, err := os.MkdirTemp("", "")
 	if err != nil {
 		t.Fatalf("Couldn't create tmpdir")
 	}
@@ -173,10 +243,9 @@ func TestErrorReadingNonFile(t *testing.T) {
 }
 
 func TestConflictingCurrentContext(t *testing.T) {
-	commandLineFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(commandLineFile.Name())
-	envVarFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(envVarFile.Name())
+	commandLineFile, _ := os.CreateTemp("", "")
+	envVarFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, commandLineFile, envVarFile)
 
 	mockCommandLineConfig := clientcmdapi.Config{
 		CurrentContext: "any-context-value",
@@ -245,17 +314,16 @@ contexts:
   name: "433e40"
 current-context: any-context-value
 kind: Config
-preferences: {}
 users: null
 `)
 	if !bytes.Equal(expected, data) {
-		t.Error(diff.ObjectReflectDiff(string(expected), string(data)))
+		t.Error(cmp.Diff(string(expected), string(data)))
 	}
 }
 
 func TestLoadingEmptyMaps(t *testing.T) {
-	configFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(configFile.Name())
+	configFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, configFile)
 
 	mockConfig := clientcmdapi.Config{
 		CurrentContext: "any-context-value",
@@ -280,10 +348,10 @@ func TestLoadingEmptyMaps(t *testing.T) {
 }
 
 func TestDuplicateClusterName(t *testing.T) {
-	configFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(configFile.Name())
+	configFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, configFile)
 
-	err := ioutil.WriteFile(configFile.Name(), []byte(`
+	err := os.WriteFile(configFile.Name(), []byte(`
 kind: Config
 apiVersion: v1
 clusters:
@@ -322,10 +390,10 @@ users:
 }
 
 func TestDuplicateContextName(t *testing.T) {
-	configFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(configFile.Name())
+	configFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, configFile)
 
-	err := ioutil.WriteFile(configFile.Name(), []byte(`
+	err := os.WriteFile(configFile.Name(), []byte(`
 kind: Config
 apiVersion: v1
 clusters:
@@ -364,10 +432,10 @@ users:
 }
 
 func TestDuplicateUserName(t *testing.T) {
-	configFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(configFile.Name())
+	configFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, configFile)
 
-	err := ioutil.WriteFile(configFile.Name(), []byte(`
+	err := os.WriteFile(configFile.Name(), []byte(`
 kind: Config
 apiVersion: v1
 clusters:
@@ -404,10 +472,10 @@ users:
 }
 
 func TestDuplicateExtensionName(t *testing.T) {
-	configFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(configFile.Name())
+	configFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, configFile)
 
-	err := ioutil.WriteFile(configFile.Name(), []byte(`
+	err := os.WriteFile(configFile.Name(), []byte(`
 kind: Config
 apiVersion: v1
 clusters:
@@ -447,40 +515,166 @@ extensions:
 	}
 }
 
+func TestRelativizePathWithNoBacksteps(t *testing.T) {
+	var root string
+	var base string
+	var otherBase string
+	if goruntime.GOOS == "windows" {
+		root = "C:"
+		base = root + "\\base"
+		otherBase = root + "\\" + "other"
+	} else {
+		root = ""
+		base = "/base"
+		otherBase = "/other"
+	}
+
+	tests := []struct {
+		base          string
+		name          string
+		inputPaths    []string
+		expectedPaths []string
+		expectError   bool
+	}{
+		{
+			base:          root + "/base",
+			name:          "path in subdirectory with slashes - should relativize",
+			inputPaths:    []string{root + "/base/subdir/file.txt"},
+			expectedPaths: []string{filepath.Join("subdir", "file.txt")},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "path in subdirectory - should relativize",
+			inputPaths:    []string{filepath.Join(base, "subdir", "file.txt")},
+			expectedPaths: []string{filepath.Join("subdir", "file.txt")},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "path in same directory - should relativize",
+			inputPaths:    []string{filepath.Join(base, "file.txt")},
+			expectedPaths: []string{"file.txt"},
+			expectError:   false,
+		},
+		{
+			base:          root + "/base",
+			name:          "absolute path requiring backsteps with slashes - should remain absolute",
+			inputPaths:    []string{root + "/other/dir/file.txt"},
+			expectedPaths: []string{root + "/other/dir/file.txt"},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "absolute path requiring backsteps - should remain absolute",
+			inputPaths:    []string{filepath.Join(otherBase, "dir", "file.txt")},
+			expectedPaths: []string{filepath.Join(otherBase, "dir", "file.txt")},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "relative path requiring backsteps - should error",
+			inputPaths:    []string{filepath.Join("..", "other", "file.txt")},
+			expectedPaths: []string{filepath.Join("..", "other", "file.txt")},
+			expectError:   true,
+		},
+		{
+			base:          base,
+			name:          "empty path - should remain empty",
+			inputPaths:    []string{""},
+			expectedPaths: []string{""},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "multiple paths no backsteps - should relativize all",
+			inputPaths:    []string{filepath.Join(base, "file1.txt"), filepath.Join(base, "subdir", "file2.txt")},
+			expectedPaths: []string{"file1.txt", filepath.Join("subdir", "file2.txt")},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "mixed paths with absolute requiring backsteps - should keep absolute unchanged",
+			inputPaths:    []string{filepath.Join(base, "file1.txt"), filepath.Join(otherBase, "file2.txt"), filepath.Join(base, "subdir", "file3.txt")},
+			expectedPaths: []string{"file1.txt", filepath.Join(otherBase, "file2.txt"), filepath.Join("subdir", "file3.txt")},
+			expectError:   false,
+		},
+		{
+			base:          base,
+			name:          "mixed with empty paths",
+			inputPaths:    []string{filepath.Join(base, "file1.txt"), "", filepath.Join(base, "subdir", "file2.txt")},
+			expectedPaths: []string{"file1.txt", "", filepath.Join("subdir", "file2.txt")},
+			expectError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create pointers to the input strings
+			refs := make([]*string, len(tt.inputPaths))
+			for i := range tt.inputPaths {
+				s := tt.inputPaths[i]
+				refs[i] = &s
+			}
+
+			// Call the function
+			err := RelativizePathWithNoBacksteps(refs, tt.base)
+
+			// Check error expectation
+			if tt.expectError && err == nil {
+				t.Errorf("expected an error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			// If no error expected, check the results
+			if !tt.expectError {
+				for i, ref := range refs {
+					if *ref != tt.expectedPaths[i] {
+						t.Errorf("path %d: expected %q, got %q", i, tt.expectedPaths[i], *ref)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestResolveRelativePaths(t *testing.T) {
+	absoluteDir := filepath.Join(t.TempDir(), "absolute")
 	pathResolutionConfig1 := clientcmdapi.Config{
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"relative-user-1": {ClientCertificate: "relative/client/cert", ClientKey: "../relative/client/key"},
-			"absolute-user-1": {ClientCertificate: "/absolute/client/cert", ClientKey: "/absolute/client/key"},
-			"relative-cmd-1":  {Exec: &clientcmdapi.ExecConfig{Command: "../relative/client/cmd"}},
-			"absolute-cmd-1":  {Exec: &clientcmdapi.ExecConfig{Command: "/absolute/client/cmd"}},
+			"relative-user-1": {ClientCertificate: filepath.Join("relative", "client", "cert"), ClientKey: filepath.Join("..", "relative", "client", "key")},
+			"absolute-user-1": {ClientCertificate: filepath.Join(absoluteDir, "client", "cert"), ClientKey: filepath.Join(absoluteDir, "client", "key")},
+			"relative-cmd-1":  {Exec: &clientcmdapi.ExecConfig{Command: filepath.Join("..", "relative", "client", "cmd")}},
+			"absolute-cmd-1":  {Exec: &clientcmdapi.ExecConfig{Command: filepath.Join(absoluteDir, "client", "cmd")}},
 			"PATH-cmd-1":      {Exec: &clientcmdapi.ExecConfig{Command: "cmd"}},
 		},
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"relative-server-1": {CertificateAuthority: "../relative/ca"},
-			"absolute-server-1": {CertificateAuthority: "/absolute/ca"},
+			"relative-server-1": {CertificateAuthority: filepath.Join("..", "relative", "ca")},
+			"absolute-server-1": {CertificateAuthority: filepath.Join(absoluteDir, "ca")},
 		},
 	}
 	pathResolutionConfig2 := clientcmdapi.Config{
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"relative-user-2": {ClientCertificate: "relative/client/cert2", ClientKey: "../relative/client/key2"},
-			"absolute-user-2": {ClientCertificate: "/absolute/client/cert2", ClientKey: "/absolute/client/key2"},
+			"relative-user-2": {ClientCertificate: filepath.Join("relative", "client", "cert2"), ClientKey: filepath.Join("..", "relative", "client", "key2")},
+			"absolute-user-2": {ClientCertificate: filepath.Join(absoluteDir, "client", "cert2"), ClientKey: filepath.Join(absoluteDir, "client", "key2")},
 		},
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"relative-server-2": {CertificateAuthority: "../relative/ca2"},
-			"absolute-server-2": {CertificateAuthority: "/absolute/ca2"},
+			"relative-server-2": {CertificateAuthority: filepath.Join("..", "relative", "ca2")},
+			"absolute-server-2": {CertificateAuthority: filepath.Join(absoluteDir, "ca2")},
 		},
 	}
 
-	configDir1, _ := ioutil.TempDir("", "")
+	configDir1, _ := os.MkdirTemp("", "")
 	defer os.RemoveAll(configDir1)
-	configFile1 := path.Join(configDir1, ".kubeconfig")
+	configFile1 := filepath.Join(configDir1, ".kubeconfig")
 	configDir1, _ = filepath.Abs(configDir1)
 
-	configDir2, _ := ioutil.TempDir("", "")
+	configDir2, _ := os.MkdirTemp("", "")
 	defer os.RemoveAll(configDir2)
-	configDir2, _ = ioutil.TempDir(configDir2, "")
-	configFile2 := path.Join(configDir2, ".kubeconfig")
+	configDir2, _ = os.MkdirTemp(configDir2, "")
+	configFile2 := filepath.Join(configDir2, ".kubeconfig")
 	configDir2, _ = filepath.Abs(configDir2)
 
 	WriteToFile(pathResolutionConfig1, configFile1)
@@ -499,11 +693,11 @@ func TestResolveRelativePaths(t *testing.T) {
 	for key, cluster := range mergedConfig.Clusters {
 		if key == "relative-server-1" {
 			foundClusterCount++
-			matchStringArg(path.Join(configDir1, pathResolutionConfig1.Clusters["relative-server-1"].CertificateAuthority), cluster.CertificateAuthority, t)
+			matchStringArg(filepath.Join(configDir1, pathResolutionConfig1.Clusters["relative-server-1"].CertificateAuthority), cluster.CertificateAuthority, t)
 		}
 		if key == "relative-server-2" {
 			foundClusterCount++
-			matchStringArg(path.Join(configDir2, pathResolutionConfig2.Clusters["relative-server-2"].CertificateAuthority), cluster.CertificateAuthority, t)
+			matchStringArg(filepath.Join(configDir2, pathResolutionConfig2.Clusters["relative-server-2"].CertificateAuthority), cluster.CertificateAuthority, t)
 		}
 		if key == "absolute-server-1" {
 			foundClusterCount++
@@ -522,13 +716,13 @@ func TestResolveRelativePaths(t *testing.T) {
 	for key, authInfo := range mergedConfig.AuthInfos {
 		if key == "relative-user-1" {
 			foundAuthInfoCount++
-			matchStringArg(path.Join(configDir1, pathResolutionConfig1.AuthInfos["relative-user-1"].ClientCertificate), authInfo.ClientCertificate, t)
-			matchStringArg(path.Join(configDir1, pathResolutionConfig1.AuthInfos["relative-user-1"].ClientKey), authInfo.ClientKey, t)
+			matchStringArg(filepath.Join(configDir1, pathResolutionConfig1.AuthInfos["relative-user-1"].ClientCertificate), authInfo.ClientCertificate, t)
+			matchStringArg(filepath.Join(configDir1, pathResolutionConfig1.AuthInfos["relative-user-1"].ClientKey), authInfo.ClientKey, t)
 		}
 		if key == "relative-user-2" {
 			foundAuthInfoCount++
-			matchStringArg(path.Join(configDir2, pathResolutionConfig2.AuthInfos["relative-user-2"].ClientCertificate), authInfo.ClientCertificate, t)
-			matchStringArg(path.Join(configDir2, pathResolutionConfig2.AuthInfos["relative-user-2"].ClientKey), authInfo.ClientKey, t)
+			matchStringArg(filepath.Join(configDir2, pathResolutionConfig2.AuthInfos["relative-user-2"].ClientCertificate), authInfo.ClientCertificate, t)
+			matchStringArg(filepath.Join(configDir2, pathResolutionConfig2.AuthInfos["relative-user-2"].ClientKey), authInfo.ClientKey, t)
 		}
 		if key == "absolute-user-1" {
 			foundAuthInfoCount++
@@ -542,7 +736,7 @@ func TestResolveRelativePaths(t *testing.T) {
 		}
 		if key == "relative-cmd-1" {
 			foundAuthInfoCount++
-			matchStringArg(path.Join(configDir1, pathResolutionConfig1.AuthInfos[key].Exec.Command), authInfo.Exec.Command, t)
+			matchStringArg(filepath.Join(configDir1, pathResolutionConfig1.AuthInfos[key].Exec.Command), authInfo.Exec.Command, t)
 		}
 		if key == "absolute-cmd-1" {
 			foundAuthInfoCount++
@@ -560,30 +754,26 @@ func TestResolveRelativePaths(t *testing.T) {
 }
 
 func TestMigratingFile(t *testing.T) {
-	sourceFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(sourceFile.Name())
-	destinationFile, _ := ioutil.TempFile("", "")
-	// delete the file so that we'll write to it
-	os.Remove(destinationFile.Name())
+	tempDir := t.TempDir()
+	sourceFile := filepath.Join(tempDir, "source")
+	destinationFile := filepath.Join(tempDir, "destination")
 
-	WriteToFile(testConfigAlfa, sourceFile.Name())
+	if err := WriteToFile(testConfigAlfa, sourceFile); err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
 
 	loadingRules := ClientConfigLoadingRules{
-		MigrationRules: map[string]string{destinationFile.Name(): sourceFile.Name()},
+		MigrationRules: map[string]string{destinationFile: sourceFile},
 	}
 
 	if _, err := loadingRules.Load(); err != nil {
 		t.Errorf("unexpected error %v", err)
 	}
-
-	// the load should have recreated this file
-	defer os.Remove(destinationFile.Name())
-
-	sourceContent, err := ioutil.ReadFile(sourceFile.Name())
+	sourceContent, err := os.ReadFile(sourceFile)
 	if err != nil {
 		t.Errorf("unexpected error %v", err)
 	}
-	destinationContent, err := ioutil.ReadFile(destinationFile.Name())
+	destinationContent, err := os.ReadFile(destinationFile)
 	if err != nil {
 		t.Errorf("unexpected error %v", err)
 	}
@@ -591,13 +781,25 @@ func TestMigratingFile(t *testing.T) {
 	if !reflect.DeepEqual(sourceContent, destinationContent) {
 		t.Errorf("source and destination do not match")
 	}
+
+	// destination file permissions should be the same as the source file permissions
+	sourceInfo, err := os.Stat(sourceFile)
+	if err != nil {
+		t.Errorf("unexpected error %v", err)
+	}
+	destinationInfo, err := os.Stat(destinationFile)
+	if err != nil {
+		t.Errorf("unexpected error %v", err)
+	}
+	if destinationInfo.Mode().Perm() != sourceInfo.Mode().Perm() {
+		t.Errorf("expected permissions %v, got %v", sourceInfo.Mode().Perm(), destinationInfo.Mode().Perm())
+	}
 }
 
 func TestMigratingFileLeaveExistingFileAlone(t *testing.T) {
-	sourceFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(sourceFile.Name())
-	destinationFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(destinationFile.Name())
+	sourceFile, _ := os.CreateTemp("", "")
+	destinationFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, sourceFile, destinationFile)
 
 	WriteToFile(testConfigAlfa, sourceFile.Name())
 
@@ -609,7 +811,7 @@ func TestMigratingFileLeaveExistingFileAlone(t *testing.T) {
 		t.Errorf("unexpected error %v", err)
 	}
 
-	destinationContent, err := ioutil.ReadFile(destinationFile.Name())
+	destinationContent, err := os.ReadFile(destinationFile.Name())
 	if err != nil {
 		t.Errorf("unexpected error %v", err)
 	}
@@ -621,9 +823,9 @@ func TestMigratingFileLeaveExistingFileAlone(t *testing.T) {
 
 func TestMigratingFileSourceMissingSkip(t *testing.T) {
 	sourceFilename := "some-missing-file"
-	destinationFile, _ := ioutil.TempFile("", "")
+	destinationFile, _ := os.CreateTemp("", "")
 	// delete the file so that we'll write to it
-	os.Remove(destinationFile.Name())
+	utiltesting.CloseAndRemove(t, destinationFile)
 
 	loadingRules := ClientConfigLoadingRules{
 		MigrationRules: map[string]string{destinationFile.Name(): sourceFilename},
@@ -639,8 +841,8 @@ func TestMigratingFileSourceMissingSkip(t *testing.T) {
 }
 
 func TestFileLocking(t *testing.T) {
-	f, _ := ioutil.TempFile("", "")
-	defer os.Remove(f.Name())
+	f, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(t, f)
 
 	err := lockFile(f.Name())
 	if err != nil {
@@ -655,10 +857,9 @@ func TestFileLocking(t *testing.T) {
 }
 
 func Example_noMergingOnExplicitPaths() {
-	commandLineFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(commandLineFile.Name())
-	envVarFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(envVarFile.Name())
+	commandLineFile, _ := os.CreateTemp("", "")
+	envVarFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(&testing.T{}, commandLineFile, envVarFile)
 
 	WriteToFile(testConfigAlfa, commandLineFile.Name())
 	WriteToFile(testConfigConflictAlfa, envVarFile.Name())
@@ -696,7 +897,6 @@ func Example_noMergingOnExplicitPaths() {
 	//   name: federal-context
 	// current-context: ""
 	// kind: Config
-	// preferences: {}
 	// users:
 	// - name: red-user
 	//   user:
@@ -704,10 +904,9 @@ func Example_noMergingOnExplicitPaths() {
 }
 
 func Example_mergingSomeWithConflict() {
-	commandLineFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(commandLineFile.Name())
-	envVarFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(envVarFile.Name())
+	commandLineFile, _ := os.CreateTemp("", "")
+	envVarFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(&testing.T{}, commandLineFile, envVarFile)
 
 	WriteToFile(testConfigAlfa, commandLineFile.Name())
 	WriteToFile(testConfigConflictAlfa, envVarFile.Name())
@@ -737,6 +936,7 @@ func Example_mergingSomeWithConflict() {
 	//     server: http://cow.org:8080
 	//   name: cow-cluster
 	// - cluster:
+	//     disable-compression: true
 	//     insecure-skip-tls-verify: true
 	//     server: http://donkey.org:8080
 	//   name: donkey-cluster
@@ -748,7 +948,6 @@ func Example_mergingSomeWithConflict() {
 	//   name: federal-context
 	// current-context: federal-context
 	// kind: Config
-	// preferences: {}
 	// users:
 	// - name: red-user
 	//   user:
@@ -759,14 +958,11 @@ func Example_mergingSomeWithConflict() {
 }
 
 func Example_mergingEverythingNoConflicts() {
-	commandLineFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(commandLineFile.Name())
-	envVarFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(envVarFile.Name())
-	currentDirFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(currentDirFile.Name())
-	homeDirFile, _ := ioutil.TempFile("", "")
-	defer os.Remove(homeDirFile.Name())
+	commandLineFile, _ := os.CreateTemp("", "")
+	envVarFile, _ := os.CreateTemp("", "")
+	currentDirFile, _ := os.CreateTemp("", "")
+	homeDirFile, _ := os.CreateTemp("", "")
+	defer utiltesting.CloseAndRemove(&testing.T{}, commandLineFile, envVarFile, currentDirFile, homeDirFile)
 
 	WriteToFile(testConfigAlfa, commandLineFile.Name())
 	WriteToFile(testConfigBravo, envVarFile.Name())
@@ -829,7 +1025,6 @@ func Example_mergingEverythingNoConflicts() {
 	//   name: shaker-context
 	// current-context: ""
 	// kind: Config
-	// preferences: {}
 	// users:
 	// - name: black-user
 	//   user:
@@ -879,7 +1074,10 @@ func TestLoadingGetLoadingPrecedence(t *testing.T) {
 		precedence []string
 	}{
 		"default": {
-			precedence: []string{filepath.Join(os.Getenv("HOME"), ".kube/config")},
+			// Reconstruct the expected default path independently from the
+			// home directory so the assertion validates how RecommendedHomeFile
+			// is assembled rather than comparing it against itself.
+			precedence: []string{filepath.Join(homedir.HomeDir(), RecommendedHomeDir, RecommendedFileName)},
 		},
 		"explicit": {
 			rules: &ClientConfigLoadingRules{
@@ -892,17 +1090,14 @@ func TestLoadingGetLoadingPrecedence(t *testing.T) {
 			precedence: []string{"/env/kubeconfig"},
 		},
 		"envvar-multiple": {
-			env:        "/env/kubeconfig:/other/kubeconfig",
+			env:        strings.Join([]string{"/env/kubeconfig", "/other/kubeconfig"}, string(filepath.ListSeparator)),
 			precedence: []string{"/env/kubeconfig", "/other/kubeconfig"},
 		},
 	}
 
-	kubeconfig := os.Getenv("KUBECONFIG")
-	defer os.Setenv("KUBECONFIG", kubeconfig)
-
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
-			os.Setenv("KUBECONFIG", test.env)
+			t.Setenv("KUBECONFIG", test.env)
 			rules := test.rules
 			if rules == nil {
 				rules = NewDefaultClientConfigLoadingRules()

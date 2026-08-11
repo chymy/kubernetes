@@ -142,8 +142,12 @@ func TestWithAudit(t *testing.T) {
 	}
 	for tcName, tc := range testCases {
 		var handler Interface = fakeHandler{tc.admit, tc.admitAnnotations, tc.validate, tc.validateAnnotations, tc.handles}
-		ae := &auditinternal.Event{Level: auditinternal.LevelMetadata}
-		ctx := audit.WithAuditContext(context.Background(), &audit.AuditContext{Event: ae})
+		ctx := audit.WithAuditContext(context.Background())
+		ac := audit.AuditContextFrom(ctx)
+		if err := ac.Init(audit.RequestAuditConfig{Level: auditinternal.LevelMetadata}, nil); err != nil {
+			t.Fatal(err)
+		}
+
 		auditHandler := WithAudit(handler)
 		a := attributes()
 
@@ -169,9 +173,9 @@ func TestWithAudit(t *testing.T) {
 			annotations[k] = v
 		}
 		if len(annotations) == 0 {
-			assert.Nil(t, ae.Annotations, tcName+": unexptected annotations set in audit event")
+			assert.Nil(t, ac.GetEventAnnotations(), tcName+": unexptected annotations set in audit event")
 		} else {
-			assert.Equal(t, annotations, ae.Annotations, tcName+": unexptected annotations set in audit event")
+			assert.Equal(t, annotations, ac.GetEventAnnotations(), tcName+": unexptected annotations set in audit event")
 		}
 	}
 }
@@ -184,8 +188,7 @@ func TestWithAuditConcurrency(t *testing.T) {
 		"plugin.example.com/qux": "qux",
 	}
 	var handler Interface = fakeHandler{admitAnnotations: admitAnnotations, handles: true}
-	ae := &auditinternal.Event{Level: auditinternal.LevelMetadata}
-	ctx := audit.WithAuditContext(context.Background(), &audit.AuditContext{Event: ae})
+	ctx := audit.WithAuditContext(context.Background())
 	auditHandler := WithAudit(handler)
 	a := attributes()
 
@@ -197,9 +200,15 @@ func TestWithAuditConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			mutator, ok := handler.(MutationInterface)
-			require.True(t, ok)
+			if !ok {
+				t.Error("handler is not an interface of type MutationInterface")
+				return
+			}
 			auditMutator, ok := auditHandler.(MutationInterface)
-			require.True(t, ok)
+			if !ok {
+				t.Error("handler is not an interface of type MutationInterface")
+				return
+			}
 			assert.Equal(t, mutator.Admit(ctx, a, nil), auditMutator.Admit(ctx, a, nil), "WithAudit decorator should not effect the return value")
 		}()
 	}

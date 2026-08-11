@@ -28,8 +28,8 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	conversion "k8s.io/apimachinery/pkg/conversion"
 	runtime "k8s.io/apimachinery/pkg/runtime"
-	v1alpha1 "k8s.io/component-base/config/v1alpha1"
-	v1beta1 "k8s.io/kubelet/config/v1beta1"
+	apiv1 "k8s.io/component-base/tracing/api/v1"
+	configv1beta1 "k8s.io/kubelet/config/v1beta1"
 	config "k8s.io/kubernetes/pkg/kubelet/apis/config"
 )
 
@@ -40,150 +40,240 @@ func init() {
 // RegisterConversions adds conversion functions to the given scheme.
 // Public to allow building arbitrary schemes.
 func RegisterConversions(s *runtime.Scheme) error {
-	if err := s.AddGeneratedConversionFunc((*v1beta1.CredentialProvider)(nil), (*config.CredentialProvider)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_CredentialProvider_To_config_CredentialProvider(a.(*v1beta1.CredentialProvider), b.(*config.CredentialProvider), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.CrashLoopBackOffConfig)(nil), (*config.CrashLoopBackOffConfig)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_CrashLoopBackOffConfig_To_config_CrashLoopBackOffConfig(a.(*configv1beta1.CrashLoopBackOffConfig), b.(*config.CrashLoopBackOffConfig), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.CredentialProvider)(nil), (*v1beta1.CredentialProvider)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_CredentialProvider_To_v1beta1_CredentialProvider(a.(*config.CredentialProvider), b.(*v1beta1.CredentialProvider), scope)
+	if err := s.AddGeneratedConversionFunc((*config.CrashLoopBackOffConfig)(nil), (*configv1beta1.CrashLoopBackOffConfig)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_CrashLoopBackOffConfig_To_v1beta1_CrashLoopBackOffConfig(a.(*config.CrashLoopBackOffConfig), b.(*configv1beta1.CrashLoopBackOffConfig), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.CredentialProviderConfig)(nil), (*config.CredentialProviderConfig)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(a.(*v1beta1.CredentialProviderConfig), b.(*config.CredentialProviderConfig), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.CredentialProvider)(nil), (*config.CredentialProvider)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_CredentialProvider_To_config_CredentialProvider(a.(*configv1beta1.CredentialProvider), b.(*config.CredentialProvider), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.CredentialProviderConfig)(nil), (*v1beta1.CredentialProviderConfig)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(a.(*config.CredentialProviderConfig), b.(*v1beta1.CredentialProviderConfig), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.CredentialProviderConfig)(nil), (*config.CredentialProviderConfig)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(a.(*configv1beta1.CredentialProviderConfig), b.(*config.CredentialProviderConfig), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.ExecEnvVar)(nil), (*config.ExecEnvVar)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(a.(*v1beta1.ExecEnvVar), b.(*config.ExecEnvVar), scope)
+	if err := s.AddGeneratedConversionFunc((*config.CredentialProviderConfig)(nil), (*configv1beta1.CredentialProviderConfig)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(a.(*config.CredentialProviderConfig), b.(*configv1beta1.CredentialProviderConfig), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.ExecEnvVar)(nil), (*v1beta1.ExecEnvVar)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(a.(*config.ExecEnvVar), b.(*v1beta1.ExecEnvVar), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ExecEnvVar)(nil), (*config.ExecEnvVar)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(a.(*configv1beta1.ExecEnvVar), b.(*config.ExecEnvVar), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletAnonymousAuthentication)(nil), (*config.KubeletAnonymousAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(a.(*v1beta1.KubeletAnonymousAuthentication), b.(*config.KubeletAnonymousAuthentication), scope)
+	if err := s.AddGeneratedConversionFunc((*config.ExecEnvVar)(nil), (*configv1beta1.ExecEnvVar)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(a.(*config.ExecEnvVar), b.(*configv1beta1.ExecEnvVar), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletAnonymousAuthentication)(nil), (*v1beta1.KubeletAnonymousAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(a.(*config.KubeletAnonymousAuthentication), b.(*v1beta1.KubeletAnonymousAuthentication), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ImagePullCredentials)(nil), (*config.ImagePullCredentials)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ImagePullCredentials_To_config_ImagePullCredentials(a.(*configv1beta1.ImagePullCredentials), b.(*config.ImagePullCredentials), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletAuthentication)(nil), (*config.KubeletAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(a.(*v1beta1.KubeletAuthentication), b.(*config.KubeletAuthentication), scope)
+	if err := s.AddGeneratedConversionFunc((*config.ImagePullCredentials)(nil), (*configv1beta1.ImagePullCredentials)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ImagePullCredentials_To_v1beta1_ImagePullCredentials(a.(*config.ImagePullCredentials), b.(*configv1beta1.ImagePullCredentials), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletAuthentication)(nil), (*v1beta1.KubeletAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(a.(*config.KubeletAuthentication), b.(*v1beta1.KubeletAuthentication), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ImagePullIntent)(nil), (*config.ImagePullIntent)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ImagePullIntent_To_config_ImagePullIntent(a.(*configv1beta1.ImagePullIntent), b.(*config.ImagePullIntent), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletAuthorization)(nil), (*config.KubeletAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(a.(*v1beta1.KubeletAuthorization), b.(*config.KubeletAuthorization), scope)
+	if err := s.AddGeneratedConversionFunc((*config.ImagePullIntent)(nil), (*configv1beta1.ImagePullIntent)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ImagePullIntent_To_v1beta1_ImagePullIntent(a.(*config.ImagePullIntent), b.(*configv1beta1.ImagePullIntent), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletAuthorization)(nil), (*v1beta1.KubeletAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(a.(*config.KubeletAuthorization), b.(*v1beta1.KubeletAuthorization), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ImagePullSecret)(nil), (*config.ImagePullSecret)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ImagePullSecret_To_config_ImagePullSecret(a.(*configv1beta1.ImagePullSecret), b.(*config.ImagePullSecret), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletConfiguration)(nil), (*config.KubeletConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(a.(*v1beta1.KubeletConfiguration), b.(*config.KubeletConfiguration), scope)
+	if err := s.AddGeneratedConversionFunc((*config.ImagePullSecret)(nil), (*configv1beta1.ImagePullSecret)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ImagePullSecret_To_v1beta1_ImagePullSecret(a.(*config.ImagePullSecret), b.(*configv1beta1.ImagePullSecret), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletConfiguration)(nil), (*v1beta1.KubeletConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(a.(*config.KubeletConfiguration), b.(*v1beta1.KubeletConfiguration), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ImagePullServiceAccount)(nil), (*config.ImagePullServiceAccount)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ImagePullServiceAccount_To_config_ImagePullServiceAccount(a.(*configv1beta1.ImagePullServiceAccount), b.(*config.ImagePullServiceAccount), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletWebhookAuthentication)(nil), (*config.KubeletWebhookAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(a.(*v1beta1.KubeletWebhookAuthentication), b.(*config.KubeletWebhookAuthentication), scope)
+	if err := s.AddGeneratedConversionFunc((*config.ImagePullServiceAccount)(nil), (*configv1beta1.ImagePullServiceAccount)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ImagePullServiceAccount_To_v1beta1_ImagePullServiceAccount(a.(*config.ImagePullServiceAccount), b.(*configv1beta1.ImagePullServiceAccount), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletWebhookAuthentication)(nil), (*v1beta1.KubeletWebhookAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(a.(*config.KubeletWebhookAuthentication), b.(*v1beta1.KubeletWebhookAuthentication), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ImagePulledRecord)(nil), (*config.ImagePulledRecord)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ImagePulledRecord_To_config_ImagePulledRecord(a.(*configv1beta1.ImagePulledRecord), b.(*config.ImagePulledRecord), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletWebhookAuthorization)(nil), (*config.KubeletWebhookAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(a.(*v1beta1.KubeletWebhookAuthorization), b.(*config.KubeletWebhookAuthorization), scope)
+	if err := s.AddGeneratedConversionFunc((*config.ImagePulledRecord)(nil), (*configv1beta1.ImagePulledRecord)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ImagePulledRecord_To_v1beta1_ImagePulledRecord(a.(*config.ImagePulledRecord), b.(*configv1beta1.ImagePulledRecord), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletWebhookAuthorization)(nil), (*v1beta1.KubeletWebhookAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(a.(*config.KubeletWebhookAuthorization), b.(*v1beta1.KubeletWebhookAuthorization), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletAnonymousAuthentication)(nil), (*config.KubeletAnonymousAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(a.(*configv1beta1.KubeletAnonymousAuthentication), b.(*config.KubeletAnonymousAuthentication), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.KubeletX509Authentication)(nil), (*config.KubeletX509Authentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(a.(*v1beta1.KubeletX509Authentication), b.(*config.KubeletX509Authentication), scope)
+	if err := s.AddGeneratedConversionFunc((*config.KubeletAnonymousAuthentication)(nil), (*configv1beta1.KubeletAnonymousAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(a.(*config.KubeletAnonymousAuthentication), b.(*configv1beta1.KubeletAnonymousAuthentication), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeletX509Authentication)(nil), (*v1beta1.KubeletX509Authentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(a.(*config.KubeletX509Authentication), b.(*v1beta1.KubeletX509Authentication), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletAuthentication)(nil), (*config.KubeletAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(a.(*configv1beta1.KubeletAuthentication), b.(*config.KubeletAuthentication), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.MemoryReservation)(nil), (*config.MemoryReservation)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_MemoryReservation_To_config_MemoryReservation(a.(*v1beta1.MemoryReservation), b.(*config.MemoryReservation), scope)
+	if err := s.AddGeneratedConversionFunc((*config.KubeletAuthentication)(nil), (*configv1beta1.KubeletAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(a.(*config.KubeletAuthentication), b.(*configv1beta1.KubeletAuthentication), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.MemoryReservation)(nil), (*v1beta1.MemoryReservation)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_MemoryReservation_To_v1beta1_MemoryReservation(a.(*config.MemoryReservation), b.(*v1beta1.MemoryReservation), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletAuthorization)(nil), (*config.KubeletAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(a.(*configv1beta1.KubeletAuthorization), b.(*config.KubeletAuthorization), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.MemorySwapConfiguration)(nil), (*config.MemorySwapConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(a.(*v1beta1.MemorySwapConfiguration), b.(*config.MemorySwapConfiguration), scope)
+	if err := s.AddGeneratedConversionFunc((*config.KubeletAuthorization)(nil), (*configv1beta1.KubeletAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(a.(*config.KubeletAuthorization), b.(*configv1beta1.KubeletAuthorization), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.MemorySwapConfiguration)(nil), (*v1beta1.MemorySwapConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(a.(*config.MemorySwapConfiguration), b.(*v1beta1.MemorySwapConfiguration), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletConfiguration)(nil), (*config.KubeletConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(a.(*configv1beta1.KubeletConfiguration), b.(*config.KubeletConfiguration), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.SerializedNodeConfigSource)(nil), (*config.SerializedNodeConfigSource)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(a.(*v1beta1.SerializedNodeConfigSource), b.(*config.SerializedNodeConfigSource), scope)
+	if err := s.AddGeneratedConversionFunc((*config.KubeletConfiguration)(nil), (*configv1beta1.KubeletConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(a.(*config.KubeletConfiguration), b.(*configv1beta1.KubeletConfiguration), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.SerializedNodeConfigSource)(nil), (*v1beta1.SerializedNodeConfigSource)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(a.(*config.SerializedNodeConfigSource), b.(*v1beta1.SerializedNodeConfigSource), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletWebhookAuthentication)(nil), (*config.KubeletWebhookAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(a.(*configv1beta1.KubeletWebhookAuthentication), b.(*config.KubeletWebhookAuthentication), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1beta1.ShutdownGracePeriodByPodPriority)(nil), (*config.ShutdownGracePeriodByPodPriority)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(a.(*v1beta1.ShutdownGracePeriodByPodPriority), b.(*config.ShutdownGracePeriodByPodPriority), scope)
+	if err := s.AddGeneratedConversionFunc((*config.KubeletWebhookAuthentication)(nil), (*configv1beta1.KubeletWebhookAuthentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(a.(*config.KubeletWebhookAuthentication), b.(*configv1beta1.KubeletWebhookAuthentication), scope)
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*config.ShutdownGracePeriodByPodPriority)(nil), (*v1beta1.ShutdownGracePeriodByPodPriority)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(a.(*config.ShutdownGracePeriodByPodPriority), b.(*v1beta1.ShutdownGracePeriodByPodPriority), scope)
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletWebhookAuthorization)(nil), (*config.KubeletWebhookAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(a.(*configv1beta1.KubeletWebhookAuthorization), b.(*config.KubeletWebhookAuthorization), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.KubeletWebhookAuthorization)(nil), (*configv1beta1.KubeletWebhookAuthorization)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(a.(*config.KubeletWebhookAuthorization), b.(*configv1beta1.KubeletWebhookAuthorization), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.KubeletX509Authentication)(nil), (*config.KubeletX509Authentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(a.(*configv1beta1.KubeletX509Authentication), b.(*config.KubeletX509Authentication), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.KubeletX509Authentication)(nil), (*configv1beta1.KubeletX509Authentication)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(a.(*config.KubeletX509Authentication), b.(*configv1beta1.KubeletX509Authentication), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.MemoryReservation)(nil), (*config.MemoryReservation)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_MemoryReservation_To_config_MemoryReservation(a.(*configv1beta1.MemoryReservation), b.(*config.MemoryReservation), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.MemoryReservation)(nil), (*configv1beta1.MemoryReservation)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_MemoryReservation_To_v1beta1_MemoryReservation(a.(*config.MemoryReservation), b.(*configv1beta1.MemoryReservation), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.MemorySwapConfiguration)(nil), (*config.MemorySwapConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(a.(*configv1beta1.MemorySwapConfiguration), b.(*config.MemorySwapConfiguration), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.MemorySwapConfiguration)(nil), (*configv1beta1.MemorySwapConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(a.(*config.MemorySwapConfiguration), b.(*configv1beta1.MemorySwapConfiguration), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.SerializedNodeConfigSource)(nil), (*config.SerializedNodeConfigSource)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(a.(*configv1beta1.SerializedNodeConfigSource), b.(*config.SerializedNodeConfigSource), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.SerializedNodeConfigSource)(nil), (*configv1beta1.SerializedNodeConfigSource)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(a.(*config.SerializedNodeConfigSource), b.(*configv1beta1.SerializedNodeConfigSource), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.ShutdownGracePeriodByPodPriority)(nil), (*config.ShutdownGracePeriodByPodPriority)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(a.(*configv1beta1.ShutdownGracePeriodByPodPriority), b.(*config.ShutdownGracePeriodByPodPriority), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.ShutdownGracePeriodByPodPriority)(nil), (*configv1beta1.ShutdownGracePeriodByPodPriority)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(a.(*config.ShutdownGracePeriodByPodPriority), b.(*configv1beta1.ShutdownGracePeriodByPodPriority), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*configv1beta1.UserNamespaces)(nil), (*config.UserNamespaces)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_UserNamespaces_To_config_UserNamespaces(a.(*configv1beta1.UserNamespaces), b.(*config.UserNamespaces), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.UserNamespaces)(nil), (*configv1beta1.UserNamespaces)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_UserNamespaces_To_v1beta1_UserNamespaces(a.(*config.UserNamespaces), b.(*configv1beta1.UserNamespaces), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc((*config.CredentialProvider)(nil), (*configv1beta1.CredentialProvider)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_CredentialProvider_To_v1beta1_CredentialProvider(a.(*config.CredentialProvider), b.(*configv1beta1.CredentialProvider), scope)
 	}); err != nil {
 		return err
 	}
 	return nil
 }
 
-func autoConvert_v1beta1_CredentialProvider_To_config_CredentialProvider(in *v1beta1.CredentialProvider, out *config.CredentialProvider, s conversion.Scope) error {
+func autoConvert_v1beta1_CrashLoopBackOffConfig_To_config_CrashLoopBackOffConfig(in *configv1beta1.CrashLoopBackOffConfig, out *config.CrashLoopBackOffConfig, s conversion.Scope) error {
+	*out = *(*config.CrashLoopBackOffConfig)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_v1beta1_CrashLoopBackOffConfig_To_config_CrashLoopBackOffConfig is an autogenerated conversion function.
+func Convert_v1beta1_CrashLoopBackOffConfig_To_config_CrashLoopBackOffConfig(in *configv1beta1.CrashLoopBackOffConfig, out *config.CrashLoopBackOffConfig, s conversion.Scope) error {
+	return autoConvert_v1beta1_CrashLoopBackOffConfig_To_config_CrashLoopBackOffConfig(in, out, s)
+}
+
+func autoConvert_config_CrashLoopBackOffConfig_To_v1beta1_CrashLoopBackOffConfig(in *config.CrashLoopBackOffConfig, out *configv1beta1.CrashLoopBackOffConfig, s conversion.Scope) error {
+	*out = *(*configv1beta1.CrashLoopBackOffConfig)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_config_CrashLoopBackOffConfig_To_v1beta1_CrashLoopBackOffConfig is an autogenerated conversion function.
+func Convert_config_CrashLoopBackOffConfig_To_v1beta1_CrashLoopBackOffConfig(in *config.CrashLoopBackOffConfig, out *configv1beta1.CrashLoopBackOffConfig, s conversion.Scope) error {
+	return autoConvert_config_CrashLoopBackOffConfig_To_v1beta1_CrashLoopBackOffConfig(in, out, s)
+}
+
+func autoConvert_v1beta1_CredentialProvider_To_config_CredentialProvider(in *configv1beta1.CredentialProvider, out *config.CredentialProvider, s conversion.Scope) error {
 	out.Name = in.Name
 	out.MatchImages = *(*[]string)(unsafe.Pointer(&in.MatchImages))
 	out.DefaultCacheDuration = (*v1.Duration)(unsafe.Pointer(in.DefaultCacheDuration))
@@ -194,68 +284,186 @@ func autoConvert_v1beta1_CredentialProvider_To_config_CredentialProvider(in *v1b
 }
 
 // Convert_v1beta1_CredentialProvider_To_config_CredentialProvider is an autogenerated conversion function.
-func Convert_v1beta1_CredentialProvider_To_config_CredentialProvider(in *v1beta1.CredentialProvider, out *config.CredentialProvider, s conversion.Scope) error {
+func Convert_v1beta1_CredentialProvider_To_config_CredentialProvider(in *configv1beta1.CredentialProvider, out *config.CredentialProvider, s conversion.Scope) error {
 	return autoConvert_v1beta1_CredentialProvider_To_config_CredentialProvider(in, out, s)
 }
 
-func autoConvert_config_CredentialProvider_To_v1beta1_CredentialProvider(in *config.CredentialProvider, out *v1beta1.CredentialProvider, s conversion.Scope) error {
+func autoConvert_config_CredentialProvider_To_v1beta1_CredentialProvider(in *config.CredentialProvider, out *configv1beta1.CredentialProvider, s conversion.Scope) error {
 	out.Name = in.Name
 	out.MatchImages = *(*[]string)(unsafe.Pointer(&in.MatchImages))
 	out.DefaultCacheDuration = (*v1.Duration)(unsafe.Pointer(in.DefaultCacheDuration))
 	out.APIVersion = in.APIVersion
 	out.Args = *(*[]string)(unsafe.Pointer(&in.Args))
-	out.Env = *(*[]v1beta1.ExecEnvVar)(unsafe.Pointer(&in.Env))
+	out.Env = *(*[]configv1beta1.ExecEnvVar)(unsafe.Pointer(&in.Env))
+	// WARNING: in.TokenAttributes requires manual conversion: does not exist in peer-type
 	return nil
 }
 
-// Convert_config_CredentialProvider_To_v1beta1_CredentialProvider is an autogenerated conversion function.
-func Convert_config_CredentialProvider_To_v1beta1_CredentialProvider(in *config.CredentialProvider, out *v1beta1.CredentialProvider, s conversion.Scope) error {
-	return autoConvert_config_CredentialProvider_To_v1beta1_CredentialProvider(in, out, s)
-}
-
-func autoConvert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(in *v1beta1.CredentialProviderConfig, out *config.CredentialProviderConfig, s conversion.Scope) error {
-	out.Providers = *(*[]config.CredentialProvider)(unsafe.Pointer(&in.Providers))
+func autoConvert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(in *configv1beta1.CredentialProviderConfig, out *config.CredentialProviderConfig, s conversion.Scope) error {
+	if in.Providers != nil {
+		in, out := &in.Providers, &out.Providers
+		*out = make([]config.CredentialProvider, len(*in))
+		for i := range *in {
+			if err := Convert_v1beta1_CredentialProvider_To_config_CredentialProvider(&(*in)[i], &(*out)[i], s); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.Providers = nil
+	}
 	return nil
 }
 
 // Convert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig is an autogenerated conversion function.
-func Convert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(in *v1beta1.CredentialProviderConfig, out *config.CredentialProviderConfig, s conversion.Scope) error {
+func Convert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(in *configv1beta1.CredentialProviderConfig, out *config.CredentialProviderConfig, s conversion.Scope) error {
 	return autoConvert_v1beta1_CredentialProviderConfig_To_config_CredentialProviderConfig(in, out, s)
 }
 
-func autoConvert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(in *config.CredentialProviderConfig, out *v1beta1.CredentialProviderConfig, s conversion.Scope) error {
-	out.Providers = *(*[]v1beta1.CredentialProvider)(unsafe.Pointer(&in.Providers))
+func autoConvert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(in *config.CredentialProviderConfig, out *configv1beta1.CredentialProviderConfig, s conversion.Scope) error {
+	if in.Providers != nil {
+		in, out := &in.Providers, &out.Providers
+		*out = make([]configv1beta1.CredentialProvider, len(*in))
+		for i := range *in {
+			if err := Convert_config_CredentialProvider_To_v1beta1_CredentialProvider(&(*in)[i], &(*out)[i], s); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.Providers = nil
+	}
 	return nil
 }
 
 // Convert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig is an autogenerated conversion function.
-func Convert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(in *config.CredentialProviderConfig, out *v1beta1.CredentialProviderConfig, s conversion.Scope) error {
+func Convert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(in *config.CredentialProviderConfig, out *configv1beta1.CredentialProviderConfig, s conversion.Scope) error {
 	return autoConvert_config_CredentialProviderConfig_To_v1beta1_CredentialProviderConfig(in, out, s)
 }
 
-func autoConvert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(in *v1beta1.ExecEnvVar, out *config.ExecEnvVar, s conversion.Scope) error {
-	out.Name = in.Name
-	out.Value = in.Value
+func autoConvert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(in *configv1beta1.ExecEnvVar, out *config.ExecEnvVar, s conversion.Scope) error {
+	*out = *(*config.ExecEnvVar)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_ExecEnvVar_To_config_ExecEnvVar is an autogenerated conversion function.
-func Convert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(in *v1beta1.ExecEnvVar, out *config.ExecEnvVar, s conversion.Scope) error {
+func Convert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(in *configv1beta1.ExecEnvVar, out *config.ExecEnvVar, s conversion.Scope) error {
 	return autoConvert_v1beta1_ExecEnvVar_To_config_ExecEnvVar(in, out, s)
 }
 
-func autoConvert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(in *config.ExecEnvVar, out *v1beta1.ExecEnvVar, s conversion.Scope) error {
-	out.Name = in.Name
-	out.Value = in.Value
+func autoConvert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(in *config.ExecEnvVar, out *configv1beta1.ExecEnvVar, s conversion.Scope) error {
+	*out = *(*configv1beta1.ExecEnvVar)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_ExecEnvVar_To_v1beta1_ExecEnvVar is an autogenerated conversion function.
-func Convert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(in *config.ExecEnvVar, out *v1beta1.ExecEnvVar, s conversion.Scope) error {
+func Convert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(in *config.ExecEnvVar, out *configv1beta1.ExecEnvVar, s conversion.Scope) error {
 	return autoConvert_config_ExecEnvVar_To_v1beta1_ExecEnvVar(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(in *v1beta1.KubeletAnonymousAuthentication, out *config.KubeletAnonymousAuthentication, s conversion.Scope) error {
+func autoConvert_v1beta1_ImagePullCredentials_To_config_ImagePullCredentials(in *configv1beta1.ImagePullCredentials, out *config.ImagePullCredentials, s conversion.Scope) error {
+	*out = *(*config.ImagePullCredentials)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_v1beta1_ImagePullCredentials_To_config_ImagePullCredentials is an autogenerated conversion function.
+func Convert_v1beta1_ImagePullCredentials_To_config_ImagePullCredentials(in *configv1beta1.ImagePullCredentials, out *config.ImagePullCredentials, s conversion.Scope) error {
+	return autoConvert_v1beta1_ImagePullCredentials_To_config_ImagePullCredentials(in, out, s)
+}
+
+func autoConvert_config_ImagePullCredentials_To_v1beta1_ImagePullCredentials(in *config.ImagePullCredentials, out *configv1beta1.ImagePullCredentials, s conversion.Scope) error {
+	*out = *(*configv1beta1.ImagePullCredentials)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_config_ImagePullCredentials_To_v1beta1_ImagePullCredentials is an autogenerated conversion function.
+func Convert_config_ImagePullCredentials_To_v1beta1_ImagePullCredentials(in *config.ImagePullCredentials, out *configv1beta1.ImagePullCredentials, s conversion.Scope) error {
+	return autoConvert_config_ImagePullCredentials_To_v1beta1_ImagePullCredentials(in, out, s)
+}
+
+func autoConvert_v1beta1_ImagePullIntent_To_config_ImagePullIntent(in *configv1beta1.ImagePullIntent, out *config.ImagePullIntent, s conversion.Scope) error {
+	out.Image = in.Image
+	return nil
+}
+
+// Convert_v1beta1_ImagePullIntent_To_config_ImagePullIntent is an autogenerated conversion function.
+func Convert_v1beta1_ImagePullIntent_To_config_ImagePullIntent(in *configv1beta1.ImagePullIntent, out *config.ImagePullIntent, s conversion.Scope) error {
+	return autoConvert_v1beta1_ImagePullIntent_To_config_ImagePullIntent(in, out, s)
+}
+
+func autoConvert_config_ImagePullIntent_To_v1beta1_ImagePullIntent(in *config.ImagePullIntent, out *configv1beta1.ImagePullIntent, s conversion.Scope) error {
+	out.Image = in.Image
+	return nil
+}
+
+// Convert_config_ImagePullIntent_To_v1beta1_ImagePullIntent is an autogenerated conversion function.
+func Convert_config_ImagePullIntent_To_v1beta1_ImagePullIntent(in *config.ImagePullIntent, out *configv1beta1.ImagePullIntent, s conversion.Scope) error {
+	return autoConvert_config_ImagePullIntent_To_v1beta1_ImagePullIntent(in, out, s)
+}
+
+func autoConvert_v1beta1_ImagePullSecret_To_config_ImagePullSecret(in *configv1beta1.ImagePullSecret, out *config.ImagePullSecret, s conversion.Scope) error {
+	*out = *(*config.ImagePullSecret)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_v1beta1_ImagePullSecret_To_config_ImagePullSecret is an autogenerated conversion function.
+func Convert_v1beta1_ImagePullSecret_To_config_ImagePullSecret(in *configv1beta1.ImagePullSecret, out *config.ImagePullSecret, s conversion.Scope) error {
+	return autoConvert_v1beta1_ImagePullSecret_To_config_ImagePullSecret(in, out, s)
+}
+
+func autoConvert_config_ImagePullSecret_To_v1beta1_ImagePullSecret(in *config.ImagePullSecret, out *configv1beta1.ImagePullSecret, s conversion.Scope) error {
+	*out = *(*configv1beta1.ImagePullSecret)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_config_ImagePullSecret_To_v1beta1_ImagePullSecret is an autogenerated conversion function.
+func Convert_config_ImagePullSecret_To_v1beta1_ImagePullSecret(in *config.ImagePullSecret, out *configv1beta1.ImagePullSecret, s conversion.Scope) error {
+	return autoConvert_config_ImagePullSecret_To_v1beta1_ImagePullSecret(in, out, s)
+}
+
+func autoConvert_v1beta1_ImagePullServiceAccount_To_config_ImagePullServiceAccount(in *configv1beta1.ImagePullServiceAccount, out *config.ImagePullServiceAccount, s conversion.Scope) error {
+	*out = *(*config.ImagePullServiceAccount)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_v1beta1_ImagePullServiceAccount_To_config_ImagePullServiceAccount is an autogenerated conversion function.
+func Convert_v1beta1_ImagePullServiceAccount_To_config_ImagePullServiceAccount(in *configv1beta1.ImagePullServiceAccount, out *config.ImagePullServiceAccount, s conversion.Scope) error {
+	return autoConvert_v1beta1_ImagePullServiceAccount_To_config_ImagePullServiceAccount(in, out, s)
+}
+
+func autoConvert_config_ImagePullServiceAccount_To_v1beta1_ImagePullServiceAccount(in *config.ImagePullServiceAccount, out *configv1beta1.ImagePullServiceAccount, s conversion.Scope) error {
+	*out = *(*configv1beta1.ImagePullServiceAccount)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_config_ImagePullServiceAccount_To_v1beta1_ImagePullServiceAccount is an autogenerated conversion function.
+func Convert_config_ImagePullServiceAccount_To_v1beta1_ImagePullServiceAccount(in *config.ImagePullServiceAccount, out *configv1beta1.ImagePullServiceAccount, s conversion.Scope) error {
+	return autoConvert_config_ImagePullServiceAccount_To_v1beta1_ImagePullServiceAccount(in, out, s)
+}
+
+func autoConvert_v1beta1_ImagePulledRecord_To_config_ImagePulledRecord(in *configv1beta1.ImagePulledRecord, out *config.ImagePulledRecord, s conversion.Scope) error {
+	out.LastUpdatedTime = in.LastUpdatedTime
+	out.ImageRef = in.ImageRef
+	out.CredentialMapping = *(*map[string]config.ImagePullCredentials)(unsafe.Pointer(&in.CredentialMapping))
+	return nil
+}
+
+// Convert_v1beta1_ImagePulledRecord_To_config_ImagePulledRecord is an autogenerated conversion function.
+func Convert_v1beta1_ImagePulledRecord_To_config_ImagePulledRecord(in *configv1beta1.ImagePulledRecord, out *config.ImagePulledRecord, s conversion.Scope) error {
+	return autoConvert_v1beta1_ImagePulledRecord_To_config_ImagePulledRecord(in, out, s)
+}
+
+func autoConvert_config_ImagePulledRecord_To_v1beta1_ImagePulledRecord(in *config.ImagePulledRecord, out *configv1beta1.ImagePulledRecord, s conversion.Scope) error {
+	out.LastUpdatedTime = in.LastUpdatedTime
+	out.ImageRef = in.ImageRef
+	out.CredentialMapping = *(*map[string]configv1beta1.ImagePullCredentials)(unsafe.Pointer(&in.CredentialMapping))
+	return nil
+}
+
+// Convert_config_ImagePulledRecord_To_v1beta1_ImagePulledRecord is an autogenerated conversion function.
+func Convert_config_ImagePulledRecord_To_v1beta1_ImagePulledRecord(in *config.ImagePulledRecord, out *configv1beta1.ImagePulledRecord, s conversion.Scope) error {
+	return autoConvert_config_ImagePulledRecord_To_v1beta1_ImagePulledRecord(in, out, s)
+}
+
+func autoConvert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(in *configv1beta1.KubeletAnonymousAuthentication, out *config.KubeletAnonymousAuthentication, s conversion.Scope) error {
 	if err := v1.Convert_Pointer_bool_To_bool(&in.Enabled, &out.Enabled, s); err != nil {
 		return err
 	}
@@ -263,11 +471,11 @@ func autoConvert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymo
 }
 
 // Convert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication is an autogenerated conversion function.
-func Convert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(in *v1beta1.KubeletAnonymousAuthentication, out *config.KubeletAnonymousAuthentication, s conversion.Scope) error {
+func Convert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(in *configv1beta1.KubeletAnonymousAuthentication, out *config.KubeletAnonymousAuthentication, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletAnonymousAuthentication_To_config_KubeletAnonymousAuthentication(in, out, s)
 }
 
-func autoConvert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(in *config.KubeletAnonymousAuthentication, out *v1beta1.KubeletAnonymousAuthentication, s conversion.Scope) error {
+func autoConvert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(in *config.KubeletAnonymousAuthentication, out *configv1beta1.KubeletAnonymousAuthentication, s conversion.Scope) error {
 	if err := v1.Convert_bool_To_Pointer_bool(&in.Enabled, &out.Enabled, s); err != nil {
 		return err
 	}
@@ -275,11 +483,11 @@ func autoConvert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymo
 }
 
 // Convert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication is an autogenerated conversion function.
-func Convert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(in *config.KubeletAnonymousAuthentication, out *v1beta1.KubeletAnonymousAuthentication, s conversion.Scope) error {
+func Convert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(in *config.KubeletAnonymousAuthentication, out *configv1beta1.KubeletAnonymousAuthentication, s conversion.Scope) error {
 	return autoConvert_config_KubeletAnonymousAuthentication_To_v1beta1_KubeletAnonymousAuthentication(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(in *v1beta1.KubeletAuthentication, out *config.KubeletAuthentication, s conversion.Scope) error {
+func autoConvert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(in *configv1beta1.KubeletAuthentication, out *config.KubeletAuthentication, s conversion.Scope) error {
 	if err := Convert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(&in.X509, &out.X509, s); err != nil {
 		return err
 	}
@@ -293,11 +501,11 @@ func autoConvert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(i
 }
 
 // Convert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication is an autogenerated conversion function.
-func Convert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(in *v1beta1.KubeletAuthentication, out *config.KubeletAuthentication, s conversion.Scope) error {
+func Convert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(in *configv1beta1.KubeletAuthentication, out *config.KubeletAuthentication, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletAuthentication_To_config_KubeletAuthentication(in, out, s)
 }
 
-func autoConvert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(in *config.KubeletAuthentication, out *v1beta1.KubeletAuthentication, s conversion.Scope) error {
+func autoConvert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(in *config.KubeletAuthentication, out *configv1beta1.KubeletAuthentication, s conversion.Scope) error {
 	if err := Convert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(&in.X509, &out.X509, s); err != nil {
 		return err
 	}
@@ -311,41 +519,36 @@ func autoConvert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(i
 }
 
 // Convert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication is an autogenerated conversion function.
-func Convert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(in *config.KubeletAuthentication, out *v1beta1.KubeletAuthentication, s conversion.Scope) error {
+func Convert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(in *config.KubeletAuthentication, out *configv1beta1.KubeletAuthentication, s conversion.Scope) error {
 	return autoConvert_config_KubeletAuthentication_To_v1beta1_KubeletAuthentication(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(in *v1beta1.KubeletAuthorization, out *config.KubeletAuthorization, s conversion.Scope) error {
-	out.Mode = config.KubeletAuthorizationMode(in.Mode)
-	if err := Convert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(&in.Webhook, &out.Webhook, s); err != nil {
-		return err
-	}
+func autoConvert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(in *configv1beta1.KubeletAuthorization, out *config.KubeletAuthorization, s conversion.Scope) error {
+	*out = *(*config.KubeletAuthorization)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization is an autogenerated conversion function.
-func Convert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(in *v1beta1.KubeletAuthorization, out *config.KubeletAuthorization, s conversion.Scope) error {
+func Convert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(in *configv1beta1.KubeletAuthorization, out *config.KubeletAuthorization, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletAuthorization_To_config_KubeletAuthorization(in, out, s)
 }
 
-func autoConvert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(in *config.KubeletAuthorization, out *v1beta1.KubeletAuthorization, s conversion.Scope) error {
-	out.Mode = v1beta1.KubeletAuthorizationMode(in.Mode)
-	if err := Convert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(&in.Webhook, &out.Webhook, s); err != nil {
-		return err
-	}
+func autoConvert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(in *config.KubeletAuthorization, out *configv1beta1.KubeletAuthorization, s conversion.Scope) error {
+	*out = *(*configv1beta1.KubeletAuthorization)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization is an autogenerated conversion function.
-func Convert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(in *config.KubeletAuthorization, out *v1beta1.KubeletAuthorization, s conversion.Scope) error {
+func Convert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(in *config.KubeletAuthorization, out *configv1beta1.KubeletAuthorization, s conversion.Scope) error {
 	return autoConvert_config_KubeletAuthorization_To_v1beta1_KubeletAuthorization(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in *v1beta1.KubeletConfiguration, out *config.KubeletConfiguration, s conversion.Scope) error {
+func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in *configv1beta1.KubeletConfiguration, out *config.KubeletConfiguration, s conversion.Scope) error {
 	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableServer, &out.EnableServer, s); err != nil {
 		return err
 	}
 	out.StaticPodPath = in.StaticPodPath
+	out.PodLogsDir = in.PodLogsDir
 	out.SyncFrequency = in.SyncFrequency
 	out.FileCheckFrequency = in.FileCheckFrequency
 	out.HTTPCheckFrequency = in.HTTPCheckFrequency
@@ -357,6 +560,7 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 	out.TLSCertFile = in.TLSCertFile
 	out.TLSPrivateKeyFile = in.TLSPrivateKeyFile
 	out.TLSCipherSuites = *(*[]string)(unsafe.Pointer(&in.TLSCipherSuites))
+	out.TLSCurvePreferences = *(*[]int32)(unsafe.Pointer(&in.TLSCurvePreferences))
 	out.TLSMinVersion = in.TLSMinVersion
 	out.RotateCertificates = in.RotateCertificates
 	out.ServerTLSBootstrap = in.ServerTLSBootstrap
@@ -370,6 +574,8 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 		return err
 	}
 	out.RegistryBurst = in.RegistryBurst
+	out.ImagePullCredentialsVerificationPolicy = string(in.ImagePullCredentialsVerificationPolicy)
+	out.PreloadedImagesVerificationAllowlist = *(*[]string)(unsafe.Pointer(&in.PreloadedImagesVerificationAllowlist))
 	if err := v1.Convert_Pointer_int32_To_int32(&in.EventRecordQPS, &out.EventRecordQPS, s); err != nil {
 		return err
 	}
@@ -392,6 +598,7 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 	out.NodeStatusReportFrequency = in.NodeStatusReportFrequency
 	out.NodeLeaseDurationSeconds = in.NodeLeaseDurationSeconds
 	out.ImageMinimumGCAge = in.ImageMinimumGCAge
+	out.ImageMaximumGCAge = in.ImageMaximumGCAge
 	if err := v1.Convert_Pointer_int32_To_int32(&in.ImageGCHighThresholdPercent, &out.ImageGCHighThresholdPercent, s); err != nil {
 		return err
 	}
@@ -407,11 +614,13 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 	}
 	out.CgroupDriver = in.CgroupDriver
 	out.CPUManagerPolicy = in.CPUManagerPolicy
+	out.SingleProcessOOMKill = (*bool)(unsafe.Pointer(in.SingleProcessOOMKill))
 	out.CPUManagerPolicyOptions = *(*map[string]string)(unsafe.Pointer(&in.CPUManagerPolicyOptions))
 	out.CPUManagerReconcilePeriod = in.CPUManagerReconcilePeriod
 	out.MemoryManagerPolicy = in.MemoryManagerPolicy
 	out.TopologyManagerPolicy = in.TopologyManagerPolicy
 	out.TopologyManagerScope = in.TopologyManagerScope
+	out.TopologyManagerPolicyOptions = *(*map[string]string)(unsafe.Pointer(&in.TopologyManagerPolicyOptions))
 	out.QOSReserved = *(*map[string]string)(unsafe.Pointer(&in.QOSReserved))
 	out.RuntimeRequestTimeout = in.RuntimeRequestTimeout
 	out.HairpinMode = in.HairpinMode
@@ -442,12 +651,16 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 	if err := v1.Convert_Pointer_bool_To_bool(&in.SerializeImagePulls, &out.SerializeImagePulls, s); err != nil {
 		return err
 	}
+	out.MaxParallelImagePulls = (*int32)(unsafe.Pointer(in.MaxParallelImagePulls))
 	out.EvictionHard = *(*map[string]string)(unsafe.Pointer(&in.EvictionHard))
 	out.EvictionSoft = *(*map[string]string)(unsafe.Pointer(&in.EvictionSoft))
 	out.EvictionSoftGracePeriod = *(*map[string]string)(unsafe.Pointer(&in.EvictionSoftGracePeriod))
 	out.EvictionPressureTransitionPeriod = in.EvictionPressureTransitionPeriod
 	out.EvictionMaxPodGracePeriod = in.EvictionMaxPodGracePeriod
 	out.EvictionMinimumReclaim = *(*map[string]string)(unsafe.Pointer(&in.EvictionMinimumReclaim))
+	if err := v1.Convert_Pointer_bool_To_bool(&in.MergeDefaultEvictionSettings, &out.MergeDefaultEvictionSettings, s); err != nil {
+		return err
+	}
 	out.PodsPerCore = in.PodsPerCore
 	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableControllerAttachDetach, &out.EnableControllerAttachDetach, s); err != nil {
 		return err
@@ -473,6 +686,12 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 	if err := v1.Convert_Pointer_int32_To_int32(&in.ContainerLogMaxFiles, &out.ContainerLogMaxFiles, s); err != nil {
 		return err
 	}
+	if err := v1.Convert_Pointer_int32_To_int32(&in.ContainerLogMaxWorkers, &out.ContainerLogMaxWorkers, s); err != nil {
+		return err
+	}
+	if err := v1.Convert_Pointer_v1_Duration_To_v1_Duration(&in.ContainerLogMonitorInterval, &out.ContainerLogMonitorInterval, s); err != nil {
+		return err
+	}
 	out.ConfigMapAndSecretChangeDetectionStrategy = config.ResourceChangeDetectionStrategy(in.ConfigMapAndSecretChangeDetectionStrategy)
 	out.SystemReserved = *(*map[string]string)(unsafe.Pointer(&in.SystemReserved))
 	out.KubeReserved = *(*map[string]string)(unsafe.Pointer(&in.KubeReserved))
@@ -482,18 +701,23 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 	out.KubeReservedCgroup = in.KubeReservedCgroup
 	out.EnforceNodeAllocatable = *(*[]string)(unsafe.Pointer(&in.EnforceNodeAllocatable))
 	out.AllowedUnsafeSysctls = *(*[]string)(unsafe.Pointer(&in.AllowedUnsafeSysctls))
+	out.DefaultPodSysctls = *(*map[string]string)(unsafe.Pointer(&in.DefaultPodSysctls))
 	out.VolumePluginDir = in.VolumePluginDir
 	out.ProviderID = in.ProviderID
 	out.KernelMemcgNotification = in.KernelMemcgNotification
-	if err := v1alpha1.Convert_v1alpha1_LoggingConfiguration_To_config_LoggingConfiguration(&in.Logging, &out.Logging, s); err != nil {
+	out.Logging = in.Logging
+	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableSystemLogHandler, &out.EnableSystemLogHandler, s); err != nil {
 		return err
 	}
-	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableSystemLogHandler, &out.EnableSystemLogHandler, s); err != nil {
+	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableSystemLogQuery, &out.EnableSystemLogQuery, s); err != nil {
 		return err
 	}
 	out.ShutdownGracePeriod = in.ShutdownGracePeriod
 	out.ShutdownGracePeriodCriticalPods = in.ShutdownGracePeriodCriticalPods
 	out.ShutdownGracePeriodByPodPriority = *(*[]config.ShutdownGracePeriodByPodPriority)(unsafe.Pointer(&in.ShutdownGracePeriodByPodPriority))
+	if err := Convert_v1beta1_CrashLoopBackOffConfig_To_config_CrashLoopBackOffConfig(&in.CrashLoopBackOff, &out.CrashLoopBackOff, s); err != nil {
+		return err
+	}
 	out.ReservedMemory = *(*[]config.MemoryReservation)(unsafe.Pointer(&in.ReservedMemory))
 	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableProfilingHandler, &out.EnableProfilingHandler, s); err != nil {
 		return err
@@ -505,23 +729,35 @@ func autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in 
 		return err
 	}
 	out.MemoryThrottlingFactor = (*float64)(unsafe.Pointer(in.MemoryThrottlingFactor))
+	out.MemoryReservationPolicy = config.MemoryReservationPolicy(in.MemoryReservationPolicy)
 	out.RegisterWithTaints = *(*[]corev1.Taint)(unsafe.Pointer(&in.RegisterWithTaints))
 	if err := v1.Convert_Pointer_bool_To_bool(&in.RegisterNode, &out.RegisterNode, s); err != nil {
 		return err
 	}
+	out.Tracing = (*apiv1.TracingConfiguration)(unsafe.Pointer(in.Tracing))
+	if err := v1.Convert_Pointer_bool_To_bool(&in.LocalStorageCapacityIsolation, &out.LocalStorageCapacityIsolation, s); err != nil {
+		return err
+	}
+	out.ContainerRuntimeEndpoint = in.ContainerRuntimeEndpoint
+	out.ImageServiceEndpoint = in.ImageServiceEndpoint
+	if err := v1.Convert_Pointer_bool_To_bool(&in.FailCgroupV1, &out.FailCgroupV1, s); err != nil {
+		return err
+	}
+	out.UserNamespaces = (*config.UserNamespaces)(unsafe.Pointer(in.UserNamespaces))
 	return nil
 }
 
 // Convert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration is an autogenerated conversion function.
-func Convert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in *v1beta1.KubeletConfiguration, out *config.KubeletConfiguration, s conversion.Scope) error {
+func Convert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in *configv1beta1.KubeletConfiguration, out *config.KubeletConfiguration, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletConfiguration_To_config_KubeletConfiguration(in, out, s)
 }
 
-func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in *config.KubeletConfiguration, out *v1beta1.KubeletConfiguration, s conversion.Scope) error {
+func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in *config.KubeletConfiguration, out *configv1beta1.KubeletConfiguration, s conversion.Scope) error {
 	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableServer, &out.EnableServer, s); err != nil {
 		return err
 	}
 	out.StaticPodPath = in.StaticPodPath
+	out.PodLogsDir = in.PodLogsDir
 	out.SyncFrequency = in.SyncFrequency
 	out.FileCheckFrequency = in.FileCheckFrequency
 	out.HTTPCheckFrequency = in.HTTPCheckFrequency
@@ -535,6 +771,7 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 	out.TLSCertFile = in.TLSCertFile
 	out.TLSPrivateKeyFile = in.TLSPrivateKeyFile
 	out.TLSCipherSuites = *(*[]string)(unsafe.Pointer(&in.TLSCipherSuites))
+	out.TLSCurvePreferences = *(*[]int32)(unsafe.Pointer(&in.TLSCurvePreferences))
 	out.TLSMinVersion = in.TLSMinVersion
 	out.RotateCertificates = in.RotateCertificates
 	out.ServerTLSBootstrap = in.ServerTLSBootstrap
@@ -548,6 +785,8 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 		return err
 	}
 	out.RegistryBurst = in.RegistryBurst
+	out.ImagePullCredentialsVerificationPolicy = configv1beta1.ImagePullCredentialsVerificationPolicy(in.ImagePullCredentialsVerificationPolicy)
+	out.PreloadedImagesVerificationAllowlist = *(*[]string)(unsafe.Pointer(&in.PreloadedImagesVerificationAllowlist))
 	if err := v1.Convert_int32_To_Pointer_int32(&in.EventRecordQPS, &out.EventRecordQPS, s); err != nil {
 		return err
 	}
@@ -570,6 +809,7 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 	out.NodeStatusReportFrequency = in.NodeStatusReportFrequency
 	out.NodeLeaseDurationSeconds = in.NodeLeaseDurationSeconds
 	out.ImageMinimumGCAge = in.ImageMinimumGCAge
+	out.ImageMaximumGCAge = in.ImageMaximumGCAge
 	if err := v1.Convert_int32_To_Pointer_int32(&in.ImageGCHighThresholdPercent, &out.ImageGCHighThresholdPercent, s); err != nil {
 		return err
 	}
@@ -584,12 +824,14 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 		return err
 	}
 	out.CgroupDriver = in.CgroupDriver
+	out.SingleProcessOOMKill = (*bool)(unsafe.Pointer(in.SingleProcessOOMKill))
 	out.CPUManagerPolicy = in.CPUManagerPolicy
 	out.CPUManagerPolicyOptions = *(*map[string]string)(unsafe.Pointer(&in.CPUManagerPolicyOptions))
 	out.CPUManagerReconcilePeriod = in.CPUManagerReconcilePeriod
 	out.MemoryManagerPolicy = in.MemoryManagerPolicy
 	out.TopologyManagerPolicy = in.TopologyManagerPolicy
 	out.TopologyManagerScope = in.TopologyManagerScope
+	out.TopologyManagerPolicyOptions = *(*map[string]string)(unsafe.Pointer(&in.TopologyManagerPolicyOptions))
 	out.QOSReserved = *(*map[string]string)(unsafe.Pointer(&in.QOSReserved))
 	out.RuntimeRequestTimeout = in.RuntimeRequestTimeout
 	out.HairpinMode = in.HairpinMode
@@ -620,12 +862,16 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 	if err := v1.Convert_bool_To_Pointer_bool(&in.SerializeImagePulls, &out.SerializeImagePulls, s); err != nil {
 		return err
 	}
+	out.MaxParallelImagePulls = (*int32)(unsafe.Pointer(in.MaxParallelImagePulls))
 	out.EvictionHard = *(*map[string]string)(unsafe.Pointer(&in.EvictionHard))
 	out.EvictionSoft = *(*map[string]string)(unsafe.Pointer(&in.EvictionSoft))
 	out.EvictionSoftGracePeriod = *(*map[string]string)(unsafe.Pointer(&in.EvictionSoftGracePeriod))
 	out.EvictionPressureTransitionPeriod = in.EvictionPressureTransitionPeriod
 	out.EvictionMaxPodGracePeriod = in.EvictionMaxPodGracePeriod
 	out.EvictionMinimumReclaim = *(*map[string]string)(unsafe.Pointer(&in.EvictionMinimumReclaim))
+	if err := v1.Convert_bool_To_Pointer_bool(&in.MergeDefaultEvictionSettings, &out.MergeDefaultEvictionSettings, s); err != nil {
+		return err
+	}
 	out.PodsPerCore = in.PodsPerCore
 	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableControllerAttachDetach, &out.EnableControllerAttachDetach, s); err != nil {
 		return err
@@ -651,8 +897,15 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 	if err := v1.Convert_int32_To_Pointer_int32(&in.ContainerLogMaxFiles, &out.ContainerLogMaxFiles, s); err != nil {
 		return err
 	}
-	out.ConfigMapAndSecretChangeDetectionStrategy = v1beta1.ResourceChangeDetectionStrategy(in.ConfigMapAndSecretChangeDetectionStrategy)
+	if err := v1.Convert_int32_To_Pointer_int32(&in.ContainerLogMaxWorkers, &out.ContainerLogMaxWorkers, s); err != nil {
+		return err
+	}
+	if err := v1.Convert_v1_Duration_To_Pointer_v1_Duration(&in.ContainerLogMonitorInterval, &out.ContainerLogMonitorInterval, s); err != nil {
+		return err
+	}
+	out.ConfigMapAndSecretChangeDetectionStrategy = configv1beta1.ResourceChangeDetectionStrategy(in.ConfigMapAndSecretChangeDetectionStrategy)
 	out.AllowedUnsafeSysctls = *(*[]string)(unsafe.Pointer(&in.AllowedUnsafeSysctls))
+	out.DefaultPodSysctls = *(*map[string]string)(unsafe.Pointer(&in.DefaultPodSysctls))
 	out.KernelMemcgNotification = in.KernelMemcgNotification
 	out.SystemReserved = *(*map[string]string)(unsafe.Pointer(&in.SystemReserved))
 	out.KubeReserved = *(*map[string]string)(unsafe.Pointer(&in.KubeReserved))
@@ -661,16 +914,17 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 	out.EnforceNodeAllocatable = *(*[]string)(unsafe.Pointer(&in.EnforceNodeAllocatable))
 	out.ReservedSystemCPUs = in.ReservedSystemCPUs
 	out.ShowHiddenMetricsForVersion = in.ShowHiddenMetricsForVersion
-	if err := v1alpha1.Convert_config_LoggingConfiguration_To_v1alpha1_LoggingConfiguration(&in.Logging, &out.Logging, s); err != nil {
+	out.Logging = in.Logging
+	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableSystemLogHandler, &out.EnableSystemLogHandler, s); err != nil {
 		return err
 	}
-	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableSystemLogHandler, &out.EnableSystemLogHandler, s); err != nil {
+	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableSystemLogQuery, &out.EnableSystemLogQuery, s); err != nil {
 		return err
 	}
 	out.ShutdownGracePeriod = in.ShutdownGracePeriod
 	out.ShutdownGracePeriodCriticalPods = in.ShutdownGracePeriodCriticalPods
-	out.ShutdownGracePeriodByPodPriority = *(*[]v1beta1.ShutdownGracePeriodByPodPriority)(unsafe.Pointer(&in.ShutdownGracePeriodByPodPriority))
-	out.ReservedMemory = *(*[]v1beta1.MemoryReservation)(unsafe.Pointer(&in.ReservedMemory))
+	out.ShutdownGracePeriodByPodPriority = *(*[]configv1beta1.ShutdownGracePeriodByPodPriority)(unsafe.Pointer(&in.ShutdownGracePeriodByPodPriority))
+	out.ReservedMemory = *(*[]configv1beta1.MemoryReservation)(unsafe.Pointer(&in.ReservedMemory))
 	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableProfilingHandler, &out.EnableProfilingHandler, s); err != nil {
 		return err
 	}
@@ -681,19 +935,33 @@ func autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in 
 		return err
 	}
 	out.MemoryThrottlingFactor = (*float64)(unsafe.Pointer(in.MemoryThrottlingFactor))
+	out.MemoryReservationPolicy = configv1beta1.MemoryReservationPolicy(in.MemoryReservationPolicy)
 	out.RegisterWithTaints = *(*[]corev1.Taint)(unsafe.Pointer(&in.RegisterWithTaints))
 	if err := v1.Convert_bool_To_Pointer_bool(&in.RegisterNode, &out.RegisterNode, s); err != nil {
 		return err
 	}
+	out.Tracing = (*apiv1.TracingConfiguration)(unsafe.Pointer(in.Tracing))
+	if err := v1.Convert_bool_To_Pointer_bool(&in.LocalStorageCapacityIsolation, &out.LocalStorageCapacityIsolation, s); err != nil {
+		return err
+	}
+	out.ContainerRuntimeEndpoint = in.ContainerRuntimeEndpoint
+	out.ImageServiceEndpoint = in.ImageServiceEndpoint
+	if err := v1.Convert_bool_To_Pointer_bool(&in.FailCgroupV1, &out.FailCgroupV1, s); err != nil {
+		return err
+	}
+	if err := Convert_config_CrashLoopBackOffConfig_To_v1beta1_CrashLoopBackOffConfig(&in.CrashLoopBackOff, &out.CrashLoopBackOff, s); err != nil {
+		return err
+	}
+	out.UserNamespaces = (*configv1beta1.UserNamespaces)(unsafe.Pointer(in.UserNamespaces))
 	return nil
 }
 
 // Convert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration is an autogenerated conversion function.
-func Convert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in *config.KubeletConfiguration, out *v1beta1.KubeletConfiguration, s conversion.Scope) error {
+func Convert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in *config.KubeletConfiguration, out *configv1beta1.KubeletConfiguration, s conversion.Scope) error {
 	return autoConvert_config_KubeletConfiguration_To_v1beta1_KubeletConfiguration(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(in *v1beta1.KubeletWebhookAuthentication, out *config.KubeletWebhookAuthentication, s conversion.Scope) error {
+func autoConvert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(in *configv1beta1.KubeletWebhookAuthentication, out *config.KubeletWebhookAuthentication, s conversion.Scope) error {
 	if err := v1.Convert_Pointer_bool_To_bool(&in.Enabled, &out.Enabled, s); err != nil {
 		return err
 	}
@@ -702,11 +970,11 @@ func autoConvert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAu
 }
 
 // Convert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication is an autogenerated conversion function.
-func Convert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(in *v1beta1.KubeletWebhookAuthentication, out *config.KubeletWebhookAuthentication, s conversion.Scope) error {
+func Convert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(in *configv1beta1.KubeletWebhookAuthentication, out *config.KubeletWebhookAuthentication, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletWebhookAuthentication_To_config_KubeletWebhookAuthentication(in, out, s)
 }
 
-func autoConvert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(in *config.KubeletWebhookAuthentication, out *v1beta1.KubeletWebhookAuthentication, s conversion.Scope) error {
+func autoConvert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(in *config.KubeletWebhookAuthentication, out *configv1beta1.KubeletWebhookAuthentication, s conversion.Scope) error {
 	if err := v1.Convert_bool_To_Pointer_bool(&in.Enabled, &out.Enabled, s); err != nil {
 		return err
 	}
@@ -715,132 +983,146 @@ func autoConvert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAu
 }
 
 // Convert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication is an autogenerated conversion function.
-func Convert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(in *config.KubeletWebhookAuthentication, out *v1beta1.KubeletWebhookAuthentication, s conversion.Scope) error {
+func Convert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(in *config.KubeletWebhookAuthentication, out *configv1beta1.KubeletWebhookAuthentication, s conversion.Scope) error {
 	return autoConvert_config_KubeletWebhookAuthentication_To_v1beta1_KubeletWebhookAuthentication(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(in *v1beta1.KubeletWebhookAuthorization, out *config.KubeletWebhookAuthorization, s conversion.Scope) error {
-	out.CacheAuthorizedTTL = in.CacheAuthorizedTTL
-	out.CacheUnauthorizedTTL = in.CacheUnauthorizedTTL
+func autoConvert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(in *configv1beta1.KubeletWebhookAuthorization, out *config.KubeletWebhookAuthorization, s conversion.Scope) error {
+	*out = *(*config.KubeletWebhookAuthorization)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization is an autogenerated conversion function.
-func Convert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(in *v1beta1.KubeletWebhookAuthorization, out *config.KubeletWebhookAuthorization, s conversion.Scope) error {
+func Convert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(in *configv1beta1.KubeletWebhookAuthorization, out *config.KubeletWebhookAuthorization, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletWebhookAuthorization_To_config_KubeletWebhookAuthorization(in, out, s)
 }
 
-func autoConvert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(in *config.KubeletWebhookAuthorization, out *v1beta1.KubeletWebhookAuthorization, s conversion.Scope) error {
-	out.CacheAuthorizedTTL = in.CacheAuthorizedTTL
-	out.CacheUnauthorizedTTL = in.CacheUnauthorizedTTL
+func autoConvert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(in *config.KubeletWebhookAuthorization, out *configv1beta1.KubeletWebhookAuthorization, s conversion.Scope) error {
+	*out = *(*configv1beta1.KubeletWebhookAuthorization)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization is an autogenerated conversion function.
-func Convert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(in *config.KubeletWebhookAuthorization, out *v1beta1.KubeletWebhookAuthorization, s conversion.Scope) error {
+func Convert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(in *config.KubeletWebhookAuthorization, out *configv1beta1.KubeletWebhookAuthorization, s conversion.Scope) error {
 	return autoConvert_config_KubeletWebhookAuthorization_To_v1beta1_KubeletWebhookAuthorization(in, out, s)
 }
 
-func autoConvert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(in *v1beta1.KubeletX509Authentication, out *config.KubeletX509Authentication, s conversion.Scope) error {
-	out.ClientCAFile = in.ClientCAFile
+func autoConvert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(in *configv1beta1.KubeletX509Authentication, out *config.KubeletX509Authentication, s conversion.Scope) error {
+	*out = *(*config.KubeletX509Authentication)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication is an autogenerated conversion function.
-func Convert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(in *v1beta1.KubeletX509Authentication, out *config.KubeletX509Authentication, s conversion.Scope) error {
+func Convert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(in *configv1beta1.KubeletX509Authentication, out *config.KubeletX509Authentication, s conversion.Scope) error {
 	return autoConvert_v1beta1_KubeletX509Authentication_To_config_KubeletX509Authentication(in, out, s)
 }
 
-func autoConvert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(in *config.KubeletX509Authentication, out *v1beta1.KubeletX509Authentication, s conversion.Scope) error {
-	out.ClientCAFile = in.ClientCAFile
+func autoConvert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(in *config.KubeletX509Authentication, out *configv1beta1.KubeletX509Authentication, s conversion.Scope) error {
+	*out = *(*configv1beta1.KubeletX509Authentication)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication is an autogenerated conversion function.
-func Convert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(in *config.KubeletX509Authentication, out *v1beta1.KubeletX509Authentication, s conversion.Scope) error {
+func Convert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(in *config.KubeletX509Authentication, out *configv1beta1.KubeletX509Authentication, s conversion.Scope) error {
 	return autoConvert_config_KubeletX509Authentication_To_v1beta1_KubeletX509Authentication(in, out, s)
 }
 
-func autoConvert_v1beta1_MemoryReservation_To_config_MemoryReservation(in *v1beta1.MemoryReservation, out *config.MemoryReservation, s conversion.Scope) error {
-	out.NumaNode = in.NumaNode
-	out.Limits = *(*corev1.ResourceList)(unsafe.Pointer(&in.Limits))
+func autoConvert_v1beta1_MemoryReservation_To_config_MemoryReservation(in *configv1beta1.MemoryReservation, out *config.MemoryReservation, s conversion.Scope) error {
+	*out = *(*config.MemoryReservation)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_MemoryReservation_To_config_MemoryReservation is an autogenerated conversion function.
-func Convert_v1beta1_MemoryReservation_To_config_MemoryReservation(in *v1beta1.MemoryReservation, out *config.MemoryReservation, s conversion.Scope) error {
+func Convert_v1beta1_MemoryReservation_To_config_MemoryReservation(in *configv1beta1.MemoryReservation, out *config.MemoryReservation, s conversion.Scope) error {
 	return autoConvert_v1beta1_MemoryReservation_To_config_MemoryReservation(in, out, s)
 }
 
-func autoConvert_config_MemoryReservation_To_v1beta1_MemoryReservation(in *config.MemoryReservation, out *v1beta1.MemoryReservation, s conversion.Scope) error {
-	out.NumaNode = in.NumaNode
-	out.Limits = *(*corev1.ResourceList)(unsafe.Pointer(&in.Limits))
+func autoConvert_config_MemoryReservation_To_v1beta1_MemoryReservation(in *config.MemoryReservation, out *configv1beta1.MemoryReservation, s conversion.Scope) error {
+	*out = *(*configv1beta1.MemoryReservation)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_MemoryReservation_To_v1beta1_MemoryReservation is an autogenerated conversion function.
-func Convert_config_MemoryReservation_To_v1beta1_MemoryReservation(in *config.MemoryReservation, out *v1beta1.MemoryReservation, s conversion.Scope) error {
+func Convert_config_MemoryReservation_To_v1beta1_MemoryReservation(in *config.MemoryReservation, out *configv1beta1.MemoryReservation, s conversion.Scope) error {
 	return autoConvert_config_MemoryReservation_To_v1beta1_MemoryReservation(in, out, s)
 }
 
-func autoConvert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(in *v1beta1.MemorySwapConfiguration, out *config.MemorySwapConfiguration, s conversion.Scope) error {
-	out.SwapBehavior = in.SwapBehavior
+func autoConvert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(in *configv1beta1.MemorySwapConfiguration, out *config.MemorySwapConfiguration, s conversion.Scope) error {
+	*out = *(*config.MemorySwapConfiguration)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration is an autogenerated conversion function.
-func Convert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(in *v1beta1.MemorySwapConfiguration, out *config.MemorySwapConfiguration, s conversion.Scope) error {
+func Convert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(in *configv1beta1.MemorySwapConfiguration, out *config.MemorySwapConfiguration, s conversion.Scope) error {
 	return autoConvert_v1beta1_MemorySwapConfiguration_To_config_MemorySwapConfiguration(in, out, s)
 }
 
-func autoConvert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(in *config.MemorySwapConfiguration, out *v1beta1.MemorySwapConfiguration, s conversion.Scope) error {
-	out.SwapBehavior = in.SwapBehavior
+func autoConvert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(in *config.MemorySwapConfiguration, out *configv1beta1.MemorySwapConfiguration, s conversion.Scope) error {
+	*out = *(*configv1beta1.MemorySwapConfiguration)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration is an autogenerated conversion function.
-func Convert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(in *config.MemorySwapConfiguration, out *v1beta1.MemorySwapConfiguration, s conversion.Scope) error {
+func Convert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(in *config.MemorySwapConfiguration, out *configv1beta1.MemorySwapConfiguration, s conversion.Scope) error {
 	return autoConvert_config_MemorySwapConfiguration_To_v1beta1_MemorySwapConfiguration(in, out, s)
 }
 
-func autoConvert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(in *v1beta1.SerializedNodeConfigSource, out *config.SerializedNodeConfigSource, s conversion.Scope) error {
+func autoConvert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(in *configv1beta1.SerializedNodeConfigSource, out *config.SerializedNodeConfigSource, s conversion.Scope) error {
 	out.Source = in.Source
 	return nil
 }
 
 // Convert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource is an autogenerated conversion function.
-func Convert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(in *v1beta1.SerializedNodeConfigSource, out *config.SerializedNodeConfigSource, s conversion.Scope) error {
+func Convert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(in *configv1beta1.SerializedNodeConfigSource, out *config.SerializedNodeConfigSource, s conversion.Scope) error {
 	return autoConvert_v1beta1_SerializedNodeConfigSource_To_config_SerializedNodeConfigSource(in, out, s)
 }
 
-func autoConvert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(in *config.SerializedNodeConfigSource, out *v1beta1.SerializedNodeConfigSource, s conversion.Scope) error {
+func autoConvert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(in *config.SerializedNodeConfigSource, out *configv1beta1.SerializedNodeConfigSource, s conversion.Scope) error {
 	out.Source = in.Source
 	return nil
 }
 
 // Convert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource is an autogenerated conversion function.
-func Convert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(in *config.SerializedNodeConfigSource, out *v1beta1.SerializedNodeConfigSource, s conversion.Scope) error {
+func Convert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(in *config.SerializedNodeConfigSource, out *configv1beta1.SerializedNodeConfigSource, s conversion.Scope) error {
 	return autoConvert_config_SerializedNodeConfigSource_To_v1beta1_SerializedNodeConfigSource(in, out, s)
 }
 
-func autoConvert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(in *v1beta1.ShutdownGracePeriodByPodPriority, out *config.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
-	out.Priority = in.Priority
-	out.ShutdownGracePeriodSeconds = in.ShutdownGracePeriodSeconds
+func autoConvert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(in *configv1beta1.ShutdownGracePeriodByPodPriority, out *config.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
+	*out = *(*config.ShutdownGracePeriodByPodPriority)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority is an autogenerated conversion function.
-func Convert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(in *v1beta1.ShutdownGracePeriodByPodPriority, out *config.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
+func Convert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(in *configv1beta1.ShutdownGracePeriodByPodPriority, out *config.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
 	return autoConvert_v1beta1_ShutdownGracePeriodByPodPriority_To_config_ShutdownGracePeriodByPodPriority(in, out, s)
 }
 
-func autoConvert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(in *config.ShutdownGracePeriodByPodPriority, out *v1beta1.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
-	out.Priority = in.Priority
-	out.ShutdownGracePeriodSeconds = in.ShutdownGracePeriodSeconds
+func autoConvert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(in *config.ShutdownGracePeriodByPodPriority, out *configv1beta1.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
+	*out = *(*configv1beta1.ShutdownGracePeriodByPodPriority)(unsafe.Pointer(in))
 	return nil
 }
 
 // Convert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority is an autogenerated conversion function.
-func Convert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(in *config.ShutdownGracePeriodByPodPriority, out *v1beta1.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
+func Convert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(in *config.ShutdownGracePeriodByPodPriority, out *configv1beta1.ShutdownGracePeriodByPodPriority, s conversion.Scope) error {
 	return autoConvert_config_ShutdownGracePeriodByPodPriority_To_v1beta1_ShutdownGracePeriodByPodPriority(in, out, s)
+}
+
+func autoConvert_v1beta1_UserNamespaces_To_config_UserNamespaces(in *configv1beta1.UserNamespaces, out *config.UserNamespaces, s conversion.Scope) error {
+	*out = *(*config.UserNamespaces)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_v1beta1_UserNamespaces_To_config_UserNamespaces is an autogenerated conversion function.
+func Convert_v1beta1_UserNamespaces_To_config_UserNamespaces(in *configv1beta1.UserNamespaces, out *config.UserNamespaces, s conversion.Scope) error {
+	return autoConvert_v1beta1_UserNamespaces_To_config_UserNamespaces(in, out, s)
+}
+
+func autoConvert_config_UserNamespaces_To_v1beta1_UserNamespaces(in *config.UserNamespaces, out *configv1beta1.UserNamespaces, s conversion.Scope) error {
+	*out = *(*configv1beta1.UserNamespaces)(unsafe.Pointer(in))
+	return nil
+}
+
+// Convert_config_UserNamespaces_To_v1beta1_UserNamespaces is an autogenerated conversion function.
+func Convert_config_UserNamespaces_To_v1beta1_UserNamespaces(in *config.UserNamespaces, out *configv1beta1.UserNamespaces, s conversion.Scope) error {
+	return autoConvert_config_UserNamespaces_To_v1beta1_UserNamespaces(in, out, s)
 }

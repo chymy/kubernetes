@@ -354,9 +354,8 @@ func TestSchedulerExtender(t *testing.T) {
 	}
 
 	testCtx = testutils.InitTestSchedulerWithOptions(t, testCtx, 0, scheduler.WithExtenders(extenders...))
-	testutils.SyncInformerFactory(testCtx)
+	testutils.SyncSchedulerInformerFactory(testCtx)
 	go testCtx.Scheduler.Run(testCtx.Ctx)
-	defer testutils.CleanupTest(t, testCtx)
 
 	DoTestPodScheduling(testCtx.NS, t, clientSet)
 }
@@ -369,7 +368,7 @@ func DoTestPodScheduling(ns *v1.Namespace, t *testing.T, cs clientset.Interface)
 	goodCondition := v1.NodeCondition{
 		Type:              v1.NodeReady,
 		Status:            v1.ConditionTrue,
-		Reason:            fmt.Sprintf("schedulable condition"),
+		Reason:            "schedulable condition",
 		LastHeartbeatTime: metav1.Time{Time: time.Now()},
 	}
 	node := &v1.Node{
@@ -382,7 +381,7 @@ func DoTestPodScheduling(ns *v1.Namespace, t *testing.T, cs clientset.Interface)
 		},
 	}
 
-	for ii := 0; ii < 5; ii++ {
+	for ii := range 5 {
 		node.Name = fmt.Sprintf("machine%d", ii+1)
 		if _, err := createNode(cs, node); err != nil {
 			t.Fatalf("Failed to create nodes: %v", err)
@@ -411,7 +410,8 @@ func DoTestPodScheduling(ns *v1.Namespace, t *testing.T, cs clientset.Interface)
 		t.Fatalf("Failed to create pod: %v", err)
 	}
 
-	err = wait.Poll(time.Second, wait.ForeverTestTimeout, testutils.PodScheduled(cs, myPod.Namespace, myPod.Name))
+	err = wait.PollUntilContextTimeout(context.TODO(), time.Second, wait.ForeverTestTimeout, false,
+		testutils.PodScheduled(cs, myPod.Namespace, myPod.Name))
 	if err != nil {
 		t.Fatalf("Failed to schedule pod: %v", err)
 	}

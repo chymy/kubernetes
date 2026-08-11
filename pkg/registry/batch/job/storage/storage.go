@@ -31,7 +31,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/batch/job"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // JobStorage includes dummy storage for Job.
@@ -64,10 +64,11 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against Jobs.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &batch.Job{} },
-		NewListFunc:              func() runtime.Object { return &batch.JobList{} },
-		PredicateFunc:            job.MatchJob,
-		DefaultQualifiedResource: batch.Resource("jobs"),
+		NewFunc:                   func() runtime.Object { return &batch.Job{} },
+		NewListFunc:               func() runtime.Object { return &batch.JobList{} },
+		PredicateFunc:             job.MatchJob,
+		DefaultQualifiedResource:  batch.Resource("jobs"),
+		SingularQualifiedResource: batch.Resource("job"),
 
 		CreateStrategy:      job.Strategy,
 		UpdateStrategy:      job.Strategy,

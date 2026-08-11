@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/endpoints/handlers/fieldmanager"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
@@ -34,6 +34,7 @@ import (
 	storeerr "k8s.io/apiserver/pkg/storage/errors"
 	"k8s.io/apiserver/pkg/util/dryrun"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/apps"
 	appsv1beta1 "k8s.io/kubernetes/pkg/apis/apps/v1beta1"
 	appsv1beta2 "k8s.io/kubernetes/pkg/apis/apps/v1beta2"
@@ -46,7 +47,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/apps/deployment"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // DeploymentStorage includes dummy storage for Deployments and for Scale subresource.
@@ -58,12 +59,12 @@ type DeploymentStorage struct {
 }
 
 // ReplicasPathMappings returns the mappings between each group version and a replicas path
-func ReplicasPathMappings() fieldmanager.ResourcePathMappings {
+func ReplicasPathMappings() managedfields.ResourcePathMappings {
 	return replicasPathInDeployment
 }
 
 // maps a group version to the replicas path in a deployment object
-var replicasPathInDeployment = fieldmanager.ResourcePathMappings{
+var replicasPathInDeployment = managedfields.ResourcePathMappings{
 	schema.GroupVersion{Group: "apps", Version: "v1beta1"}.String(): fieldpath.MakePathOrDie("spec", "replicas"),
 	schema.GroupVersion{Group: "apps", Version: "v1beta2"}.String(): fieldpath.MakePathOrDie("spec", "replicas"),
 	schema.GroupVersion{Group: "apps", Version: "v1"}.String():      fieldpath.MakePathOrDie("spec", "replicas"),
@@ -92,9 +93,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against deployments.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, *RollbackREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &apps.Deployment{} },
-		NewListFunc:              func() runtime.Object { return &apps.DeploymentList{} },
-		DefaultQualifiedResource: apps.Resource("deployments"),
+		NewFunc:                   func() runtime.Object { return &apps.Deployment{} },
+		NewListFunc:               func() runtime.Object { return &apps.DeploymentList{} },
+		DefaultQualifiedResource:  apps.Resource("deployments"),
+		SingularQualifiedResource: apps.Resource("deployment"),
 
 		CreateStrategy:      deployment.Strategy,
 		UpdateStrategy:      deployment.Strategy,
@@ -305,7 +307,7 @@ func (r *ScaleREST) Destroy() {
 func (r *ScaleREST) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
 	obj, err := r.store.Get(ctx, name, options)
 	if err != nil {
-		return nil, errors.NewNotFound(apps.Resource("deployments/scale"), name)
+		return nil, err
 	}
 	deployment := obj.(*apps.Deployment)
 	scale, err := scaleFromDeployment(deployment)
@@ -320,7 +322,7 @@ func (r *ScaleREST) Update(ctx context.Context, name string, objInfo rest.Update
 	obj, _, err := r.store.Update(
 		ctx,
 		name,
-		&scaleUpdatedObjectInfo{name, objInfo},
+		&scaleUpdatedObjectInfo{name, objInfo, r},
 		toScaleCreateValidation(createValidation),
 		toScaleUpdateValidation(updateValidation),
 		false,
@@ -393,8 +395,9 @@ func scaleFromDeployment(deployment *apps.Deployment) (*autoscaling.Scale, error
 
 // scaleUpdatedObjectInfo transforms existing deployment -> existing scale -> new scale -> new deployment
 type scaleUpdatedObjectInfo struct {
-	name       string
-	reqObjInfo rest.UpdatedObjectInfo
+	name           string
+	reqObjInfo     rest.UpdatedObjectInfo
+	scaleGVKMapper rest.GroupVersionKindProvider
 }
 
 func (i *scaleUpdatedObjectInfo) Preconditions() *metav1.Preconditions {
@@ -421,7 +424,7 @@ func (i *scaleUpdatedObjectInfo) UpdatedObject(ctx context.Context, oldObj runti
 		}
 	}
 
-	managedFieldsHandler := fieldmanager.NewScaleHandler(
+	managedFieldsHandler := managedfields.NewScaleHandler(
 		deployment.ManagedFields,
 		groupVersion,
 		replicasPathInDeployment,
@@ -452,7 +455,7 @@ func (i *scaleUpdatedObjectInfo) UpdatedObject(ctx context.Context, oldObj runti
 	}
 
 	// validate
-	if errs := autoscalingvalidation.ValidateScale(scale); len(errs) > 0 {
+	if errs := autoscalingvalidation.ValidateScaleUpdate(ctx, scale, oldScale, legacyscheme.Scheme, i.scaleGVKMapper); len(errs) > 0 {
 		return nil, errors.NewInvalid(autoscaling.Kind("Scale"), deployment.Name, errs)
 	}
 

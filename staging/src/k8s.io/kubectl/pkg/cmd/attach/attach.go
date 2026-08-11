@@ -17,9 +17,11 @@ limitations under the License.
 package attach
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
@@ -38,6 +41,8 @@ import (
 	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
+	"k8s.io/kubectl/pkg/util/term"
+	"k8s.io/streaming/pkg/httpstream"
 )
 
 var (
@@ -61,6 +66,8 @@ var (
 const (
 	defaultPodAttachTimeout = 60 * time.Second
 	defaultPodLogsTimeout   = 20 * time.Second
+
+	defaultDetachSequence = "ctrl-p,ctrl-q"
 )
 
 // AttachOptions declare the arguments accepted by the Attach command
@@ -69,6 +76,8 @@ type AttachOptions struct {
 
 	// whether to disable use of standard error when streaming output from tty
 	DisableStderr bool
+
+	DetachKeys string
 
 	CommandName string
 
@@ -86,7 +95,7 @@ type AttachOptions struct {
 }
 
 // NewAttachOptions creates the options for attach
-func NewAttachOptions(streams genericclioptions.IOStreams) *AttachOptions {
+func NewAttachOptions(streams genericiooptions.IOStreams) *AttachOptions {
 	return &AttachOptions{
 		StreamOptions: exec.StreamOptions{
 			IOStreams: streams,
@@ -97,7 +106,7 @@ func NewAttachOptions(streams genericclioptions.IOStreams) *AttachOptions {
 }
 
 // NewCmdAttach returns the attach Cobra command
-func NewCmdAttach(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdAttach(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewAttachOptions(streams)
 	cmd := &cobra.Command{
 		Use:                   "attach (POD | TYPE/NAME) -c CONTAINER",
@@ -117,12 +126,13 @@ func NewCmdAttach(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra
 	cmd.Flags().BoolVarP(&o.Stdin, "stdin", "i", o.Stdin, "Pass stdin to the container")
 	cmd.Flags().BoolVarP(&o.TTY, "tty", "t", o.TTY, "Stdin is a TTY")
 	cmd.Flags().BoolVarP(&o.Quiet, "quiet", "q", o.Quiet, "Only print output from the remote session")
+	cmd.Flags().StringVar(&o.DetachKeys, "detach-keys", defaultDetachSequence, "Override the key sequence for detaching a container")
 	return cmd
 }
 
 // RemoteAttach defines the interface accepted by the Attach command - provided for test stubbing
 type RemoteAttach interface {
-	Attach(method string, url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error
+	Attach(url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error
 }
 
 // DefaultAttachFunc is the default AttachFunc used
@@ -144,8 +154,17 @@ func DefaultAttachFunc(o *AttachOptions, containerToAttach *corev1.Container, ra
 			Stderr:    !o.DisableStderr,
 			TTY:       raw,
 		}, scheme.ParameterCodec)
-
-		return o.Attach.Attach("POST", req.URL(), o.Config, o.In, o.Out, o.ErrOut, raw, sizeQueue)
+		stdin := o.In
+		if o.Stdin && raw {
+			if o.DetachKeys == "" {
+				o.DetachKeys = defaultDetachSequence
+			}
+			stdin, err = term.NewDetachableReader(stdin, o.DetachKeys)
+			if err != nil {
+				return fmt.Errorf("could not bind detach keys: %w", err)
+			}
+		}
+		return o.Attach.Attach(req.URL(), o.Config, stdin, o.Out, o.ErrOut, raw, sizeQueue)
 	}
 }
 
@@ -153,18 +172,41 @@ func DefaultAttachFunc(o *AttachOptions, containerToAttach *corev1.Container, ra
 type DefaultRemoteAttach struct{}
 
 // Attach executes attach to a running container
-func (*DefaultRemoteAttach) Attach(method string, url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error {
-	exec, err := remotecommand.NewSPDYExecutor(config, method, url)
+func (*DefaultRemoteAttach) Attach(url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error {
+	exec, err := createExecutor(url, config)
 	if err != nil {
 		return err
 	}
-	return exec.Stream(remotecommand.StreamOptions{
+	return exec.StreamWithContext(context.Background(), remotecommand.StreamOptions{
 		Stdin:             stdin,
 		Stdout:            stdout,
 		Stderr:            stderr,
 		Tty:               tty,
 		TerminalSizeQueue: terminalSizeQueue,
 	})
+}
+
+// createExecutor returns the Executor or an error if one occurred.
+func createExecutor(url *url.URL, config *restclient.Config) (remotecommand.Executor, error) {
+	exec, err := remotecommand.NewSPDYExecutor(config, "POST", url)
+	if err != nil {
+		return nil, err
+	}
+	// Fallback executor is default, unless feature flag is explicitly disabled.
+	if !cmdutil.RemoteCommandWebsockets.IsDisabled() {
+		// WebSocketExecutor must be "GET" method as described in RFC 6455 Sec. 4.1 (page 17).
+		websocketExec, err := remotecommand.NewWebSocketExecutor(config, "GET", url.String())
+		if err != nil {
+			return nil, err
+		}
+		exec, err = remotecommand.NewFallbackExecutor(websocketExec, exec, func(err error) bool {
+			return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return exec, nil
 }
 
 // Complete verifies command line arguments and loads data from the command environment
@@ -179,7 +221,7 @@ func (o *AttachOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []s
 
 	o.GetPodTimeout, err = cmdutil.GetPodRunningTimeoutFlag(cmd)
 	if err != nil {
-		return cmdutil.UsageErrorf(cmd, err.Error())
+		return cmdutil.UsageErrorf(cmd, "%s", err.Error())
 	}
 
 	o.Builder = f.NewBuilder
@@ -273,21 +315,24 @@ func (o *AttachOptions) Run() error {
 			sizePlusOne.Height++
 
 			// this call spawns a goroutine to monitor/update the terminal size
-			sizeQueue = t.MonitorSize(&sizePlusOne, size)
+			sizeQueue = &terminalSizeQueueAdapter{
+				delegate: t.MonitorSize(&sizePlusOne, size),
+			}
 		}
 
 		o.DisableStderr = true
 	}
 
 	if !o.Quiet {
+		_, _ = fmt.Fprintln(o.ErrOut, "All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.")
 		fmt.Fprintln(o.ErrOut, "If you don't see a command prompt, try pressing enter.")
 	}
 	if err := t.Safe(o.AttachFunc(o, containerToAttach, t.Raw, sizeQueue)); err != nil {
 		return err
 	}
 
-	if !o.Quiet && o.Stdin && t.Raw && o.Pod.Spec.RestartPolicy == corev1.RestartPolicyAlways {
-		fmt.Fprintf(o.Out, "Session ended, resume using '%s %s -c %s -i -t' command when the pod is running\n", o.CommandName, o.Pod.Name, containerToAttach.Name)
+	if msg := o.reattachMessage(containerToAttach.Name, t.Raw); msg != "" {
+		fmt.Fprintln(o.Out, msg)
 	}
 	return nil
 }
@@ -316,4 +361,31 @@ func (o *AttachOptions) GetContainerName(pod *corev1.Pod) (string, error) {
 		return "", err
 	}
 	return c.Name, nil
+}
+
+// reattachMessage returns a message to print after attach has completed, or
+// the empty string if no message should be printed.
+func (o *AttachOptions) reattachMessage(containerName string, rawTTY bool) string {
+	if o.Quiet || !o.Stdin || !rawTTY {
+		return ""
+	}
+	if _, path := podcmd.FindContainerByName(o.Pod, containerName); strings.HasPrefix(path, "spec.ephemeralContainers") {
+		return fmt.Sprintf("Session ended, the ephemeral container will not be restarted but may be reattached using '%s %s -c %s -n %s -i -t' if it is still running", o.CommandName, o.Pod.Name, containerName, o.Pod.Namespace)
+	}
+	return fmt.Sprintf("Session ended, resume using '%s %s -c %s -n %s -i -t' command", o.CommandName, o.Pod.Name, containerName, o.Pod.Namespace)
+}
+
+type terminalSizeQueueAdapter struct {
+	delegate term.TerminalSizeQueue
+}
+
+func (a *terminalSizeQueueAdapter) Next() *remotecommand.TerminalSize {
+	next := a.delegate.Next()
+	if next == nil {
+		return nil
+	}
+	return &remotecommand.TerminalSize{
+		Width:  next.Width,
+		Height: next.Height,
+	}
 }

@@ -22,7 +22,7 @@ import (
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
-// Driver is a description of a CSI Driver, defined by an enpoint and the
+// Driver is a description of a CSI Driver, defined by an endpoint and the
 // highest CSI version supported
 type Driver struct {
 	endpoint                string
@@ -76,4 +76,16 @@ func (s *DriversStore) Clear() {
 	defer s.Unlock()
 
 	s.store = store{}
+}
+
+// List returns the names of all registered CSI drivers.
+func (s *DriversStore) List() []string {
+	s.RLock()
+	defer s.RUnlock()
+
+	names := make([]string, 0, len(s.store))
+	for name := range s.store {
+		names = append(names, name)
+	}
+	return names
 }

@@ -22,16 +22,23 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/component-helpers/resource"
+	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
+	"k8s.io/kubernetes/pkg/scheduler/util"
 )
 
 // NodePorts is a plugin that checks if a node has free ports for the requested pod ports.
-type NodePorts struct{}
+type NodePorts struct {
+	enableInPlacePodVerticalScalingSchedulerPreemption bool
+}
 
-var _ framework.PreFilterPlugin = &NodePorts{}
-var _ framework.FilterPlugin = &NodePorts{}
-var _ framework.EnqueueExtensions = &NodePorts{}
+var _ fwk.PreFilterPlugin = &NodePorts{}
+var _ fwk.FilterPlugin = &NodePorts{}
+var _ fwk.EnqueueExtensions = &NodePorts{}
+var _ fwk.SignPlugin = &NodePorts{}
 
 const (
 	// Name is the name of the plugin used in the plugin registry and configurations.
@@ -45,10 +52,10 @@ const (
 	ErrReason = "node(s) didn't have free ports for the requested pod ports"
 )
 
-type preFilterState []*v1.ContainerPort
+type preFilterState []v1.ContainerPort
 
 // Clone the prefilter state.
-func (s preFilterState) Clone() framework.StateData {
+func (s preFilterState) Clone() fwk.StateData {
 	// The state is not impacted by adding/removing existing pods, hence we don't need to make a deep copy.
 	return s
 }
@@ -58,34 +65,33 @@ func (pl *NodePorts) Name() string {
 	return Name
 }
 
-// getContainerPorts returns the used host ports of Pods: if 'port' was used, a 'port:true' pair
-// will be in the result; but it does not resolve port conflict.
-func getContainerPorts(pods ...*v1.Pod) []*v1.ContainerPort {
-	ports := []*v1.ContainerPort{}
-	for _, pod := range pods {
-		for j := range pod.Spec.Containers {
-			container := &pod.Spec.Containers[j]
-			for k := range container.Ports {
-				ports = append(ports, &container.Ports[k])
-			}
-		}
-	}
-	return ports
+// NodePort feasibility and scheduling is based on the host ports for the containers.
+func (pl *NodePorts) SignPod(ctx context.Context, pod *v1.Pod) ([]fwk.SignFragment, *fwk.Status) {
+	return []fwk.SignFragment{
+		{Key: fwk.HostPortsSignerName, Value: fwk.HostPortsSigner(pod)},
+	}, nil
 }
 
 // PreFilter invoked at the prefilter extension point.
-func (pl *NodePorts) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
-	s := getContainerPorts(pod)
+func (pl *NodePorts) PreFilter(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, nodes []fwk.NodeInfo) (*fwk.PreFilterResult, *fwk.Status) {
+	if pl.enableInPlacePodVerticalScalingSchedulerPreemption && resource.IsPodResizeDeferred(pod) {
+		return nil, fwk.NewStatus(fwk.Skip)
+	}
+	s := util.GetHostPorts(pod)
+	// Skip if a pod has no ports.
+	if len(s) == 0 {
+		return nil, fwk.NewStatus(fwk.Skip)
+	}
 	cycleState.Write(preFilterStateKey, preFilterState(s))
 	return nil, nil
 }
 
 // PreFilterExtensions do not exist for this plugin.
-func (pl *NodePorts) PreFilterExtensions() framework.PreFilterExtensions {
+func (pl *NodePorts) PreFilterExtensions() fwk.PreFilterExtensions {
 	return nil
 }
 
-func getPreFilterState(cycleState *framework.CycleState) (preFilterState, error) {
+func getPreFilterState(cycleState fwk.CycleState) (preFilterState, error) {
 	c, err := cycleState.Read(preFilterStateKey)
 	if err != nil {
 		// preFilterState doesn't exist, likely PreFilter wasn't invoked.
@@ -101,39 +107,79 @@ func getPreFilterState(cycleState *framework.CycleState) (preFilterState, error)
 
 // EventsToRegister returns the possible events that may make a Pod
 // failed by this plugin schedulable.
-func (pl *NodePorts) EventsToRegister() []framework.ClusterEvent {
-	return []framework.ClusterEvent{
+func (pl *NodePorts) EventsToRegister(_ context.Context) ([]fwk.ClusterEventWithHint, error) {
+	return []fwk.ClusterEventWithHint{
 		// Due to immutable fields `spec.containers[*].ports`, pod update events are ignored.
-		{Resource: framework.Pod, ActionType: framework.Delete},
-		{Resource: framework.Node, ActionType: framework.Add | framework.Update},
+		{Event: fwk.ClusterEvent{Resource: fwk.AssignedPod, ActionType: fwk.Delete}, QueueingHintFn: pl.isSchedulableAfterAssignedPodDeleted},
+		// We don't need the QueueingHintFn here because the scheduling of Pods will be always retried with backoff when this Event happens.
+		// (the same as Queue)
+		{Event: fwk.ClusterEvent{Resource: fwk.Node, ActionType: fwk.Add}},
+	}, nil
+}
+
+// isSchedulableAfterAssignedPodDeleted is invoked whenever an assigned pod is deleted. It checks whether
+// that change made a previously unschedulable pod schedulable.
+func (pl *NodePorts) isSchedulableAfterAssignedPodDeleted(logger klog.Logger, pod *v1.Pod, oldObj, newObj interface{}) (fwk.QueueingHint, error) {
+	deletedPod, _, err := util.As[*v1.Pod](oldObj, nil)
+	if err != nil {
+		return fwk.Queue, err
 	}
+
+	// If the deleted pod is unscheduled, it doesn't make the target pod schedulable.
+	if deletedPod.Spec.NodeName == "" && deletedPod.Status.NominatedNodeName == "" {
+		logger.V(4).Info("the deleted pod is unscheduled and it doesn't make the target pod schedulable", "pod", klog.KObj(pod), "deletedPod", klog.KObj(deletedPod))
+		return fwk.QueueSkip, nil
+	}
+
+	// If the deleted pod doesn't use any host ports, it doesn't make the target pod schedulable.
+	ports := util.GetHostPorts(deletedPod)
+	if len(ports) == 0 {
+		return fwk.QueueSkip, nil
+	}
+
+	// Verify that `pod` and the deleted pod don't have any common port(s).
+	// So, deleting that pod couldn't make `pod` schedulable.
+	portsInUse := make(fwk.HostPortInfo, len(ports))
+	for _, p := range ports {
+		portsInUse.Add(p.HostIP, string(p.Protocol), p.HostPort)
+	}
+	if fitsPorts(util.GetHostPorts(pod), portsInUse) {
+		logger.V(4).Info("the deleted pod and the target pod don't have any common port(s), returning QueueSkip as deleting this Pod won't make the Pod schedulable", "pod", klog.KObj(pod), "deletedPod", klog.KObj(deletedPod))
+		return fwk.QueueSkip, nil
+	}
+
+	logger.V(4).Info("the deleted pod and the target pod have any common port(s), returning Queue as deleting this Pod may make the Pod schedulable", "pod", klog.KObj(pod), "deletedPod", klog.KObj(deletedPod))
+	return fwk.Queue, nil
 }
 
 // Filter invoked at the filter extension point.
-func (pl *NodePorts) Filter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+func (pl *NodePorts) Filter(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
+	if pl.enableInPlacePodVerticalScalingSchedulerPreemption && resource.IsPodResizeDeferred(pod) {
+		return nil
+	}
 	wantPorts, err := getPreFilterState(cycleState)
 	if err != nil {
-		return framework.AsStatus(err)
+		return fwk.AsStatus(err)
 	}
 
-	fits := fitsPorts(wantPorts, nodeInfo)
+	fits := fitsPorts(wantPorts, nodeInfo.GetUsedPorts())
 	if !fits {
-		return framework.NewStatus(framework.Unschedulable, ErrReason)
+		return fwk.NewStatus(fwk.Unschedulable, ErrReason)
 	}
 
 	return nil
 }
 
-// Fits checks if the pod fits the node.
-func Fits(pod *v1.Pod, nodeInfo *framework.NodeInfo) bool {
-	return fitsPorts(getContainerPorts(pod), nodeInfo)
+// Fits checks if the pod has any ports conflicting with nodeInfo's ports.
+// It returns true if there are no conflicts (which means that pod fits the node), otherwise false.
+func Fits(pod *v1.Pod, nodeInfo fwk.NodeInfo) bool {
+	return fitsPorts(util.GetHostPorts(pod), nodeInfo.GetUsedPorts())
 }
 
-func fitsPorts(wantPorts []*v1.ContainerPort, nodeInfo *framework.NodeInfo) bool {
-	// try to see whether existingPorts and wantPorts will conflict or not
-	existingPorts := nodeInfo.UsedPorts
+func fitsPorts(wantPorts []v1.ContainerPort, portsInUse fwk.HostPortInfo) bool {
+	// try to see whether portsInUse and wantPorts will conflict or not
 	for _, cp := range wantPorts {
-		if existingPorts.CheckConflict(cp.HostIP, string(cp.Protocol), cp.HostPort) {
+		if portsInUse.CheckConflict(cp.HostIP, string(cp.Protocol), cp.HostPort) {
 			return false
 		}
 	}
@@ -141,6 +187,6 @@ func fitsPorts(wantPorts []*v1.ContainerPort, nodeInfo *framework.NodeInfo) bool
 }
 
 // New initializes a new plugin and returns it.
-func New(_ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
-	return &NodePorts{}, nil
+func New(_ context.Context, _ runtime.Object, _ fwk.Handle, fts feature.Features) (fwk.Plugin, error) {
+	return &NodePorts{enableInPlacePodVerticalScalingSchedulerPreemption: fts.EnableInPlacePodVerticalScalingSchedulerPreemption}, nil
 }

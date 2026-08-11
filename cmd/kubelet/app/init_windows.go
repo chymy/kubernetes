@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 /*
 Copyright 2018 The Kubernetes Authors.
@@ -20,11 +19,12 @@ limitations under the License.
 package app
 
 import (
+	"context"
 	"fmt"
 	"unsafe"
 
-	"github.com/pkg/errors"
 	"golang.org/x/sys/windows"
+
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/windows/service"
 )
@@ -57,7 +57,7 @@ func getPriorityValue(priorityClassName string) uint32 {
 func createWindowsJobObject(pc uint32) (windows.Handle, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return windows.InvalidHandle, errors.Wrap(err, "windows.CreateJobObject failed")
+		return windows.InvalidHandle, fmt.Errorf("windows.CreateJobObject failed: %w", err)
 	}
 	limitInfo := windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 		LimitFlags:    windows.JOB_OBJECT_LIMIT_PRIORITY_CLASS,
@@ -68,28 +68,29 @@ func createWindowsJobObject(pc uint32) (windows.Handle, error) {
 		windows.JobObjectBasicLimitInformation,
 		uintptr(unsafe.Pointer(&limitInfo)),
 		uint32(unsafe.Sizeof(limitInfo))); err != nil {
-		return windows.InvalidHandle, errors.Wrap(err, "windows.SetInformationJobObject failed")
+		return windows.InvalidHandle, fmt.Errorf("windows.SetInformationJobObject failed: %w", err)
 	}
 	return job, nil
 }
 
-func initForOS(windowsService bool, windowsPriorityClass string) error {
+func initForOS(ctx context.Context, windowsService bool, windowsPriorityClass string) error {
+	logger := klog.FromContext(ctx)
 	priority := getPriorityValue(windowsPriorityClass)
 	if priority == 0 {
 		return fmt.Errorf("unknown priority class %s, valid ones are available at "+
 			"https://docs.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities", windowsPriorityClass)
 	}
-	klog.InfoS("Creating a Windows job object and adding kubelet process to it", "windowsPriorityClass", windowsPriorityClass)
+	logger.Info("Creating a Windows job object and adding kubelet process to it", "windowsPriorityClass", windowsPriorityClass)
 	job, err := createWindowsJobObject(priority)
 	if err != nil {
 		return err
 	}
 	if err := windows.AssignProcessToJobObject(job, windows.CurrentProcess()); err != nil {
-		return errors.Wrap(err, "windows.AssignProcessToJobObject failed")
+		return fmt.Errorf("windows.AssignProcessToJobObject failed: %w", err)
 	}
 
 	if windowsService {
-		return service.InitService(serviceName)
+		return service.InitServiceWithShutdown(serviceName)
 	}
 	return nil
 }

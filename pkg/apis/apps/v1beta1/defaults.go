@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/features"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func addDefaultingFuncs(scheme *runtime.Scheme) error {
@@ -50,16 +50,14 @@ func SetDefaults_StatefulSet(obj *appsv1beta1.StatefulSet) {
 		}
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
-		if obj.Spec.PersistentVolumeClaimRetentionPolicy == nil {
-			obj.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1beta1.StatefulSetPersistentVolumeClaimRetentionPolicy{}
-		}
-		if len(obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted) == 0 {
-			obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted = appsv1beta1.RetainPersistentVolumeClaimRetentionPolicyType
-		}
-		if len(obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled) == 0 {
-			obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled = appsv1beta1.RetainPersistentVolumeClaimRetentionPolicyType
-		}
+	if obj.Spec.PersistentVolumeClaimRetentionPolicy == nil {
+		obj.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1beta1.StatefulSetPersistentVolumeClaimRetentionPolicy{}
+	}
+	if len(obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted) == 0 {
+		obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted = appsv1beta1.RetainPersistentVolumeClaimRetentionPolicyType
+	}
+	if len(obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled) == 0 {
+		obj.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled = appsv1beta1.RetainPersistentVolumeClaimRetentionPolicyType
 	}
 
 	if obj.Spec.Replicas == nil {
@@ -74,12 +72,11 @@ func SetDefaults_StatefulSet(obj *appsv1beta1.StatefulSet) {
 		obj.Spec.UpdateStrategy.RollingUpdate != nil {
 
 		if obj.Spec.UpdateStrategy.RollingUpdate.Partition == nil {
-			obj.Spec.UpdateStrategy.RollingUpdate.Partition = pointer.Int32(0)
+			obj.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To[int32](0)
 		}
 		if utilfeature.DefaultFeatureGate.Enabled(features.MaxUnavailableStatefulSet) {
 			if obj.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable == nil {
-				maxUnavailable := intstr.FromInt(1)
-				obj.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+				obj.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt32(1))
 			}
 		}
 	}

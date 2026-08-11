@@ -17,8 +17,8 @@ limitations under the License.
 package pluginmanager
 
 import (
+	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,6 +35,7 @@ import (
 
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/pluginwatcher"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 var (
@@ -52,26 +53,26 @@ func newFakePluginHandler() *fakePluginHandler {
 }
 
 // ValidatePlugin is a fake method
-func (f *fakePluginHandler) ValidatePlugin(pluginName string, endpoint string, versions []string) error {
+func (f *fakePluginHandler) ValidatePlugin(_ context.Context, pluginName string, endpoint string, versions []string) error {
 	f.Lock()
 	defer f.Unlock()
-	f.events = append(f.events, "validate "+pluginName)
+	f.events = append(f.events, "validate "+pluginName+" "+endpoint)
 	return nil
 }
 
 // RegisterPlugin is a fake method
-func (f *fakePluginHandler) RegisterPlugin(pluginName, endpoint string, versions []string) error {
+func (f *fakePluginHandler) RegisterPlugin(_ context.Context, pluginName, endpoint string, versions []string, pluginClientTimeout *time.Duration) error {
 	f.Lock()
 	defer f.Unlock()
-	f.events = append(f.events, "register "+pluginName)
+	f.events = append(f.events, "register "+pluginName+" "+endpoint)
 	return nil
 }
 
 // DeRegisterPlugin is a fake method
-func (f *fakePluginHandler) DeRegisterPlugin(pluginName string) {
+func (f *fakePluginHandler) DeRegisterPlugin(_ context.Context, pluginName, endpoint string) {
 	f.Lock()
 	defer f.Unlock()
-	f.events = append(f.events, "deregister "+pluginName)
+	f.events = append(f.events, "deregister "+pluginName+" "+endpoint)
 }
 
 func (f *fakePluginHandler) Reset() {
@@ -81,7 +82,7 @@ func (f *fakePluginHandler) Reset() {
 }
 
 func init() {
-	d, err := ioutil.TempDir("", "plugin_manager_test")
+	d, err := os.MkdirTemp("", "plugin_manager_test")
 	if err != nil {
 		panic(fmt.Sprintf("Could not create a temp directory: %s", d))
 	}
@@ -94,8 +95,24 @@ func cleanup(t *testing.T) {
 	os.MkdirAll(socketDir, 0755)
 }
 
-func waitForRegistration(t *testing.T, fakePluginHandler *fakePluginHandler, pluginName string) {
-	expected := []string{"validate " + pluginName, "register " + pluginName}
+func waitForRegistration(t *testing.T, fakePluginHandler *fakePluginHandler, pluginName, endpoint string) {
+	t.Helper()
+	waitFor(t, fakePluginHandler,
+		[]string{"validate " + pluginName + " " + endpoint, "register " + pluginName + " " + endpoint},
+		"Timed out waiting for plugin to be added to actual state of world cache.",
+	)
+}
+
+func waitForDeRegistration(t *testing.T, fakePluginHandler *fakePluginHandler, pluginName, endpoint string) {
+	t.Helper()
+	waitFor(t, fakePluginHandler,
+		[]string{"deregister " + pluginName + " " + endpoint},
+		"Timed out waiting for plugin to be removed from actual state of the world cache.",
+	)
+}
+
+func waitFor(t *testing.T, fakePluginHandler *fakePluginHandler, expected []string, what string) {
+	t.Helper()
 	err := retryWithExponentialBackOff(
 		100*time.Millisecond,
 		func() (bool, error) {
@@ -109,7 +126,7 @@ func waitForRegistration(t *testing.T, fakePluginHandler *fakePluginHandler, plu
 		},
 	)
 	if err != nil {
-		t.Fatalf("Timed out waiting for plugin to be added to actual state of world cache.")
+		t.Fatal(what)
 	}
 }
 
@@ -123,17 +140,18 @@ func retryWithExponentialBackOff(initialDuration time.Duration, fn wait.Conditio
 	return wait.ExponentialBackoff(backoff, fn)
 }
 
-func TestPluginRegistration(t *testing.T) {
+func TestPluginManager(t *testing.T) {
 	defer cleanup(t)
 
+	tCtx := ktesting.Init(t)
 	pluginManager := newTestPluginManager(socketDir)
 
 	// Start the plugin manager
 	stopChan := make(chan struct{})
 	defer close(stopChan)
 	go func() {
-		sourcesReady := config.NewSourcesReady(func(_ sets.String) bool { return true })
-		pluginManager.Run(sourcesReady, stopChan)
+		sourcesReady := config.NewSourcesReady(func(_ sets.Set[string]) bool { return true })
+		pluginManager.Run(tCtx, sourcesReady, stopChan)
 	}()
 
 	// Add handler for device plugin
@@ -155,10 +173,15 @@ func TestPluginRegistration(t *testing.T) {
 		// Add a new plugin
 		pluginName := fmt.Sprintf("example-plugin-%d", i)
 		p := pluginwatcher.NewTestExamplePlugin(pluginName, registerapi.DevicePlugin, socketPath, supportedVersions...)
-		require.NoError(t, p.Serve("v1beta1", "v1beta2"))
+		require.NoError(t, p.Serve(tCtx, "v1beta1", "v1beta2"))
 
 		// Verify that the plugin is registered
-		waitForRegistration(t, fakeHandler, pluginName)
+		waitForRegistration(t, fakeHandler, pluginName, socketPath)
+
+		// And unregister.
+		fakeHandler.Reset()
+		require.NoError(t, p.Stop(tCtx))
+		waitForDeRegistration(t, fakeHandler, pluginName, socketPath)
 	}
 }
 

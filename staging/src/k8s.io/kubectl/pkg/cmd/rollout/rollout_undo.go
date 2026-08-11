@@ -21,7 +21,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -41,15 +44,15 @@ type UndoOptions struct {
 	Builder          func() *resource.Builder
 	ToRevision       int64
 	DryRunStrategy   cmdutil.DryRunStrategy
-	DryRunVerifier   *resource.QueryParamVerifier
 	Resources        []string
 	Namespace        string
 	LabelSelector    string
 	EnforceNamespace bool
 	RESTClientGetter genericclioptions.RESTClientGetter
+	CmdBaseName      string
 
 	resource.FilenameOptions
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var (
@@ -65,10 +68,14 @@ var (
 
 		# Roll back to the previous deployment with dry-run
 		kubectl rollout undo --dry-run=server deployment/abc`)
+
+	warningRollbackApplyManagedResource = "Warning: resource %[1]s was previously managed with '%[3]s apply'. " +
+		"Rolling back will not update the %[2]s annotation, which may cause unexpected behavior on future '%[3]s apply' operations. " +
+		"Consider using '%[3]s apply' with your previous configuration file instead.\n"
 )
 
 // NewRolloutUndoOptions returns an initialized UndoOptions instance
-func NewRolloutUndoOptions(streams genericclioptions.IOStreams) *UndoOptions {
+func NewRolloutUndoOptions(streams genericiooptions.IOStreams) *UndoOptions {
 	return &UndoOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("rolled back").WithTypeSetter(scheme.Scheme),
 		IOStreams:  streams,
@@ -77,8 +84,9 @@ func NewRolloutUndoOptions(streams genericclioptions.IOStreams) *UndoOptions {
 }
 
 // NewCmdRolloutUndo returns a Command instance for the 'rollout undo' sub command
-func NewCmdRolloutUndo(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdRolloutUndo(parent string, f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewRolloutUndoOptions(streams)
+	o.CmdBaseName = parent
 
 	validArgs := []string{"deployment", "daemonset", "statefulset"}
 
@@ -113,11 +121,6 @@ func (o *UndoOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []str
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.DryRunVerifier = resource.NewQueryParamVerifier(dynamicClient, f.OpenAPIGetter(), resource.QueryParamDryRun)
 
 	if o.Namespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace(); err != nil {
 		return err
@@ -162,16 +165,22 @@ func (o *UndoOptions) RunUndo() error {
 		if err != nil {
 			return err
 		}
+
+		metadata, err := meta.Accessor(info.Object)
+		if err != nil {
+			return err
+		}
+
+		annotationMap := metadata.GetAnnotations()
+		if _, ok := annotationMap[corev1.LastAppliedConfigAnnotation]; ok {
+			fmt.Fprintf(o.ErrOut, warningRollbackApplyManagedResource, info.ObjectName(), corev1.LastAppliedConfigAnnotation, o.CmdBaseName) //nolint:errcheck
+		}
+
 		rollbacker, err := polymorphichelpers.RollbackerFn(o.RESTClientGetter, info.ResourceMapping())
 		if err != nil {
 			return err
 		}
 
-		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
-				return err
-			}
-		}
 		result, err := rollbacker.Rollback(info.Object, nil, o.ToRevision, o.DryRunStrategy)
 		if err != nil {
 			return err

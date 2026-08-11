@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -32,7 +33,6 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/component-base/metrics/prometheus/ratelimiter"
 	"k8s.io/klog/v2"
 )
 
@@ -56,12 +56,12 @@ func NewPublisher(cmInformer coreinformers.ConfigMapInformer, nsInformer coreinf
 	e := &Publisher{
 		client: cl,
 		rootCA: rootCA,
-		queue:  workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "root_ca_cert_publisher"),
-	}
-	if cl.CoreV1().RESTClient().GetRateLimiter() != nil {
-		if err := ratelimiter.RegisterMetricAndTrackRateLimiterUsage("root_ca_cert_publisher", cl.CoreV1().RESTClient().GetRateLimiter()); err != nil {
-			return nil, err
-		}
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "root_ca_cert_publisher",
+			},
+		),
 	}
 
 	cmInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -96,25 +96,32 @@ type Publisher struct {
 
 	nsListerSynced cache.InformerSynced
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 }
 
 // Run starts process
 func (c *Publisher) Run(ctx context.Context, workers int) {
 	defer utilruntime.HandleCrash()
-	defer c.queue.ShutDown()
 
-	klog.Infof("Starting root CA certificate configmap publisher")
-	defer klog.Infof("Shutting down root CA certificate configmap publisher")
+	logger := klog.FromContext(ctx)
+	logger.Info("Starting root CA cert publisher controller")
 
-	if !cache.WaitForNamedCacheSync("crt configmap", ctx.Done(), c.cmListerSynced) {
+	var wg sync.WaitGroup
+	defer func() {
+		logger.Info("Shutting down root CA cert publisher controller")
+		c.queue.ShutDown()
+		wg.Wait()
+	}()
+
+	if !cache.WaitForNamedCacheSyncWithContext(ctx, c.cmListerSynced) {
 		return
 	}
 
 	for i := 0; i < workers; i++ {
-		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
+		wg.Go(func() {
+			wait.UntilWithContext(ctx, c.runWorker, time.Second)
+		})
 	}
-
 	<-ctx.Done()
 }
 
@@ -169,7 +176,7 @@ func (c *Publisher) processNextWorkItem(ctx context.Context) bool {
 	}
 	defer c.queue.Done(key)
 
-	if err := c.syncHandler(ctx, key.(string)); err != nil {
+	if err := c.syncHandler(ctx, key); err != nil {
 		utilruntime.HandleError(fmt.Errorf("syncing %q failed: %v", key, err))
 		c.queue.AddRateLimited(key)
 		return true
@@ -183,7 +190,7 @@ func (c *Publisher) syncNamespace(ctx context.Context, ns string) (err error) {
 	startTime := time.Now()
 	defer func() {
 		recordMetrics(startTime, err)
-		klog.V(4).Infof("Finished syncing namespace %q (%v)", ns, time.Since(startTime))
+		klog.FromContext(ctx).V(4).Info("Finished syncing namespace", "namespace", ns, "elapsedTime", time.Since(startTime))
 	}()
 
 	cm, err := c.cmLister.ConfigMaps(ns).Get(RootCACertConfigMapName)

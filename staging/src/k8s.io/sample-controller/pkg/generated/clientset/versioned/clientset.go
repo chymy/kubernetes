@@ -19,8 +19,8 @@ limitations under the License.
 package versioned
 
 import (
-	"fmt"
-	"net/http"
+	fmt "fmt"
+	http "net/http"
 
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
@@ -29,12 +29,11 @@ import (
 )
 
 type Interface interface {
-	Discovery() discovery.DiscoveryInterface
+	Discovery() discovery.DiscoveryInterfaces
 	SamplecontrollerV1alpha1() samplecontrollerv1alpha1.SamplecontrollerV1alpha1Interface
 }
 
-// Clientset contains the clients for groups. Each group has exactly one
-// version included in a Clientset.
+// Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
 	samplecontrollerV1alpha1 *samplecontrollerv1alpha1.SamplecontrollerV1alpha1Client
@@ -46,7 +45,7 @@ func (c *Clientset) SamplecontrollerV1alpha1() samplecontrollerv1alpha1.Sampleco
 }
 
 // Discovery retrieves the DiscoveryClient
-func (c *Clientset) Discovery() discovery.DiscoveryInterface {
+func (c *Clientset) Discovery() discovery.DiscoveryInterfaces {
 	if c == nil {
 		return nil
 	}

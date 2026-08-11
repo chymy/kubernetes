@@ -18,7 +18,6 @@ package rest
 
 import (
 	storageapiv1 "k8s.io/api/storage/v1"
-	storageapiv1alpha1 "k8s.io/api/storage/v1alpha1"
 	storageapiv1beta1 "k8s.io/api/storage/v1beta1"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -31,6 +30,7 @@ import (
 	csistoragecapacitystore "k8s.io/kubernetes/pkg/registry/storage/csistoragecapacity/storage"
 	storageclassstore "k8s.io/kubernetes/pkg/registry/storage/storageclass/storage"
 	volumeattachmentstore "k8s.io/kubernetes/pkg/registry/storage/volumeattachment/storage"
+	volumeattributesclassstore "k8s.io/kubernetes/pkg/registry/storage/volumeattributesclass/storage"
 )
 
 type RESTStorageProvider struct {
@@ -41,11 +41,6 @@ func (p RESTStorageProvider) NewRESTStorage(apiResourceConfigSource serverstorag
 	// If you add a version here, be sure to add an entry in `k8s.io/kubernetes/cmd/kube-apiserver/app/aggregator.go with specific priorities.
 	// TODO refactor the plumbing to provide the information in the APIGroupInfo
 
-	if storageMap, err := p.v1alpha1Storage(apiResourceConfigSource, restOptionsGetter); err != nil {
-		return genericapiserver.APIGroupInfo{}, err
-	} else if len(storageMap) > 0 {
-		apiGroupInfo.VersionedResourcesStorageMap[storageapiv1alpha1.SchemeGroupVersion.Version] = storageMap
-	}
 	if storageMap, err := p.v1beta1Storage(apiResourceConfigSource, restOptionsGetter); err != nil {
 		return genericapiserver.APIGroupInfo{}, err
 	} else if len(storageMap) > 0 {
@@ -60,31 +55,16 @@ func (p RESTStorageProvider) NewRESTStorage(apiResourceConfigSource serverstorag
 	return apiGroupInfo, nil
 }
 
-func (p RESTStorageProvider) v1alpha1Storage(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter) (map[string]rest.Storage, error) {
-	storage := map[string]rest.Storage{}
-
-	// register csistoragecapacities
-	if resource := "csistoragecapacities"; apiResourceConfigSource.ResourceEnabled(storageapiv1alpha1.SchemeGroupVersion.WithResource(resource)) {
-		csiStorageStorage, err := csistoragecapacitystore.NewStorage(restOptionsGetter)
-		if err != nil {
-			return storage, err
-		}
-		storage[resource] = csiStorageStorage.CSIStorageCapacity
-	}
-
-	return storage, nil
-}
-
 func (p RESTStorageProvider) v1beta1Storage(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter) (map[string]rest.Storage, error) {
 	storage := map[string]rest.Storage{}
 
-	// register csistoragecapacities
-	if resource := "csistoragecapacities"; apiResourceConfigSource.ResourceEnabled(storageapiv1beta1.SchemeGroupVersion.WithResource(resource)) {
-		csiStorageStorage, err := csistoragecapacitystore.NewStorage(restOptionsGetter)
+	// register volumeattributesclasses
+	if resource := "volumeattributesclasses"; apiResourceConfigSource.ResourceEnabled(storageapiv1beta1.SchemeGroupVersion.WithResource(resource)) {
+		volumeAttributesClassStorage, err := volumeattributesclassstore.NewREST(restOptionsGetter)
 		if err != nil {
 			return storage, err
 		}
-		storage[resource] = csiStorageStorage.CSIStorageCapacity
+		storage[resource] = volumeAttributesClassStorage
 	}
 
 	return storage, nil
@@ -113,6 +93,15 @@ func (p RESTStorageProvider) v1Storage(apiResourceConfigSource serverstorage.API
 		storage[resource+"/status"] = volumeAttachmentStorage.Status
 	}
 
+	// register volumeattributesclasses
+	if resource := "volumeattributesclasses"; apiResourceConfigSource.ResourceEnabled(storageapiv1.SchemeGroupVersion.WithResource(resource)) {
+		volumeAttributesClassStorage, err := volumeattributesclassstore.NewREST(restOptionsGetter)
+		if err != nil {
+			return storage, err
+		}
+		storage[resource] = volumeAttributesClassStorage
+	}
+
 	// register csinodes
 	if resource := "csinodes"; apiResourceConfigSource.ResourceEnabled(storageapiv1.SchemeGroupVersion.WithResource(resource)) {
 		csiNodeStorage, err := csinodestore.NewStorage(restOptionsGetter)
@@ -120,6 +109,7 @@ func (p RESTStorageProvider) v1Storage(apiResourceConfigSource serverstorage.API
 			return nil, err
 		}
 		storage[resource] = csiNodeStorage.CSINode
+		storage[resource+"/status"] = csiNodeStorage.Status
 	}
 
 	// register csidrivers

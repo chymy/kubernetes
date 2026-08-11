@@ -23,22 +23,45 @@ import (
 	"k8s.io/component-base/featuregate"
 	"k8s.io/pod-security-admission/api"
 	"k8s.io/pod-security-admission/policy"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
-// minimalValidPods holds minimal valid pods per-level per-version.
+// minimalValidPods holds minimal valid OS neutral pods per-level per-version.
 // To get a valid pod for a particular level/version, use getMinimalValidPod().
 var minimalValidPods = map[api.Level]map[api.Version]*corev1.Pod{}
 
+// minimalValidLinuxPods holds minimal valid linux pods per-level per-version.
+// To get a valid pod for a particular level/version, use getMinimalValidPod().
+var minimalValidLinuxPods = map[api.Level]map[api.Version]*corev1.Pod{}
+
+// minimalValidWindowsPods holds minimal valid Windows pods per-level per-version.
+// To get a valid pod for a particular level/version, use getMinimalValidPod().
+var minimalValidWindowsPods = map[api.Level]map[api.Version]*corev1.Pod{}
+
+func addLinux(pod *corev1.Pod) *corev1.Pod {
+	copyPod := pod.DeepCopy()
+	copyPod.Spec.OS = &corev1.PodOS{Name: corev1.Linux}
+	return copyPod
+}
+
+func addWindows(pod *corev1.Pod) *corev1.Pod {
+	copyPod := pod.DeepCopy()
+	copyPod.Spec.OS = &corev1.PodOS{Name: corev1.Windows}
+	return copyPod
+}
+
 func init() {
+	// These are the OS neutral pods
 	minimalValidPods[api.LevelBaseline] = map[api.Version]*corev1.Pod{}
 	minimalValidPods[api.LevelRestricted] = map[api.Version]*corev1.Pod{}
 
+	minimalValidLinuxPods[api.LevelRestricted] = map[api.Version]*corev1.Pod{}
+	minimalValidWindowsPods[api.LevelRestricted] = map[api.Version]*corev1.Pod{}
 	// Define minimal valid baseline pod.
 	// This must remain valid for all versions.
 	baseline_1_0 := &corev1.Pod{Spec: corev1.PodSpec{
-		InitContainers: []corev1.Container{{Name: "initcontainer1", Image: "k8s.gcr.io/pause"}},
-		Containers:     []corev1.Container{{Name: "container1", Image: "k8s.gcr.io/pause"}}}}
+		InitContainers: []corev1.Container{{Name: "initcontainer1", Image: "registry.k8s.io/pause"}},
+		Containers:     []corev1.Container{{Name: "container1", Image: "registry.k8s.io/pause"}}}}
 	minimalValidPods[api.LevelBaseline][api.MajorMinorVersion(1, 0)] = baseline_1_0
 
 	//
@@ -47,16 +70,20 @@ func init() {
 
 	// 1.0+: baseline + runAsNonRoot=true
 	restricted_1_0 := tweak(baseline_1_0, func(p *corev1.Pod) {
-		p.Spec.SecurityContext = &corev1.PodSecurityContext{RunAsNonRoot: pointer.BoolPtr(true)}
+		p.Spec.SecurityContext = &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true)}
 	})
 	minimalValidPods[api.LevelRestricted][api.MajorMinorVersion(1, 0)] = restricted_1_0
+	minimalValidLinuxPods[api.LevelRestricted][api.MajorMinorVersion(1, 0)] = addLinux(restricted_1_0)
+	minimalValidWindowsPods[api.LevelRestricted][api.MajorMinorVersion(1, 0)] = addWindows(restricted_1_0)
 
 	// 1.8+: allowPrivilegeEscalation=false
 	restricted_1_8 := tweak(restricted_1_0, func(p *corev1.Pod) {
-		p.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{AllowPrivilegeEscalation: pointer.BoolPtr(false)}
-		p.Spec.InitContainers[0].SecurityContext = &corev1.SecurityContext{AllowPrivilegeEscalation: pointer.BoolPtr(false)}
+		p.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false)}
+		p.Spec.InitContainers[0].SecurityContext = &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false)}
 	})
 	minimalValidPods[api.LevelRestricted][api.MajorMinorVersion(1, 8)] = restricted_1_8
+	minimalValidLinuxPods[api.LevelRestricted][api.MajorMinorVersion(1, 8)] = addLinux(restricted_1_8)
+	minimalValidWindowsPods[api.LevelRestricted][api.MajorMinorVersion(1, 8)] = addWindows(restricted_1_8)
 
 	// 1.19+: seccompProfile.type=RuntimeDefault
 	restricted_1_19 := tweak(restricted_1_8, func(p *corev1.Pod) {
@@ -66,6 +93,8 @@ func init() {
 		}
 	})
 	minimalValidPods[api.LevelRestricted][api.MajorMinorVersion(1, 19)] = restricted_1_19
+	minimalValidLinuxPods[api.LevelRestricted][api.MajorMinorVersion(1, 19)] = addLinux(restricted_1_19)
+	minimalValidWindowsPods[api.LevelRestricted][api.MajorMinorVersion(1, 19)] = addWindows(restricted_1_19)
 
 	// 1.22+: capabilities.drop=["ALL"]
 	restricted_1_22 := tweak(restricted_1_19, func(p *corev1.Pod) {
@@ -73,13 +102,53 @@ func init() {
 		p.Spec.InitContainers[0].SecurityContext.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
 	})
 	minimalValidPods[api.LevelRestricted][api.MajorMinorVersion(1, 22)] = restricted_1_22
+	minimalValidLinuxPods[api.LevelRestricted][api.MajorMinorVersion(1, 22)] = addLinux(restricted_1_22)
+	minimalValidWindowsPods[api.LevelRestricted][api.MajorMinorVersion(1, 22)] = addWindows(restricted_1_22)
+
+	// 1.25+: OS specific changes
+	minimalValidPods[api.LevelRestricted][api.MajorMinorVersion(1, 25)] = restricted_1_22
+	minimalValidLinuxPods[api.LevelRestricted][api.MajorMinorVersion(1, 25)] = addLinux(restricted_1_22)
+	// none of the restricted requirements added between 1.0 and 1.25 apply to the pods that are explicitly Windows
+	restricted_1_25_windows := addWindows(restricted_1_0)
+	minimalValidWindowsPods[api.LevelRestricted][api.MajorMinorVersion(1, 25)] = restricted_1_25_windows
+
 }
 
-// GetMinimalValidPod returns a minimal valid pod for the specified level and version.
+// GetMinimalValidPod returns a minimal valid OS neutral pod for the specified level and version.
 func GetMinimalValidPod(level api.Level, version api.Version) (*corev1.Pod, error) {
 	originalVersion := version
 	for {
 		pod, exists := minimalValidPods[level][version]
+		if exists {
+			return pod.DeepCopy(), nil
+		}
+		if version.Minor() <= 0 {
+			return nil, fmt.Errorf("no valid pod fixture found in specified or older versions for %s/%s", level, originalVersion.String())
+		}
+		version = api.MajorMinorVersion(version.Major(), version.Minor()-1)
+	}
+}
+
+// GetMinimalValidLinuxPod returns a minimal valid linux pod for the specified level and version.
+func GetMinimalValidLinuxPod(level api.Level, version api.Version) (*corev1.Pod, error) {
+	originalVersion := version
+	for {
+		pod, exists := minimalValidLinuxPods[level][version]
+		if exists {
+			return pod.DeepCopy(), nil
+		}
+		if version.Minor() <= 0 {
+			return nil, fmt.Errorf("no valid pod fixture found in specified or older versions for %s/%s", level, originalVersion.String())
+		}
+		version = api.MajorMinorVersion(version.Major(), version.Minor()-1)
+	}
+}
+
+// GetMinimalValidWindowsPod returns a minimal valid windows pod for the specified level and version.
+func GetMinimalValidWindowsPod(level api.Level, version api.Version) (*corev1.Pod, error) {
+	originalVersion := version
+	for {
+		pod, exists := minimalValidWindowsPods[level][version]
 		if exists {
 			return pod.DeepCopy(), nil
 		}
@@ -114,9 +183,14 @@ type fixtureGenerator struct {
 	// Pass cases are not allowed to be feature-gated (pass cases must only depend on data existing in GA fields).
 	failRequiresFeatures []featuregate.Feature
 
-	// generatePass transforms a minimum valid pod into one or more valid pods.
+	// failRequiresError indicates the fixtures in the failure cases cannot be created with warnings, but result in API errors.
+	// This happens when the combination of fields required to fail the PSA check also fails validation.
+	// When failRequiresError=true, the controller test scenarios expect failure cases to be rejected rather than accepted with warnings.
+	failRequiresError bool
+
+	// generatePass transforms a minimum valid pod into one or more valid pods that pass the given policy level.
 	// pods do not need to populate metadata.name.
-	generatePass func(*corev1.Pod) []*corev1.Pod
+	generatePass func(*corev1.Pod, api.Level) []*corev1.Pod
 	// generateFail transforms a minimum valid pod into one or more invalid pods.
 	// pods do not need to populate metadata.name.
 	generateFail func(*corev1.Pod) []*corev1.Pod
@@ -131,6 +205,11 @@ type fixtureData struct {
 	// If empty, failure test cases are always run.
 	// Pass cases are not allowed to be feature-gated (pass cases must only depend on data existing in GA fields).
 	failRequiresFeatures []featuregate.Feature
+
+	// failRequiresError indicates the fixtures in the failure cases cannot be created with warnings, but result in API errors.
+	// This happens when the combination of fields required to fail the PSA check also fails validation.
+	// When failRequiresError=true, the controller test scenarios expect failure cases to be rejected rather than accepted with warnings.
+	failRequiresError bool
 
 	pass []*corev1.Pod
 	fail []*corev1.Pod
@@ -179,8 +258,9 @@ func getFixtures(key fixtureKey) (fixtureData, error) {
 			data := fixtureData{
 				expectErrorSubstring: generator.expectErrorSubstring,
 				failRequiresFeatures: generator.failRequiresFeatures,
+				failRequiresError:    generator.failRequiresError,
 
-				pass: generator.generatePass(validPodForLevel.DeepCopy()),
+				pass: generator.generatePass(validPodForLevel.DeepCopy(), key.level),
 				fail: generator.generateFail(validPodForLevel.DeepCopy()),
 			}
 			if len(data.expectErrorSubstring) == 0 {

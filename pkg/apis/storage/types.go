@@ -203,6 +203,14 @@ type VolumeError struct {
 	// information.
 	// +optional
 	Message string
+
+	// errorCode is a numeric gRPC code representing the error encountered during Attach or Detach operations.
+	//
+	// This is an optional field that requires the MutableCSINodeAllocatableCount feature gate being enabled to be set.
+	//
+	// +featureGate=MutableCSINodeAllocatableCount
+	// +optional
+	ErrorCode *int32
 }
 
 // VolumeBindingMode indicates how PersistentVolumeClaims should be bound.
@@ -271,27 +279,13 @@ type CSIDriverSpec struct {
 	// and waits until the volume is attached before proceeding to mounting.
 	// The CSI external-attacher coordinates with CSI volume driver and updates
 	// the volumeattachment status when the attach operation is complete.
-	// If the CSIDriverRegistry feature gate is enabled and the value is
-	// specified to false, the attach operation will be skipped.
+	// If the value is specified to false, the attach operation will be skipped.
 	// Otherwise the attach operation will be called.
 	//
 	// This field is immutable.
 	//
 	// +optional
 	AttachRequired *bool
-
-	// Defines if the underlying volume supports changing ownership and
-	// permission of the volume before being mounted.
-	// Refer to the specific FSGroupPolicy values for additional details.
-	//
-	// This field is immutable.
-	//
-	// Defaults to ReadWriteOnceWithFSType, which will examine each volume
-	// to determine if Kubernetes should modify ownership and permissions of the volume.
-	// With the default policy the defined fsGroup will only be applied
-	// if a fstype is defined and the volume's access mode contains ReadWriteOnce.
-	// +optional
-	FSGroupPolicy *FSGroupPolicy
 
 	// If set to true, podInfoOnMount indicates this CSI volume driver
 	// requires additional pod information (like podName, podUID, etc.) during
@@ -303,7 +297,7 @@ type CSIDriverSpec struct {
 	// NodePublishVolume() calls.
 	// The CSI driver is responsible for parsing and validating the information
 	// passed in as VolumeContext.
-	// The following VolumeConext will be passed if podInfoOnMount is set to true.
+	// The following VolumeContext will be passed if podInfoOnMount is set to true.
 	// This list might grow, but the prefix will be used.
 	// "csi.storage.k8s.io/pod.name": pod.Name
 	// "csi.storage.k8s.io/pod.namespace": pod.Namespace
@@ -318,7 +312,7 @@ type CSIDriverSpec struct {
 	// deployed on such a cluster and the deployment determines which mode that is, for example
 	// via a command line parameter of the driver.
 	//
-	// This field is immutable.
+	// This field was immutable in Kubernetes < 1.29 and now is mutable.
 	//
 	// +optional
 	PodInfoOnMount *bool
@@ -360,6 +354,19 @@ type CSIDriverSpec struct {
 	// +optional
 	StorageCapacity *bool
 
+	// Defines if the underlying volume supports changing ownership and
+	// permission of the volume before being mounted.
+	// Refer to the specific FSGroupPolicy values for additional details.
+	//
+	// This field was immutable in Kubernetes < 1.29 and now is mutable.
+	//
+	// Defaults to ReadWriteOnceWithFSType, which will examine each volume
+	// to determine if Kubernetes should modify ownership and permissions of the volume.
+	// With the default policy the defined fsGroup will only be applied
+	// if a fstype is defined and the volume's access mode contains ReadWriteOnce.
+	// +optional
+	FSGroupPolicy *FSGroupPolicy
+
 	// TokenRequests indicates the CSI driver needs pods' service account
 	// tokens it is mounting volume for to do necessary authentication. Kubelet
 	// will pass the tokens in VolumeContext in the CSI NodePublishVolume calls.
@@ -390,6 +397,88 @@ type CSIDriverSpec struct {
 	//
 	// +optional
 	RequiresRepublish *bool
+
+	// SELinuxMount specifies if the CSI driver supports "-o context"
+	// mount option.
+	//
+	// When "true", the CSI driver must ensure that all volumes provided by this CSI
+	// driver can be mounted separately with different `-o context` options. This is
+	// typical for storage backends that provide volumes as filesystems on block
+	// devices or as independent shared volumes.
+	// Kubernetes will call NodeStage / NodePublish with "-o context=xyz" mount
+	// option when mounting a ReadWriteOncePod volume used in Pod that has
+	// explicitly set SELinux context. In the future, it may be expanded to other
+	// volume AccessModes. In any case, Kubernetes will ensure that the volume is
+	// mounted only with a single SELinux context.
+	//
+	// When "false", Kubernetes won't pass any special SELinux mount options to the driver.
+	// This is typical for volumes that represent subdirectories of a bigger shared filesystem.
+	//
+	// Default is "false".
+	//
+	// +featureGate=SELinuxMountReadWriteOncePod
+	// +optional
+	SELinuxMount *bool
+
+	// nodeAllocatableUpdatePeriodSeconds specifies the interval between periodic updates of
+	// the CSINode allocatable capacity for this driver. When set, both periodic updates and
+	// updates triggered by capacity-related failures are enabled. If not set, no updates
+	// occur (neither periodic nor upon detecting capacity-related failures), and the
+	// allocatable.count remains static. The minimum allowed value for this field is 10 seconds.
+	//
+	// This feature requires the MutableCSINodeAllocatableCount feature gate to be enabled.
+	//
+	// This field is mutable.
+	//
+	// +featureGate=MutableCSINodeAllocatableCount
+	// +optional
+	NodeAllocatableUpdatePeriodSeconds *int64
+
+	// serviceAccountTokenInSecrets is an opt-in for CSI drivers to indicate that
+	// service account tokens should be passed via the Secrets field in NodePublishVolumeRequest
+	// instead of the VolumeContext field. The CSI specification provides a dedicated Secrets
+	// field for sensitive information like tokens, which is the appropriate mechanism for
+	// handling credentials. This addresses security concerns where sensitive tokens were being
+	// logged as part of volume context, leading to vulnerabilities like CVE-2023-2878 and
+	// CVE-2024-3744.
+	//
+	// When "true", kubelet will pass the tokens only in the Secrets field with the key
+	// "csi.storage.k8s.io/serviceAccount.tokens". The CSI driver must be updated to read
+	// tokens from the Secrets field instead of VolumeContext.
+	//
+	// When "false" or not set, kubelet will pass the tokens in VolumeContext with the key
+	// "csi.storage.k8s.io/serviceAccount.tokens" (existing behavior). This maintains backward
+	// compatibility with existing CSI drivers.
+	//
+	// This field can only be set when TokenRequests is configured. The API server will reject
+	// CSIDriver specs that set this field without TokenRequests.
+	//
+	// Default is "false".
+	//
+	// +featureGate=CSIServiceAccountTokenSecrets
+	// +optional
+	ServiceAccountTokenInSecrets *bool
+
+	// PreventPodSchedulingIfMissing indicates that the CSI driver wants to prevent pod
+	// scheduling if the CSI driver on the node is missing.
+	//
+	// Enabling this option will prevent the scheduler (or any other
+	// component which embeds default scheduler such as cluster-autoscaler) from
+	// scheduling pods to nodes where CSI driver is not installed.
+	//
+	// For components(such as cluster-autoscaler) that embed the scheduler and run
+	// pod placement simulations using scheduler plugins, they MUST be aware of
+	// CSI driver registration information via CSINode object. They must create simulated
+	// CSINode objects in addition to Node objects during scheduling simulation, otherwise
+	// if PreventPodSchedulingIfMissing is enabled globally for CSIDriver object, any
+	// newly created node may be rejected by the scheduler because of missing CSI driver
+	// information from the node.
+	//
+	// This is a beta feature and requires the VolumeLimitScaling feature gate to be enabled.
+	// Default is "false".
+	// +featureGate=VolumeLimitScaling
+	// +optional
+	PreventPodSchedulingIfMissing *bool
 }
 
 // FSGroupPolicy specifies if a CSI Driver supports modifying
@@ -401,7 +490,7 @@ const (
 	// ReadWriteOnceWithFSTypeFSGroupPolicy indicates that each volume will be examined
 	// to determine if the volume ownership and permissions
 	// should be modified. If a fstype is defined and the volume's access mode
-	// contains ReadWriteOnce, then the defined fsGroup will be applied.
+	// contains ReadWriteOnce or ReadWriteOncePod, then the defined fsGroup will be applied.
 	// This mode should be defined if it's expected that the
 	// fsGroup may need to be modified depending on the pod's SecurityPolicy.
 	// This is the default behavior if no other FSGroupPolicy is defined.
@@ -473,6 +562,8 @@ const (
 // there are no CSI Drivers available on the node, or the Kubelet version is low
 // enough that it doesn't create this object.
 // CSINode has an OwnerReference that points to the corresponding node object.
+// When the MutableCSINodeAllocatableCount feature gate is enabled, the allocatable.count
+// field in CSINodeDriver can be updated.
 type CSINode struct {
 	metav1.TypeMeta
 
@@ -481,6 +572,10 @@ type CSINode struct {
 
 	// spec is the specification of CSINode
 	Spec CSINodeSpec
+
+	// status contains health and status information for the node's storage.
+	// +optional
+	Status CSINodeStatus
 }
 
 // CSINodeSpec holds information about the specification of all CSI drivers installed on a node
@@ -536,6 +631,59 @@ type VolumeNodeResources struct {
 	// If this field is not specified, then the supported number of volumes on this node is unbounded.
 	// +optional
 	Count *int32
+}
+
+// StorageHealthStatusType describes the health status category of a storage backend.
+type StorageHealthStatusType string
+
+const (
+	// StorageUnreachable indicates the storage backend is unreachable.
+	StorageUnreachable StorageHealthStatusType = "StorageUnreachable"
+	// StorageDegraded indicates the storage backend is functioning with reduced capability.
+	StorageDegraded StorageHealthStatusType = "StorageDegraded"
+)
+
+// StorageHealthCondition represents an adverse health condition reported
+// by a CSI driver for its storage backend on a node.
+type StorageHealthCondition struct {
+	// status is the health status category.
+	// One of "StorageUnreachable", "StorageDegraded".
+	Status StorageHealthStatusType
+	// reason is a brief CamelCase machine-parseable reason.
+	Reason string
+	// message is a human-readable description.
+	// +optional
+	Message string
+	// accessMode is the access mode affected. Nil means all access modes are affected.
+	// +optional
+	AccessMode *api.PersistentVolumeAccessMode
+	// volumeMode is the volume mode affected. Nil means both are affected.
+	// +optional
+	VolumeMode *api.PersistentVolumeMode
+	// lastTransitionTime is when this condition first appeared at its current state.
+	// +optional
+	LastTransitionTime metav1.Time
+}
+
+// StorageHealth contains storage backend health reported by a CSI driver on a node.
+type StorageHealth struct {
+	// name is the CSI driver name, matching CSINodeDriver.name.
+	Name string
+	// healthConditions are the adverse storage backend conditions reported by the CSI driver.
+	// At most 16 conditions may be reported.
+	// +optional
+	// +listType=atomic
+	HealthConditions []StorageHealthCondition
+}
+
+// CSINodeStatus contains health and status information for storage on a node.
+type CSINodeStatus struct {
+	// storageHealth contains backend health reports for CSI drivers registered on the node.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +featureGate=CSIVolumeHealth
+	StorageHealth []StorageHealth
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -649,4 +797,54 @@ type CSIStorageCapacityList struct {
 
 	// Items is the list of CSIStorageCapacity objects.
 	Items []CSIStorageCapacity
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// VolumeAttributesClass represents a specification of mutable volume attributes
+// defined by the CSI driver. The class can be specified during dynamic provisioning
+// of PersistentVolumeClaims, and changed in the PersistentVolumeClaim spec after provisioning.
+type VolumeAttributesClass struct {
+	metav1.TypeMeta
+
+	// Standard object's metadata.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	// +optional
+	metav1.ObjectMeta
+
+	// Name of the CSI driver
+	// This field is immutable.
+	DriverName string
+
+	// parameters hold volume attributes defined by the CSI driver. These values
+	// are opaque to the Kubernetes and are passed directly to the CSI driver.
+	// The underlying storage provider supports changing these attributes on an
+	// existing volume, however the parameters field itself is immutable. To
+	// invoke a volume update, a new VolumeAttributesClass should be created with
+	// new parameters, and the PersistentVolumeClaim should be updated to reference
+	// the new VolumeAttributesClass.
+	//
+	// This field is required and must contain at least one key/value pair.
+	// The keys cannot be empty, and the maximum number of parameters is 512, with
+	// a cumulative max size of 256K. If the CSI driver rejects invalid parameters,
+	// the target PersistentVolumeClaim will be set to an "Infeasible" state in the
+	// modifyVolumeStatus field.
+	Parameters map[string]string
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// VolumeAttributesClassList is a collection of VolumeAttributesClass objects.
+type VolumeAttributesClassList struct {
+	metav1.TypeMeta
+
+	// Standard list metadata
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	// +optional
+	metav1.ListMeta
+
+	// items is the list of VolumeAttributesClass objects.
+	// +listType=map
+	// +listMapKey=name
+	Items []VolumeAttributesClass
 }

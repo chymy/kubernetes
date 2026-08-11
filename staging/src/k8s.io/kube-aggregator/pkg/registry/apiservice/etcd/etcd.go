@@ -29,7 +29,7 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/kube-aggregator/pkg/apis/apiregistration"
 	"k8s.io/kube-aggregator/pkg/registry/apiservice"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // REST implements a RESTStorage for API services against etcd
@@ -41,10 +41,11 @@ type REST struct {
 func NewREST(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter) *REST {
 	strategy := apiservice.NewStrategy(scheme)
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &apiregistration.APIService{} },
-		NewListFunc:              func() runtime.Object { return &apiregistration.APIServiceList{} },
-		PredicateFunc:            apiservice.MatchAPIService,
-		DefaultQualifiedResource: apiregistration.Resource("apiservices"),
+		NewFunc:                   func() runtime.Object { return &apiregistration.APIService{} },
+		NewListFunc:               func() runtime.Object { return &apiregistration.APIServiceList{} },
+		PredicateFunc:             apiservice.MatchAPIService,
+		DefaultQualifiedResource:  apiregistration.Resource("apiservices"),
+		SingularQualifiedResource: apiregistration.Resource("apiservice"),
 
 		CreateStrategy:      strategy,
 		UpdateStrategy:      strategy,

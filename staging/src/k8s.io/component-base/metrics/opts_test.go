@@ -17,11 +17,13 @@ limitations under the License.
 package metrics
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/util/sets"
+	internalmetrics "k8s.io/component-base/metrics/internal"
 )
 
 func TestDefaultStabilityLevel(t *testing.T) {
@@ -38,9 +40,9 @@ func TestDefaultStabilityLevel(t *testing.T) {
 			expectPanic: false,
 		},
 		{
-			name:        "ALPHA remain unchanged",
-			inputValue:  ALPHA,
-			expectValue: ALPHA,
+			name:        "INTERNAL remain unchanged",
+			inputValue:  INTERNAL,
+			expectValue: INTERNAL,
 			expectPanic: false,
 		},
 		{
@@ -52,7 +54,6 @@ func TestDefaultStabilityLevel(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			var stability = tc.inputValue
 
@@ -64,8 +65,8 @@ func TestDefaultStabilityLevel(t *testing.T) {
 
 func TestConstrainToAllowedList(t *testing.T) {
 	allowList := &MetricLabelAllowList{
-		labelToAllowList: map[string]sets.String{
-			"label_a": sets.NewString("allow_value1", "allow_value2"),
+		labelToAllowList: map[string]sets.Set[string]{
+			"label_a": sets.New[string]("allow_value1", "allow_value2"),
 		},
 	}
 	labelNameList := []string{"label_a", "label_b"}
@@ -97,8 +98,8 @@ func TestConstrainToAllowedList(t *testing.T) {
 
 func TestConstrainLabelMap(t *testing.T) {
 	allowList := &MetricLabelAllowList{
-		labelToAllowList: map[string]sets.String{
-			"label_a": sets.NewString("allow_value1", "allow_value2"),
+		labelToAllowList: map[string]sets.Set[string]{
+			"label_a": sets.New[string]("allow_value1", "allow_value2"),
 		},
 	}
 	var tests = []struct {
@@ -135,6 +136,143 @@ func TestConstrainLabelMap(t *testing.T) {
 			if !reflect.DeepEqual(test.inputLabelMap, test.outputLabelMap) {
 				t.Errorf("Got %v, expected %v", test.inputLabelMap, test.outputLabelMap)
 			}
+		})
+	}
+}
+
+func TestSetLabelAllowListFromManifest(t *testing.T) {
+	tests := []struct {
+		name                       string
+		manifest                   string
+		manifestExist              bool
+		expectlabelValueAllowLists map[string]*MetricLabelAllowList
+	}{
+		{
+			name:          "successfully parse manifest",
+			manifestExist: true,
+			manifest: `metric1,label1: v1,v2
+metric2,label2: v3`,
+			expectlabelValueAllowLists: map[string]*MetricLabelAllowList{
+				"metric1": {
+					labelToAllowList: map[string]sets.Set[string]{
+						"label1": sets.New[string]("v1", "v2"),
+					},
+				},
+				"metric2": {
+					labelToAllowList: map[string]sets.Set[string]{
+						"label2": sets.New[string]("v3"),
+					},
+				},
+			},
+		},
+		{
+			name:                       "failed to read manifest file",
+			manifestExist:              false,
+			expectlabelValueAllowLists: map[string]*MetricLabelAllowList{},
+		},
+		{
+			name:          "failed to parse manifest",
+			manifestExist: true,
+			manifest: `allow-list:
+- metric1,label1:v1
+- metric2,label2:v2,v3`,
+			expectlabelValueAllowLists: map[string]*MetricLabelAllowList{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			labelValueAllowLists = map[string]*MetricLabelAllowList{}
+			manifestFilePath := "/non-existent-file.yaml"
+			if tc.manifestExist {
+				tempFile, err := os.CreateTemp("", "allow-list-test")
+				if err != nil {
+					t.Fatalf("failed to create temp file: %v", err)
+				}
+				defer func() {
+					if err := os.Remove(tempFile.Name()); err != nil {
+						t.Errorf("failed to remove temp file: %v", err)
+					}
+				}()
+
+				if _, err := tempFile.WriteString(tc.manifest); err != nil {
+					t.Fatalf("failed to write to temp file: %v", err)
+				}
+				manifestFilePath = tempFile.Name()
+			}
+
+			SetLabelAllowListFromManifest(manifestFilePath)
+			if !reflect.DeepEqual(labelValueAllowLists, tc.expectlabelValueAllowLists) {
+				t.Errorf("labelValueAllowLists = %+v, want %+v", labelValueAllowLists, tc.expectlabelValueAllowLists)
+			}
+		})
+	}
+}
+
+func TestResetLabelValueAllowLists(t *testing.T) {
+	labelValueAllowLists = map[string]*MetricLabelAllowList{
+		"metric1": {
+			labelToAllowList: map[string]sets.Set[string]{
+				"label1": sets.New[string]("v1", "v2"),
+			},
+		},
+		"metric2": {
+			labelToAllowList: map[string]sets.Set[string]{
+				"label2": sets.New[string]("v3"),
+			},
+		},
+	}
+
+	ResetLabelValueAllowLists()
+	assert.Empty(t, labelValueAllowLists)
+}
+
+func TestToPromHistogramOptsWithNativeHistograms(t *testing.T) {
+	originalEnabled := internalmetrics.NativeHistogramsEnabled()
+	defer func() {
+		internalmetrics.SetNativeHistogramsEnabled(originalEnabled)
+	}()
+
+	tests := []struct {
+		name                                string
+		enableNativeHistograms              bool
+		expectedNativeHistogramBucketFactor float64
+		expectedNativeHistogramMaxBuckets   uint32
+	}{
+		{
+			name:                                "native histograms disabled",
+			enableNativeHistograms:              false,
+			expectedNativeHistogramBucketFactor: 0,
+			expectedNativeHistogramMaxBuckets:   0,
+		},
+		{
+			name:                                "native histograms enabled",
+			enableNativeHistograms:              true,
+			expectedNativeHistogramBucketFactor: 1.1,
+			expectedNativeHistogramMaxBuckets:   160,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			internalmetrics.SetNativeHistogramsEnabled(tc.enableNativeHistograms)
+
+			opts := &HistogramOpts{
+				Namespace: "test",
+				Name:      "histogram",
+				Help:      "test histogram",
+				Buckets:   []float64{0.1, 0.5, 1, 2, 5},
+			}
+
+			promOpts := opts.toPromHistogramOpts()
+
+			assert.InDelta(t, tc.expectedNativeHistogramBucketFactor, promOpts.NativeHistogramBucketFactor, 0.0,
+				"NativeHistogramBucketFactor mismatch")
+			assert.Equal(t, tc.expectedNativeHistogramMaxBuckets, promOpts.NativeHistogramMaxBucketNumber,
+				"NativeHistogramMaxBucketNumber mismatch")
+
+			// Verify classic buckets are always present
+			assert.Equal(t, opts.Buckets, promOpts.Buckets, "Classic buckets should always be present")
 		})
 	}
 }

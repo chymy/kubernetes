@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 // Cache stores the PodStatus for the pods. It represents *all* the visible
@@ -30,18 +32,30 @@ import (
 // has no states known by the runtime, Cache returns an empty PodStatus object
 // with ID populated.
 //
-// Cache provides two methods to retrieve the PodStatus: the non-blocking Get()
-// and the blocking GetNewerThan() method. The component responsible for
-// populating the cache is expected to call Delete() to explicitly free the
-// cache entries.
+// The component responsible for populating the cache is expected to call
+// Delete() to explicitly free the cache entries.
 type Cache interface {
+	ROCache
+	// Set updates the cache by setting the PodStatus for the pod only
+	// if the data is newer than the cache based on the provided
+	// time stamp. Returns if the cache was updated.
+	Set(types.UID, *PodStatus, error, time.Time) (updated bool)
+	// SetObservedTime modifies the observed timestamp of a pod in the cache.
+	// This indicates that the pod's state was recently confirmed to be accurate
+	// by the runtime, even if its status wasn't modified.
+	SetObservedTime(types.UID, time.Time)
+	Delete(types.UID)
+	UpdateTime(time.Time)
+}
+
+// ROCache is a read-only interface to the pod status cache. It provides two
+// methods to retrieve the PodStatus: the non-blocking Get() and the blocking
+// GetNewerThan() method.
+type ROCache interface {
 	Get(types.UID) (*PodStatus, error)
-	Set(types.UID, *PodStatus, error, time.Time)
 	// GetNewerThan is a blocking call that only returns the status
 	// when it is newer than the given time.
 	GetNewerThan(types.UID, time.Time) (*PodStatus, error)
-	Delete(types.UID)
-	UpdateTime(time.Time)
 }
 
 type data struct {
@@ -51,6 +65,10 @@ type data struct {
 	err error
 	// Time when the data was last modified.
 	modified time.Time
+	// Time when the data was last individually observed/verified by the runtime.
+	// The actual observed time should be the more recent of observedTime and the global cache timestamp.
+	// This is updated when the pod is relisted but its status hasn't changed.
+	observedTime time.Time
 }
 
 type subRecord struct {
@@ -93,12 +111,34 @@ func (c *cache) GetNewerThan(id types.UID, minTime time.Time) (*PodStatus, error
 	return d.status, d.err
 }
 
-// Set sets the PodStatus for the pod.
-func (c *cache) Set(id types.UID, status *PodStatus, err error, timestamp time.Time) {
+// Set sets the PodStatus for the pod only if the data is newer than the cache
+func (c *cache) Set(id types.UID, status *PodStatus, err error, timestamp time.Time) (updated bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	defer c.notify(id, timestamp)
-	c.pods[id] = &data{status: status, err: err, modified: timestamp}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.EventedPLEG) {
+		// Set the value in the cache only if it's not present already
+		// or the timestamp in the cache is older than the current update timestamp
+		if cachedVal, ok := c.pods[id]; ok && cachedVal.modified.After(timestamp) {
+			return false
+		}
+	}
+
+	c.pods[id] = &data{status: status, err: err, modified: timestamp, observedTime: timestamp}
+	c.notify(id, timestamp)
+	return true
+}
+
+// SetObservedTime modifies the observed timestamp of a pod in the cache and
+// notify subscribers if needed.
+func (c *cache) SetObservedTime(id types.UID, timestamp time.Time) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if d, ok := c.pods[id]; ok {
+		d.observedTime = timestamp
+	}
+	// Notify all the subscribers if the condition is met.
+	c.notify(id, timestamp)
 }
 
 // Delete removes the entry of the pod.
@@ -108,8 +148,8 @@ func (c *cache) Delete(id types.UID) {
 	delete(c.pods, id)
 }
 
-//  UpdateTime modifies the global timestamp of the cache and notify
-//  subscribers if needed.
+// UpdateTime modifies the global timestamp of the cache and notify
+// subscribers if needed.
 func (c *cache) UpdateTime(timestamp time.Time) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -148,9 +188,10 @@ func (c *cache) getIfNewerThan(id types.UID, minTime time.Time) *data {
 		// minTime, return the default status.
 		return makeDefaultData(id)
 	}
-	if ok && (d.modified.After(minTime) || globalTimestampIsNewer) {
+	if ok && (globalTimestampIsNewer || d.modified.After(minTime) || d.observedTime.After(minTime)) {
 		// Status is cached, return status if either of the following is true.
 		//   * status was modified after minTime
+		//   * status was observed after minTime
 		//   * the global timestamp of the cache is newer than minTime.
 		return d
 	}

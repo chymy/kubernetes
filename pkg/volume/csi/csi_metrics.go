@@ -26,6 +26,7 @@ import (
 	servermetrics "k8s.io/kubernetes/pkg/kubelet/server/metrics"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
+	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
 )
 
 var _ volume.MetricsProvider = &metricsCsi{}
@@ -60,7 +61,9 @@ func (mc *metricsCsi) GetMetrics() (*volume.Metrics, error) {
 	// Get CSI client
 	csiClient, err := mc.csiClientGetter.Get()
 	if err != nil {
-		return nil, err
+		// Treat the absence of the CSI driver as a transient error
+		// See https://github.com/kubernetes/kubernetes/issues/120268
+		return nil, volumetypes.NewTransientOperationFailure(err.Error())
 	}
 	// Check whether "GET_VOLUME_STATS" is set
 	volumeStatsSet, err := csiClient.NodeSupportsVolumeStats(ctx)
@@ -86,13 +89,14 @@ func (mc *metricsCsi) GetMetrics() (*volume.Metrics, error) {
 	return metrics, nil
 }
 
-// MetricsManager defines the metrics mananger for CSI operation
+// MetricsManager defines the metrics manager for CSI operation
 type MetricsManager struct {
 	driverName string
 }
 
 // NewCSIMetricsManager creates a CSIMetricsManager object
 func NewCSIMetricsManager(driverName string) *MetricsManager {
+	volumeutil.RegisterMetrics()
 	cmm := MetricsManager{
 		driverName: driverName,
 	}

@@ -27,6 +27,7 @@ import (
 	compbasemetrics "k8s.io/component-base/metrics"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 func TestRecordOperation(t *testing.T) {
@@ -70,15 +71,17 @@ func TestRecordOperation(t *testing.T) {
 }
 
 func TestInstrumentedVersion(t *testing.T) {
-	fakeRuntime, _, _, _ := createTestRuntimeManager()
+	tCtx := ktesting.Init(t)
+	fakeRuntime, _, _, _ := createTestRuntimeManager(tCtx)
 	irs := newInstrumentedRuntimeService(fakeRuntime)
-	vr, err := irs.Version("1")
+	vr, err := irs.Version(tCtx, "1")
 	assert.NoError(t, err)
 	assert.Equal(t, kubeRuntimeAPIVersion, vr.Version)
 }
 
 func TestStatus(t *testing.T) {
-	fakeRuntime, _, _, _ := createTestRuntimeManager()
+	tCtx := ktesting.Init(t)
+	fakeRuntime, _, _, _ := createTestRuntimeManager(tCtx)
 	fakeRuntime.FakeStatus = &runtimeapi.RuntimeStatus{
 		Conditions: []*runtimeapi.RuntimeCondition{
 			{Type: runtimeapi.RuntimeReady, Status: false},
@@ -86,7 +89,7 @@ func TestStatus(t *testing.T) {
 		},
 	}
 	irs := newInstrumentedRuntimeService(fakeRuntime)
-	actural, err := irs.Status(false)
+	actural, err := irs.Status(tCtx, false)
 	assert.NoError(t, err)
 	expected := &runtimeapi.RuntimeStatus{
 		Conditions: []*runtimeapi.RuntimeCondition{

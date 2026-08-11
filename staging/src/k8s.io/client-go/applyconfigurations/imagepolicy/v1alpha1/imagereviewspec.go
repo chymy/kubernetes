@@ -18,15 +18,22 @@ limitations under the License.
 
 package v1alpha1
 
-// ImageReviewSpecApplyConfiguration represents an declarative configuration of the ImageReviewSpec type for use
+// ImageReviewSpecApplyConfiguration represents a declarative configuration of the ImageReviewSpec type for use
 // with apply.
+//
+// ImageReviewSpec is a description of the pod creation request.
 type ImageReviewSpecApplyConfiguration struct {
-	Containers  []ImageReviewContainerSpecApplyConfiguration `json:"containers,omitempty"`
-	Annotations map[string]string                            `json:"annotations,omitempty"`
-	Namespace   *string                                      `json:"namespace,omitempty"`
+	// containers is a list of a subset of the information in each container of the Pod being created.
+	Containers []ImageReviewContainerSpecApplyConfiguration `json:"containers,omitempty"`
+	// annotations is a list of key-value pairs extracted from the Pod's annotations.
+	// It only includes keys which match the pattern `*.image-policy.k8s.io/*`.
+	// It is up to each webhook backend to determine how to interpret these annotations, if at all.
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// namespace is the namespace the pod is being created in.
+	Namespace *string `json:"namespace,omitempty"`
 }
 
-// ImageReviewSpecApplyConfiguration constructs an declarative configuration of the ImageReviewSpec type for use with
+// ImageReviewSpecApplyConfiguration constructs a declarative configuration of the ImageReviewSpec type for use with
 // apply.
 func ImageReviewSpec() *ImageReviewSpecApplyConfiguration {
 	return &ImageReviewSpecApplyConfiguration{}

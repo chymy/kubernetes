@@ -17,8 +17,10 @@ limitations under the License.
 package devicemanager
 
 import (
+	"maps"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -48,10 +50,10 @@ func newPodDevices() *podDevices {
 	return &podDevices{devs: make(map[string]containerDevices)}
 }
 
-func (pdev *podDevices) pods() sets.String {
+func (pdev *podDevices) pods() sets.Set[string] {
 	pdev.RLock()
 	defer pdev.RUnlock()
-	ret := sets.NewString()
+	ret := sets.New[string]()
 	for k := range pdev.devs {
 		ret.Insert(k)
 	}
@@ -96,11 +98,11 @@ func (pdev *podDevices) delete(pods []string) {
 
 // Returns list of device Ids allocated to the given pod for the given resource.
 // Returns nil if we don't have cached state for the given <podUID, resource>.
-func (pdev *podDevices) podDevices(podUID, resource string) sets.String {
+func (pdev *podDevices) podDevices(podUID, resource string) sets.Set[string] {
 	pdev.RLock()
 	defer pdev.RUnlock()
 
-	ret := sets.NewString()
+	ret := sets.New[string]()
 	for contName := range pdev.devs[podUID] {
 		ret = ret.Union(pdev.containerDevices(podUID, contName, resource))
 	}
@@ -109,7 +111,7 @@ func (pdev *podDevices) podDevices(podUID, resource string) sets.String {
 
 // Returns list of device Ids allocated to the given container for the given resource.
 // Returns nil if we don't have cached state for the given <podUID, contName, resource>.
-func (pdev *podDevices) containerDevices(podUID, contName, resource string) sets.String {
+func (pdev *podDevices) containerDevices(podUID, contName, resource string) sets.Set[string] {
 	pdev.RLock()
 	defer pdev.RUnlock()
 	if _, podExists := pdev.devs[podUID]; !podExists {
@@ -126,7 +128,7 @@ func (pdev *podDevices) containerDevices(podUID, contName, resource string) sets
 }
 
 // Populates allocatedResources with the device resources allocated to the specified <podUID, contName>.
-func (pdev *podDevices) addContainerAllocatedResources(podUID, contName string, allocatedResources map[string]sets.String) {
+func (pdev *podDevices) addContainerAllocatedResources(podUID, contName string, allocatedResources map[string]sets.Set[string]) {
 	pdev.RLock()
 	defer pdev.RUnlock()
 	containers, exists := pdev.devs[podUID]
@@ -143,7 +145,7 @@ func (pdev *podDevices) addContainerAllocatedResources(podUID, contName string, 
 }
 
 // Removes the device resources allocated to the specified <podUID, contName> from allocatedResources.
-func (pdev *podDevices) removeContainerAllocatedResources(podUID, contName string, allocatedResources map[string]sets.String) {
+func (pdev *podDevices) removeContainerAllocatedResources(podUID, contName string, allocatedResources map[string]sets.Set[string]) {
 	pdev.RLock()
 	defer pdev.RUnlock()
 	containers, exists := pdev.devs[podUID]
@@ -159,16 +161,16 @@ func (pdev *podDevices) removeContainerAllocatedResources(podUID, contName strin
 	}
 }
 
-// Returns all of devices allocated to the pods being tracked, keyed by resourceName.
-func (pdev *podDevices) devices() map[string]sets.String {
-	ret := make(map[string]sets.String)
+// Returns all devices allocated to the pods being tracked, keyed by resourceName.
+func (pdev *podDevices) devices() map[string]sets.Set[string] {
+	ret := make(map[string]sets.Set[string])
 	pdev.RLock()
 	defer pdev.RUnlock()
 	for _, containerDevices := range pdev.devs {
 		for _, resources := range containerDevices {
 			for resource, devices := range resources {
 				if _, exists := ret[resource]; !exists {
-					ret[resource] = sets.NewString()
+					ret[resource] = sets.New[string]()
 				}
 				if devices.allocResp != nil {
 					ret[resource] = ret[resource].Union(devices.deviceIds.Devices())
@@ -179,8 +181,26 @@ func (pdev *podDevices) devices() map[string]sets.String {
 	return ret
 }
 
+// Returns podUID and containerName for a device allocated under the given resource.
+// The lookup must be scoped by resourceName: device IDs are only unique within a
+// resource, so different plugins may expose devices with identical IDs.
+func (pdev *podDevices) getPodAndContainerForDevice(resourceName, deviceID string) (string, string) {
+	pdev.RLock()
+	defer pdev.RUnlock()
+	for podUID, containerDevices := range pdev.devs {
+		for containerName, resources := range containerDevices {
+			if devices, ok := resources[resourceName]; ok {
+				if devices.deviceIds.Devices().Has(deviceID) {
+					return podUID, containerName
+				}
+			}
+		}
+	}
+	return "", ""
+}
+
 // Turns podDevices to checkpointData.
-func (pdev *podDevices) toCheckpointData() []checkpoint.PodDevicesEntry {
+func (pdev *podDevices) toCheckpointData(logger klog.Logger) []checkpoint.PodDevicesEntry {
 	var data []checkpoint.PodDevicesEntry
 	pdev.RLock()
 	defer pdev.RUnlock()
@@ -188,13 +208,13 @@ func (pdev *podDevices) toCheckpointData() []checkpoint.PodDevicesEntry {
 		for conName, resources := range containerDevices {
 			for resource, devices := range resources {
 				if devices.allocResp == nil {
-					klog.ErrorS(nil, "Can't marshal allocResp, allocation response is missing", "podUID", podUID, "containerName", conName, "resourceName", resource)
+					logger.Error(nil, "Can't marshal allocResp, allocation response is missing", "podUID", podUID, "containerName", conName, "resourceName", resource)
 					continue
 				}
 
-				allocResp, err := devices.allocResp.Marshal()
+				allocResp, err := proto.Marshal(devices.allocResp)
 				if err != nil {
-					klog.ErrorS(err, "Can't marshal allocResp", "podUID", podUID, "containerName", conName, "resourceName", resource)
+					logger.Error(err, "Can't marshal allocResp", "podUID", podUID, "containerName", conName, "resourceName", resource)
 					continue
 				}
 				data = append(data, checkpoint.PodDevicesEntry{
@@ -210,15 +230,15 @@ func (pdev *podDevices) toCheckpointData() []checkpoint.PodDevicesEntry {
 }
 
 // Populates podDevices from the passed in checkpointData.
-func (pdev *podDevices) fromCheckpointData(data []checkpoint.PodDevicesEntry) {
+func (pdev *podDevices) fromCheckpointData(logger klog.Logger, data []checkpoint.PodDevicesEntry) {
 	for _, entry := range data {
-		klog.V(2).InfoS("Get checkpoint entry",
+		logger.V(2).Info("Get checkpoint entry",
 			"podUID", entry.PodUID, "containerName", entry.ContainerName,
 			"resourceName", entry.ResourceName, "deviceIDs", entry.DeviceIDs, "allocated", entry.AllocResp)
 		allocResp := &pluginapi.ContainerAllocateResponse{}
-		err := allocResp.Unmarshal(entry.AllocResp)
+		err := proto.Unmarshal(entry.AllocResp, allocResp)
 		if err != nil {
-			klog.ErrorS(err, "Can't unmarshal allocResp", "podUID", entry.PodUID, "containerName", entry.ContainerName, "resourceName", entry.ResourceName)
+			logger.Error(err, "Can't unmarshal allocResp", "podUID", entry.PodUID, "containerName", entry.ContainerName, "resourceName", entry.ResourceName)
 			continue
 		}
 		pdev.insert(entry.PodUID, entry.ContainerName, entry.ResourceName, entry.DeviceIDs, allocResp)
@@ -226,7 +246,7 @@ func (pdev *podDevices) fromCheckpointData(data []checkpoint.PodDevicesEntry) {
 }
 
 // Returns combined container runtime settings to consume the container's allocated devices.
-func (pdev *podDevices) deviceRunContainerOptions(podUID, contName string) *DeviceRunContainerOptions {
+func (pdev *podDevices) deviceRunContainerOptions(logger klog.Logger, podUID, contName string) *DeviceRunContainerOptions {
 	pdev.RLock()
 	defer pdev.RUnlock()
 
@@ -244,6 +264,8 @@ func (pdev *podDevices) deviceRunContainerOptions(podUID, contName string) *Devi
 	mountsMap := make(map[string]string)
 	envsMap := make(map[string]string)
 	annotationsMap := make(map[string]string)
+	// Keep track of all CDI devices requested for the container.
+	allCDIDevices := sets.New[string]()
 	// Loops through AllocationResponses of all cached device resources.
 	for _, devices := range resources {
 		resp := devices.allocResp
@@ -252,17 +274,18 @@ func (pdev *podDevices) deviceRunContainerOptions(podUID, contName string) *Devi
 		// Mount points
 		// Device files
 		// Container annotations
+		// CDI device IDs
 		// These artifacts are per resource per container.
 		// Updates RunContainerOptions.Envs.
 		for k, v := range resp.Envs {
 			if e, ok := envsMap[k]; ok {
-				klog.V(4).InfoS("Skip existing env", "envKey", k, "envValue", v)
+				logger.V(4).Info("Skip existing env", "envKey", k, "envValue", v)
 				if e != v {
-					klog.ErrorS(nil, "Environment variable has conflicting setting", "envKey", k, "expected", v, "got", e)
+					logger.Error(nil, "Environment variable has conflicting setting", "envKey", k, "expected", v, "got", e)
 				}
 				continue
 			}
-			klog.V(4).InfoS("Add env", "envKey", k, "envValue", v)
+			logger.V(4).Info("Add env", "envKey", k, "envValue", v)
 			envsMap[k] = v
 			opts.Envs = append(opts.Envs, kubecontainer.EnvVar{Name: k, Value: v})
 		}
@@ -270,14 +293,14 @@ func (pdev *podDevices) deviceRunContainerOptions(podUID, contName string) *Devi
 		// Updates RunContainerOptions.Devices.
 		for _, dev := range resp.Devices {
 			if d, ok := devsMap[dev.ContainerPath]; ok {
-				klog.V(4).InfoS("Skip existing device", "containerPath", dev.ContainerPath, "hostPath", dev.HostPath)
+				logger.V(4).Info("Skip existing device", "containerPath", dev.ContainerPath, "hostPath", dev.HostPath)
 				if d != dev.HostPath {
-					klog.ErrorS(nil, "Container device has conflicting mapping host devices",
+					logger.Error(nil, "Container device has conflicting mapping host devices",
 						"containerPath", dev.ContainerPath, "got", d, "expected", dev.HostPath)
 				}
 				continue
 			}
-			klog.V(4).InfoS("Add device", "containerPath", dev.ContainerPath, "hostPath", dev.HostPath)
+			logger.V(4).Info("Add device", "containerPath", dev.ContainerPath, "hostPath", dev.HostPath)
 			devsMap[dev.ContainerPath] = dev.HostPath
 			opts.Devices = append(opts.Devices, kubecontainer.DeviceInfo{
 				PathOnHost:      dev.HostPath,
@@ -289,14 +312,14 @@ func (pdev *podDevices) deviceRunContainerOptions(podUID, contName string) *Devi
 		// Updates RunContainerOptions.Mounts.
 		for _, mount := range resp.Mounts {
 			if m, ok := mountsMap[mount.ContainerPath]; ok {
-				klog.V(4).InfoS("Skip existing mount", "containerPath", mount.ContainerPath, "hostPath", mount.HostPath)
+				logger.V(4).Info("Skip existing mount", "containerPath", mount.ContainerPath, "hostPath", mount.HostPath)
 				if m != mount.HostPath {
-					klog.ErrorS(nil, "Container mount has conflicting mapping host mounts",
+					logger.Error(nil, "Container mount has conflicting mapping host mounts",
 						"containerPath", mount.ContainerPath, "conflictingPath", m, "hostPath", mount.HostPath)
 				}
 				continue
 			}
-			klog.V(4).InfoS("Add mount", "containerPath", mount.ContainerPath, "hostPath", mount.HostPath)
+			logger.V(4).Info("Add mount", "containerPath", mount.ContainerPath, "hostPath", mount.HostPath)
 			mountsMap[mount.ContainerPath] = mount.HostPath
 			opts.Mounts = append(opts.Mounts, kubecontainer.Mount{
 				Name:          mount.ContainerPath,
@@ -311,18 +334,43 @@ func (pdev *podDevices) deviceRunContainerOptions(podUID, contName string) *Devi
 		// Updates for Annotations
 		for k, v := range resp.Annotations {
 			if e, ok := annotationsMap[k]; ok {
-				klog.V(4).InfoS("Skip existing annotation", "annotationKey", k, "annotationValue", v)
+				logger.V(4).Info("Skip existing annotation", "annotationKey", k, "annotationValue", v)
 				if e != v {
-					klog.ErrorS(nil, "Annotation has conflicting setting", "annotationKey", k, "expected", e, "got", v)
+					logger.Error(nil, "Annotation has conflicting setting", "annotationKey", k, "expected", e, "got", v)
 				}
 				continue
 			}
-			klog.V(4).InfoS("Add annotation", "annotationKey", k, "annotationValue", v)
+			logger.V(4).Info("Add annotation", "annotationKey", k, "annotationValue", v)
 			annotationsMap[k] = v
 			opts.Annotations = append(opts.Annotations, kubecontainer.Annotation{Name: k, Value: v})
 		}
+
+		// Updates for CDI devices.
+		cdiDevices := getCDIDeviceInfo(logger, resp, allCDIDevices)
+		opts.CDIDevices = append(opts.CDIDevices, cdiDevices...)
 	}
+
 	return opts
+}
+
+// getCDIDeviceInfo returns CDI devices from an allocate response
+func getCDIDeviceInfo(logger klog.Logger, resp *pluginapi.ContainerAllocateResponse, knownCDIDevices sets.Set[string]) []kubecontainer.CDIDevice {
+	var cdiDevices []kubecontainer.CDIDevice
+	for _, cdiDevice := range resp.CdiDevices {
+		if knownCDIDevices.Has(cdiDevice.Name) {
+			logger.V(4).Info("Skip existing CDI Device", "name", cdiDevice.Name)
+			continue
+		}
+		logger.V(4).Info("Add CDI device", "name", cdiDevice.Name)
+		knownCDIDevices.Insert(cdiDevice.Name)
+
+		device := kubecontainer.CDIDevice{
+			Name: cdiDevice.Name,
+		}
+		cdiDevices = append(cdiDevices, device)
+	}
+
+	return cdiDevices
 }
 
 // getContainerDevices returns the devices assigned to the provided container for all ResourceNames
@@ -341,13 +389,13 @@ func (pdev *podDevices) getContainerDevices(podUID, contName string) ResourceDev
 		if len(allocateInfo.deviceIds) == 0 {
 			continue
 		}
-		devicePluginMap := make(map[string]pluginapi.Device)
+		devicePluginMap := make(map[string]*pluginapi.Device)
 		for numaid, devlist := range allocateInfo.deviceIds {
-			for _, devId := range devlist {
+			for _, devID := range devlist {
 				var topology *pluginapi.TopologyInfo
 				if numaid != nodeWithoutTopology {
 					NUMANodes := []*pluginapi.NUMANode{{ID: numaid}}
-					if pDev, ok := devicePluginMap[devId]; ok && pDev.Topology != nil {
+					if pDev, ok := devicePluginMap[devID]; ok && pDev.Topology != nil {
 						if nodes := pDev.Topology.GetNodes(); nodes != nil {
 							NUMANodes = append(NUMANodes, nodes...)
 						}
@@ -356,7 +404,7 @@ func (pdev *podDevices) getContainerDevices(podUID, contName string) ResourceDev
 					// ID and Healthy are not relevant here.
 					topology = &pluginapi.TopologyInfo{Nodes: NUMANodes}
 				}
-				devicePluginMap[devId] = pluginapi.Device{
+				devicePluginMap[devID] = &pluginapi.Device{
 					Topology: topology,
 				}
 			}
@@ -367,29 +415,28 @@ func (pdev *podDevices) getContainerDevices(podUID, contName string) ResourceDev
 }
 
 // DeviceInstances is a mapping device name -> plugin device data
-type DeviceInstances map[string]pluginapi.Device
+type DeviceInstances map[string]*pluginapi.Device
 
 // ResourceDeviceInstances is a mapping resource name -> DeviceInstances
 type ResourceDeviceInstances map[string]DeviceInstances
 
+// NewResourceDeviceInstances returns a new ResourceDeviceInstances
 func NewResourceDeviceInstances() ResourceDeviceInstances {
 	return make(ResourceDeviceInstances)
 }
 
+// Clone returns a clone of ResourceDeviceInstances
 func (rdev ResourceDeviceInstances) Clone() ResourceDeviceInstances {
 	clone := NewResourceDeviceInstances()
 	for resourceName, resourceDevs := range rdev {
-		clone[resourceName] = make(map[string]pluginapi.Device)
-		for devID, dev := range resourceDevs {
-			clone[resourceName][devID] = dev
-		}
+		clone[resourceName] = maps.Clone(resourceDevs)
 	}
 	return clone
 }
 
-// Filter takes a condition set expressed as map[string]sets.String and returns a new
+// Filter takes a condition set expressed as map[string]sets.Set[string] and returns a new
 // ResourceDeviceInstances with only the devices matching the condition set.
-func (rdev ResourceDeviceInstances) Filter(cond map[string]sets.String) ResourceDeviceInstances {
+func (rdev ResourceDeviceInstances) Filter(cond map[string]sets.Set[string]) ResourceDeviceInstances {
 	filtered := NewResourceDeviceInstances()
 	for resourceName, filterIDs := range cond {
 		if _, exists := rdev[resourceName]; !exists {

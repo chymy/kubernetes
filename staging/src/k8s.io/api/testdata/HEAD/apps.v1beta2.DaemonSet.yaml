@@ -116,6 +116,10 @@ spec:
                   - valuesValue
                 matchLabels:
                   matchLabelsKey: matchLabelsValue
+              matchLabelKeys:
+              - matchLabelKeysValue
+              mismatchLabelKeys:
+              - mismatchLabelKeysValue
               namespaceSelector:
                 matchExpressions:
                 - key: keyValue
@@ -137,6 +141,10 @@ spec:
                 - valuesValue
               matchLabels:
                 matchLabelsKey: matchLabelsValue
+            matchLabelKeys:
+            - matchLabelKeysValue
+            mismatchLabelKeys:
+            - mismatchLabelKeysValue
             namespaceSelector:
               matchExpressions:
               - key: keyValue
@@ -159,6 +167,10 @@ spec:
                   - valuesValue
                 matchLabels:
                   matchLabelsKey: matchLabelsValue
+              matchLabelKeys:
+              - matchLabelKeysValue
+              mismatchLabelKeys:
+              - mismatchLabelKeysValue
               namespaceSelector:
                 matchExpressions:
                 - key: keyValue
@@ -180,6 +192,10 @@ spec:
                 - valuesValue
               matchLabels:
                 matchLabelsKey: matchLabelsValue
+            matchLabelKeys:
+            - matchLabelKeysValue
+            mismatchLabelKeys:
+            - mismatchLabelKeysValue
             namespaceSelector:
               matchExpressions:
               - key: keyValue
@@ -208,6 +224,11 @@ spec:
             fieldRef:
               apiVersion: apiVersionValue
               fieldPath: fieldPathValue
+            fileKeyRef:
+              key: keyValue
+              optional: true
+              path: pathValue
+              volumeName: volumeNameValue
             resourceFieldRef:
               containerName: containerNameValue
               divisor: "0"
@@ -238,7 +259,10 @@ spec:
                 value: valueValue
               path: pathValue
               port: portValue
+              protocol: protocolValue
               scheme: schemeValue
+            sleep:
+              seconds: 1
             tcpSocket:
               host: hostValue
               port: portValue
@@ -253,16 +277,21 @@ spec:
                 value: valueValue
               path: pathValue
               port: portValue
+              protocol: protocolValue
               scheme: schemeValue
+            sleep:
+              seconds: 1
             tcpSocket:
               host: hostValue
               port: portValue
+          stopSignal: stopSignalValue
         livenessProbe:
           exec:
             command:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -272,6 +301,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -294,6 +324,7 @@ spec:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -303,6 +334,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -312,13 +344,29 @@ spec:
             port: portValue
           terminationGracePeriodSeconds: 7
           timeoutSeconds: 3
+        resizePolicy:
+        - resourceName: resourceNameValue
+          restartPolicy: restartPolicyValue
         resources:
+          claims:
+          - name: nameValue
+            request: requestValue
           limits:
             limitsKey: "0"
           requests:
             requestsKey: "0"
+        restartPolicy: restartPolicyValue
+        restartPolicyRules:
+        - action: actionValue
+          exitCodes:
+            operator: operatorValue
+            values:
+            - 2
         securityContext:
           allowPrivilegeEscalation: true
+          appArmorProfile:
+            localhostProfile: localhostProfileValue
+            type: typeValue
           capabilities:
             add:
             - addValue
@@ -349,6 +397,7 @@ spec:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -358,6 +407,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -376,10 +426,13 @@ spec:
         - devicePath: devicePathValue
           name: nameValue
         volumeMounts:
-        - mountPath: mountPathValue
+        - bindMountOptions:
+          - bindMountOptionsValue
+          mountPath: mountPathValue
           mountPropagation: mountPropagationValue
           name: nameValue
           readOnly: true
+          recursiveReadOnly: recursiveReadOnlyValue
           subPath: subPathValue
           subPathExpr: subPathExprValue
         workingDir: workingDirValue
@@ -409,6 +462,11 @@ spec:
             fieldRef:
               apiVersion: apiVersionValue
               fieldPath: fieldPathValue
+            fileKeyRef:
+              key: keyValue
+              optional: true
+              path: pathValue
+              volumeName: volumeNameValue
             resourceFieldRef:
               containerName: containerNameValue
               divisor: "0"
@@ -439,7 +497,10 @@ spec:
                 value: valueValue
               path: pathValue
               port: portValue
+              protocol: protocolValue
               scheme: schemeValue
+            sleep:
+              seconds: 1
             tcpSocket:
               host: hostValue
               port: portValue
@@ -454,16 +515,21 @@ spec:
                 value: valueValue
               path: pathValue
               port: portValue
+              protocol: protocolValue
               scheme: schemeValue
+            sleep:
+              seconds: 1
             tcpSocket:
               host: hostValue
               port: portValue
+          stopSignal: stopSignalValue
         livenessProbe:
           exec:
             command:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -473,6 +539,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -495,6 +562,7 @@ spec:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -504,6 +572,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -513,13 +582,29 @@ spec:
             port: portValue
           terminationGracePeriodSeconds: 7
           timeoutSeconds: 3
+        resizePolicy:
+        - resourceName: resourceNameValue
+          restartPolicy: restartPolicyValue
         resources:
+          claims:
+          - name: nameValue
+            request: requestValue
           limits:
             limitsKey: "0"
           requests:
             requestsKey: "0"
+        restartPolicy: restartPolicyValue
+        restartPolicyRules:
+        - action: actionValue
+          exitCodes:
+            operator: operatorValue
+            values:
+            - 2
         securityContext:
           allowPrivilegeEscalation: true
+          appArmorProfile:
+            localhostProfile: localhostProfileValue
+            type: typeValue
           capabilities:
             add:
             - addValue
@@ -550,6 +635,7 @@ spec:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -559,6 +645,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -578,13 +665,19 @@ spec:
         - devicePath: devicePathValue
           name: nameValue
         volumeMounts:
-        - mountPath: mountPathValue
+        - bindMountOptions:
+          - bindMountOptionsValue
+          mountPath: mountPathValue
           mountPropagation: mountPropagationValue
           name: nameValue
           readOnly: true
+          recursiveReadOnly: recursiveReadOnlyValue
           subPath: subPathValue
           subPathExpr: subPathExprValue
         workingDir: workingDirValue
+      evictionResponders:
+      - name: nameValue
+        priority: 2
       hostAliases:
       - hostnames:
         - hostnamesValue
@@ -592,7 +685,9 @@ spec:
       hostIPC: true
       hostNetwork: true
       hostPID: true
+      hostUsers: true
       hostname: hostnameValue
+      hostnameOverride: hostnameOverrideValue
       imagePullSecrets:
       - name: nameValue
       initContainers:
@@ -611,6 +706,11 @@ spec:
             fieldRef:
               apiVersion: apiVersionValue
               fieldPath: fieldPathValue
+            fileKeyRef:
+              key: keyValue
+              optional: true
+              path: pathValue
+              volumeName: volumeNameValue
             resourceFieldRef:
               containerName: containerNameValue
               divisor: "0"
@@ -641,7 +741,10 @@ spec:
                 value: valueValue
               path: pathValue
               port: portValue
+              protocol: protocolValue
               scheme: schemeValue
+            sleep:
+              seconds: 1
             tcpSocket:
               host: hostValue
               port: portValue
@@ -656,16 +759,21 @@ spec:
                 value: valueValue
               path: pathValue
               port: portValue
+              protocol: protocolValue
               scheme: schemeValue
+            sleep:
+              seconds: 1
             tcpSocket:
               host: hostValue
               port: portValue
+          stopSignal: stopSignalValue
         livenessProbe:
           exec:
             command:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -675,6 +783,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -697,6 +806,7 @@ spec:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -706,6 +816,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -715,13 +826,29 @@ spec:
             port: portValue
           terminationGracePeriodSeconds: 7
           timeoutSeconds: 3
+        resizePolicy:
+        - resourceName: resourceNameValue
+          restartPolicy: restartPolicyValue
         resources:
+          claims:
+          - name: nameValue
+            request: requestValue
           limits:
             limitsKey: "0"
           requests:
             requestsKey: "0"
+        restartPolicy: restartPolicyValue
+        restartPolicyRules:
+        - action: actionValue
+          exitCodes:
+            operator: operatorValue
+            values:
+            - 2
         securityContext:
           allowPrivilegeEscalation: true
+          appArmorProfile:
+            localhostProfile: localhostProfileValue
+            type: typeValue
           capabilities:
             add:
             - addValue
@@ -752,6 +879,7 @@ spec:
             - commandValue
           failureThreshold: 6
           grpc:
+            mode: modeValue
             port: 1
             service: serviceValue
           httpGet:
@@ -761,6 +889,7 @@ spec:
               value: valueValue
             path: pathValue
             port: portValue
+            protocol: protocolValue
             scheme: schemeValue
           initialDelaySeconds: 2
           periodSeconds: 4
@@ -779,10 +908,13 @@ spec:
         - devicePath: devicePathValue
           name: nameValue
         volumeMounts:
-        - mountPath: mountPathValue
+        - bindMountOptions:
+          - bindMountOptionsValue
+          mountPath: mountPathValue
           mountPropagation: mountPropagationValue
           name: nameValue
           readOnly: true
+          recursiveReadOnly: recursiveReadOnlyValue
           subPath: subPathValue
           subPathExpr: subPathExprValue
         workingDir: workingDirValue
@@ -798,15 +930,35 @@ spec:
       priorityClassName: priorityClassNameValue
       readinessGates:
       - conditionType: conditionTypeValue
+      resourceClaims:
+      - name: nameValue
+        resourceClaimName: resourceClaimNameValue
+        resourceClaimTemplateName: resourceClaimTemplateNameValue
+      resources:
+        claims:
+        - name: nameValue
+          request: requestValue
+        limits:
+          limitsKey: "0"
+        requests:
+          requestsKey: "0"
       restartPolicy: restartPolicyValue
       runtimeClassName: runtimeClassNameValue
       schedulerName: schedulerNameValue
+      schedulingGates:
+      - name: nameValue
+      schedulingGroup:
+        podGroupName: podGroupNameValue
       securityContext:
+        appArmorProfile:
+          localhostProfile: localhostProfileValue
+          type: typeValue
         fsGroup: 5
         fsGroupChangePolicy: fsGroupChangePolicyValue
         runAsGroup: 6
         runAsNonRoot: true
         runAsUser: 2
+        seLinuxChangePolicy: seLinuxChangePolicyValue
         seLinuxOptions:
           level: levelValue
           role: roleValue
@@ -817,6 +969,7 @@ spec:
           type: typeValue
         supplementalGroups:
         - 4
+        supplementalGroupsPolicy: supplementalGroupsPolicyValue
         sysctls:
         - name: nameValue
           value: valueValue
@@ -846,6 +999,8 @@ spec:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        matchLabelKeys:
+        - matchLabelKeysValue
         maxSkew: 1
         minDomains: 5
         nodeAffinityPolicy: nodeAffinityPolicyValue
@@ -886,10 +1041,12 @@ spec:
           volumeID: volumeIDValue
         configMap:
           defaultMode: 3
+          defaultUser: 5
           items:
           - key: keyValue
             mode: 3
             path: pathValue
+            user: 4
           name: nameValue
           optional: true
         csi:
@@ -902,6 +1059,7 @@ spec:
             volumeAttributesKey: volumeAttributesValue
         downwardAPI:
           defaultMode: 2
+          defaultUser: 3
           items:
           - fieldRef:
               apiVersion: apiVersionValue
@@ -912,8 +1070,10 @@ spec:
               containerName: containerNameValue
               divisor: "0"
               resource: resourceValue
+            user: 5
         emptyDir:
           medium: mediumValue
+          mode: 3
           sizeLimit: "0"
         ephemeral:
           volumeClaimTemplate:
@@ -960,6 +1120,7 @@ spec:
                 apiGroup: apiGroupValue
                 kind: kindValue
                 name: nameValue
+                namespace: namespaceValue
               resources:
                 limits:
                   limitsKey: "0"
@@ -974,6 +1135,7 @@ spec:
                 matchLabels:
                   matchLabelsKey: matchLabelsValue
               storageClassName: storageClassNameValue
+              volumeAttributesClassName: volumeAttributesClassNameValue
               volumeMode: volumeModeValue
               volumeName: volumeNameValue
         fc:
@@ -1011,6 +1173,9 @@ spec:
         hostPath:
           path: pathValue
           type: typeValue
+        image:
+          pullPolicy: pullPolicyValue
+          reference: referenceValue
         iscsi:
           chapAuthDiscovery: true
           chapAuthSession: true
@@ -1042,12 +1207,28 @@ spec:
           volumeID: volumeIDValue
         projected:
           defaultMode: 2
+          defaultUser: 3
           sources:
-          - configMap:
+          - clusterTrustBundle:
+              labelSelector:
+                matchExpressions:
+                - key: keyValue
+                  operator: operatorValue
+                  values:
+                  - valuesValue
+                matchLabels:
+                  matchLabelsKey: matchLabelsValue
+              name: nameValue
+              optional: true
+              path: pathValue
+              signerName: signerNameValue
+              user: 6
+            configMap:
               items:
               - key: keyValue
                 mode: 3
                 path: pathValue
+                user: 4
               name: nameValue
               optional: true
             downwardAPI:
@@ -1061,17 +1242,30 @@ spec:
                   containerName: containerNameValue
                   divisor: "0"
                   resource: resourceValue
+                user: 5
+            podCertificate:
+              certificateChainPath: certificateChainPathValue
+              credentialBundlePath: credentialBundlePathValue
+              keyPath: keyPathValue
+              keyType: keyTypeValue
+              maxExpirationSeconds: 3
+              signerName: signerNameValue
+              user: 8
+              userAnnotations:
+                userAnnotationsKey: userAnnotationsValue
             secret:
               items:
               - key: keyValue
                 mode: 3
                 path: pathValue
+                user: 4
               name: nameValue
               optional: true
             serviceAccountToken:
               audience: audienceValue
               expirationSeconds: 2
               path: pathValue
+              user: 4
         quobyte:
           group: groupValue
           readOnly: true
@@ -1104,10 +1298,12 @@ spec:
           volumeName: volumeNameValue
         secret:
           defaultMode: 3
+          defaultUser: 5
           items:
           - key: keyValue
             mode: 3
             path: pathValue
+            user: 4
           optional: true
           secretName: secretNameValue
         storageos:

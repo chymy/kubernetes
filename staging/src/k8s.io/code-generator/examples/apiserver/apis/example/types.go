@@ -24,7 +24,9 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // TestType is a top-level type. A client is created for it.
 type TestType struct {
 	metav1.TypeMeta
+	// +optional
 	metav1.ObjectMeta
+	// +optional
 	Status TestTypeStatus
 }
 
@@ -34,6 +36,7 @@ type TestType struct {
 // You are not supposed to create a separated client for this one.
 type TestTypeList struct {
 	metav1.TypeMeta
+	// +optional
 	metav1.ListMeta
 
 	Items []TestType
@@ -41,4 +44,39 @@ type TestTypeList struct {
 
 type TestTypeStatus struct {
 	Blah string
+}
+
+type Conversion struct {
+	Identical MemoryIdentical
+	Different MemoryDifferent
+}
+type MemoryIdentical struct {
+	Items      *MemoryIdentical
+	Properties map[string]MemoryIdentical
+	AllOf      []MemoryIdentical
+	Bool       bool
+}
+type MemoryDifferent struct {
+	Items      *MemoryDifferent
+	Properties map[string]MemoryDifferent
+	AllOf      []MemoryDifferent
+	Bool       bool // differs from external representation
+}
+
+type ConversionPrivate struct {
+	PublicField  string
+	privateField string
+}
+
+type ConversionCustomContainer struct {
+	Slice   []ConversionCustom
+	SliceP  []*ConversionCustom
+	Map     map[string]ConversionCustom
+	MapP    map[string]*ConversionCustom
+	Struct  ConversionCustom
+	StructP *ConversionCustom
+}
+type ConversionCustom struct {
+	PublicField  string
+	privateField string
 }

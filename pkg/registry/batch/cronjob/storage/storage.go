@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/batch/cronjob"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // REST implements a RESTStorage for scheduled jobs against etcd
@@ -40,9 +40,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against CronJobs.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &batch.CronJob{} },
-		NewListFunc:              func() runtime.Object { return &batch.CronJobList{} },
-		DefaultQualifiedResource: batch.Resource("cronjobs"),
+		NewFunc:                   func() runtime.Object { return &batch.CronJob{} },
+		NewListFunc:               func() runtime.Object { return &batch.CronJobList{} },
+		DefaultQualifiedResource:  batch.Resource("cronjobs"),
+		SingularQualifiedResource: batch.Resource("cronjob"),
 
 		CreateStrategy:      cronjob.Strategy,
 		UpdateStrategy:      cronjob.Strategy,

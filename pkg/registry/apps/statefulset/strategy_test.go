@@ -17,25 +17,32 @@ limitations under the License.
 package statefulset
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/kubernetes/pkg/apis/apps"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/utils/ptr"
 )
+
+var ignoreErrValueDetail = cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail")
 
 func TestStatefulSetStrategy(t *testing.T) {
 	ctx := genericapirequest.NewDefaultContext()
 	if !Strategy.NamespaceScoped() {
 		t.Errorf("StatefulSet must be namespace scoped")
 	}
-	if Strategy.AllowCreateOnUpdate() {
+	if Strategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("StatefulSet should not allow create on update")
 	}
 
@@ -46,9 +53,10 @@ func TestStatefulSetStrategy(t *testing.T) {
 				Labels: validSelector,
 			},
 			Spec: api.PodSpec{
-				RestartPolicy: api.RestartPolicyAlways,
-				DNSPolicy:     api.DNSClusterFirst,
-				Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent"}},
+				RestartPolicy:                 api.RestartPolicyAlways,
+				DNSPolicy:                     api.DNSClusterFirst,
+				Containers:                    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent", TerminationMessagePolicy: api.TerminationMessageReadFile}},
+				TerminationGracePeriodSeconds: ptr.To[int64](30),
 			},
 		},
 	}
@@ -85,8 +93,7 @@ func TestStatefulSetStrategy(t *testing.T) {
 		Status: apps.StatefulSetStatus{Replicas: 4},
 	}
 	Strategy.PrepareForUpdate(ctx, validPs, ps)
-	t.Run("when minReadySeconds feature gate is enabled", func(t *testing.T) {
-		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetMinReadySeconds, true)()
+	t.Run("StatefulSet minReadySeconds field validations on creation and updation", func(t *testing.T) {
 		// Test creation
 		ps := &apps.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "abc", Namespace: metav1.NamespaceDefault},
@@ -137,53 +144,38 @@ func TestStatefulSetStrategy(t *testing.T) {
 			t.Errorf("expected minReadySeconds to not be changed %v", errs)
 		}
 	})
-	t.Run("when minReadySeconds feature gate is disabled, the minReadySeconds should not be updated",
-		func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetMinReadySeconds, false)()
-			// Test creation
-			ps := &apps.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "abc", Namespace: metav1.NamespaceDefault},
-				Spec: apps.StatefulSetSpec{
-					PodManagementPolicy: apps.OrderedReadyPodManagement,
-					Selector:            &metav1.LabelSelector{MatchLabels: validSelector},
-					Template:            validPodTemplate.Template,
-					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
-					MinReadySeconds:     int32(-1),
-				},
-			}
-			Strategy.PrepareForCreate(ctx, ps)
-			errs := Strategy.Validate(ctx, ps)
-			if len(errs) != 0 {
-				t.Errorf("StatefulSet creation should not have any issues but found %v", errs)
-			}
-			if ps.Spec.MinReadySeconds != 0 {
-				t.Errorf("if the StatefulSet is created with invalid value we expect it to be defaulted to 0 "+
-					"but got %v", ps.Spec.MinReadySeconds)
-			}
 
-			// Test Updation
-			validPs := &apps.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: ps.Name, Namespace: ps.Namespace, ResourceVersion: "1", Generation: 1},
-				Spec: apps.StatefulSetSpec{
-					PodManagementPolicy: apps.OrderedReadyPodManagement,
-					Selector:            ps.Spec.Selector,
-					Template:            validPodTemplate.Template,
-					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
-					MinReadySeconds:     newMinReadySeconds,
-				},
-				Status: apps.StatefulSetStatus{Replicas: 4},
-			}
-			Strategy.PrepareForUpdate(ctx, validPs, ps)
-			errs = Strategy.ValidateUpdate(ctx, validPs, ps)
-			if len(errs) == 0 {
-				t.Errorf("updating only spec.Replicas is allowed on a statefulset: %v", errs)
-			}
-			expectedUpdateErrorString := "spec: Forbidden: updates to statefulset spec for fields other than" +
-				" 'replicas', 'template', 'updateStrategy' and 'persistentVolumeClaimRetentionPolicy' are forbidden"
-			if errs[0].Error() != expectedUpdateErrorString {
-				t.Errorf("expected error string %v", errs[0].Error())
-			}
-		})
+	t.Run("StatefulSet revisionHistoryLimit field validations on creation and updation", func(t *testing.T) {
+		// Test creation
+		oldSts := &apps.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "abc", Namespace: metav1.NamespaceDefault},
+			Spec: apps.StatefulSetSpec{
+				PodManagementPolicy:  apps.OrderedReadyPodManagement,
+				Selector:             &metav1.LabelSelector{MatchLabels: validSelector},
+				Template:             validPodTemplate.Template,
+				UpdateStrategy:       apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+				RevisionHistoryLimit: ptr.To(int32(-2)),
+			},
+		}
+
+		warnings := Strategy.WarningsOnCreate(ctx, oldSts)
+		if len(warnings) != 1 {
+			t.Errorf("expected one warning got %v", warnings)
+		}
+		if warnings[0] != "spec.revisionHistoryLimit: a negative value retains all historical revisions; a value >= 0 is recommended" {
+			t.Errorf("unexpected warning: %v", warnings)
+		}
+		oldSts.Spec.RevisionHistoryLimit = ptr.To(int32(2))
+		newSts := oldSts.DeepCopy()
+		newSts.Spec.RevisionHistoryLimit = ptr.To(int32(-2))
+		warnings = Strategy.WarningsOnUpdate(ctx, newSts, oldSts)
+		if len(warnings) != 1 {
+			t.Errorf("expected one warning got %v", warnings)
+		}
+		if warnings[0] != "spec.revisionHistoryLimit: a negative value retains all historical revisions; a value >= 0 is recommended" {
+			t.Errorf("unexpected warning: %v", warnings)
+		}
+	})
 
 	validPs = &apps.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: ps.Name, Namespace: ps.Namespace, ResourceVersion: "1", Generation: 1},
@@ -200,8 +192,7 @@ func TestStatefulSetStrategy(t *testing.T) {
 		Status: apps.StatefulSetStatus{Replicas: 4},
 	}
 
-	t.Run("when StatefulSetAutoDeletePVC feature gate is enabled, PersistentVolumeClaimRetentionPolicy should be updated", func(t *testing.T) {
-		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetAutoDeletePVC, true)()
+	t.Run("PersistentVolumeClaimRetentionPolicy should be updated", func(t *testing.T) {
 		// Test creation
 		ps := &apps.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "abc", Namespace: metav1.NamespaceDefault},
@@ -240,8 +231,7 @@ func TestStatefulSetStrategy(t *testing.T) {
 			t.Errorf("expected PersistentVolumeClaimRetentionPolicy to be updated: %v", errs)
 		}
 	})
-	t.Run("when StatefulSetAutoDeletePVC feature gate is disabled, PersistentVolumeClaimRetentionPolicy should not be updated", func(t *testing.T) {
-		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetAutoDeletePVC, true)()
+	t.Run("PersistentVolumeClaimRetentionPolicy should not be updated", func(t *testing.T) {
 		// Test creation
 		ps := &apps.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "abc", Namespace: metav1.NamespaceDefault},
@@ -274,7 +264,7 @@ func TestStatefulSetStrategy(t *testing.T) {
 		Strategy.PrepareForUpdate(ctx, validPs, invalidPs)
 		errs = Strategy.ValidateUpdate(ctx, validPs, ps)
 		if len(errs) != 0 {
-			t.Errorf("should ignore updates to PersistentVolumeClaimRetentionPolicyType")
+			t.Errorf("unexpected failure with PersistentVolumeClaimRetentionPolicy: %v", errs)
 		}
 	})
 
@@ -291,7 +281,7 @@ func TestStatefulSetStatusStrategy(t *testing.T) {
 	if !StatusStrategy.NamespaceScoped() {
 		t.Errorf("StatefulSet must be namespace scoped")
 	}
-	if StatusStrategy.AllowCreateOnUpdate() {
+	if StatusStrategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("StatefulSet should not allow create on update")
 	}
 	validSelector := map[string]string{"a": "b"}
@@ -344,19 +334,10 @@ func TestStatefulSetStatusStrategy(t *testing.T) {
 	}
 }
 
-// generateStatefulSetWithMinReadySeconds generates a StatefulSet with min values
-func generateStatefulSetWithMinReadySeconds(minReadySeconds int32) *apps.StatefulSet {
-	return &apps.StatefulSet{
-		Spec: apps.StatefulSetSpec{
-			MinReadySeconds: minReadySeconds,
-		},
-	}
-}
-
 func makeStatefulSetWithMaxUnavailable(maxUnavailable *int) *apps.StatefulSet {
 	rollingUpdate := apps.RollingUpdateStatefulSetStrategy{}
 	if maxUnavailable != nil {
-		maxUnavailableIntStr := intstr.FromInt(*maxUnavailable)
+		maxUnavailableIntStr := intstr.FromInt32(int32(*maxUnavailable))
 		rollingUpdate = apps.RollingUpdateStatefulSetStrategy{
 			MaxUnavailable: &maxUnavailableIntStr,
 		}
@@ -372,116 +353,75 @@ func makeStatefulSetWithMaxUnavailable(maxUnavailable *int) *apps.StatefulSet {
 	}
 }
 
-func getMaxUnavailable(maxUnavailable int) *int {
-	return &maxUnavailable
+func makeValidStatefulSetWithUpdateStrategy(strategyType apps.StatefulSetUpdateStrategyType) *apps.StatefulSet {
+	validSelector := map[string]string{"a": "b"}
+	return &apps.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "abc", Namespace: metav1.NamespaceDefault},
+		Spec: apps.StatefulSetSpec{
+			PodManagementPolicy: apps.OrderedReadyPodManagement,
+			UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: strategyType},
+			Selector:            &metav1.LabelSelector{MatchLabels: validSelector},
+			Template: api.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: validSelector},
+				Spec: api.PodSpec{
+					RestartPolicy:                 api.RestartPolicyAlways,
+					DNSPolicy:                     api.DNSClusterFirst,
+					Containers:                    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent", TerminationMessagePolicy: api.TerminationMessageReadFile}},
+					TerminationGracePeriodSeconds: ptr.To[int64](30),
+				},
+			},
+		},
+		Status: apps.StatefulSetStatus{Replicas: 3},
+	}
 }
 
 // TestDropStatefulSetDisabledFields tests if the drop functionality is working fine or not
 func TestDropStatefulSetDisabledFields(t *testing.T) {
 	testCases := []struct {
-		name                  string
-		enableMinReadySeconds bool
-		enableMaxUnavailable  bool
-		ss                    *apps.StatefulSet
-		oldSS                 *apps.StatefulSet
-		expectedSS            *apps.StatefulSet
+		name                 string
+		enableMaxUnavailable bool
+		ss                   *apps.StatefulSet
+		oldSS                *apps.StatefulSet
+		expectedSS           *apps.StatefulSet
 	}{
 		{
-			name:                  "no minReadySeconds, no update",
-			enableMinReadySeconds: false,
-			ss:                    &apps.StatefulSet{},
-			oldSS:                 nil,
-			expectedSS:            &apps.StatefulSet{},
-		},
-		{
-			name:                  "no minReadySeconds, irrespective of the current value, set to default value of 0",
-			enableMinReadySeconds: false,
-			ss:                    generateStatefulSetWithMinReadySeconds(2000),
-			oldSS:                 nil,
-			expectedSS:            &apps.StatefulSet{Spec: apps.StatefulSetSpec{MinReadySeconds: int32(0)}},
-		},
-		{
-			name:                  "no minReadySeconds, oldSS field set to 100, no update",
-			enableMinReadySeconds: false,
-			ss:                    generateStatefulSetWithMinReadySeconds(2000),
-			oldSS:                 generateStatefulSetWithMinReadySeconds(100),
-			expectedSS:            generateStatefulSetWithMinReadySeconds(2000),
-		},
-		{
-			name:                  "no minReadySeconds, oldSS field set to -1(invalid value), update to zero",
-			enableMinReadySeconds: false,
-			ss:                    generateStatefulSetWithMinReadySeconds(2000),
-			oldSS:                 generateStatefulSetWithMinReadySeconds(-1),
-			expectedSS:            generateStatefulSetWithMinReadySeconds(0),
-		},
-		{
-			name:                  "no minReadySeconds, oldSS field set to 0, no update",
-			enableMinReadySeconds: false,
-			ss:                    generateStatefulSetWithMinReadySeconds(2000),
-			oldSS:                 generateStatefulSetWithMinReadySeconds(0),
-			expectedSS:            generateStatefulSetWithMinReadySeconds(2000),
-		},
-		{
-			name:                  "set minReadySeconds, no update",
-			enableMinReadySeconds: true,
-			ss:                    generateStatefulSetWithMinReadySeconds(10),
-			oldSS:                 generateStatefulSetWithMinReadySeconds(20),
-			expectedSS:            generateStatefulSetWithMinReadySeconds(10),
-		},
-		{
-			name:                  "set minReadySeconds, oldSS field set to nil",
-			enableMinReadySeconds: true,
-			ss:                    generateStatefulSetWithMinReadySeconds(10),
-			oldSS:                 nil,
-			expectedSS:            generateStatefulSetWithMinReadySeconds(10),
-		},
-		{
-			name:                  "set minReadySeconds, oldSS field is set to 0",
-			enableMinReadySeconds: true,
-			ss:                    generateStatefulSetWithMinReadySeconds(10),
-			oldSS:                 generateStatefulSetWithMinReadySeconds(0),
-			expectedSS:            generateStatefulSetWithMinReadySeconds(10),
-		},
-		{
-			name:                 "MaxUnavailable not enabled, field not used",
-			enableMaxUnavailable: false,
-			ss:                   makeStatefulSetWithMaxUnavailable(nil),
-			oldSS:                nil,
-			expectedSS:           makeStatefulSetWithMaxUnavailable(nil),
+			name:       "MaxUnavailable not enabled, field not used",
+			ss:         makeStatefulSetWithMaxUnavailable(nil),
+			oldSS:      nil,
+			expectedSS: makeStatefulSetWithMaxUnavailable(nil),
 		},
 		{
 			name:                 "MaxUnavailable not enabled, field used in new, not in old",
 			enableMaxUnavailable: false,
-			ss:                   makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
+			ss:                   makeStatefulSetWithMaxUnavailable(ptr.To(3)),
 			oldSS:                nil,
 			expectedSS:           makeStatefulSetWithMaxUnavailable(nil),
 		},
 		{
 			name:                 "MaxUnavailable not enabled, field used in old and new",
 			enableMaxUnavailable: false,
-			ss:                   makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
-			oldSS:                makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
-			expectedSS:           makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
+			ss:                   makeStatefulSetWithMaxUnavailable(ptr.To(3)),
+			oldSS:                makeStatefulSetWithMaxUnavailable(ptr.To(3)),
+			expectedSS:           makeStatefulSetWithMaxUnavailable(ptr.To(3)),
 		},
 		{
 			name:                 "MaxUnavailable enabled, field used in new only",
 			enableMaxUnavailable: true,
-			ss:                   makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
+			ss:                   makeStatefulSetWithMaxUnavailable(ptr.To(3)),
 			oldSS:                nil,
-			expectedSS:           makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
+			expectedSS:           makeStatefulSetWithMaxUnavailable(ptr.To(3)),
 		},
 		{
 			name:                 "MaxUnavailable enabled, field used in both old and new",
 			enableMaxUnavailable: true,
-			ss:                   makeStatefulSetWithMaxUnavailable(getMaxUnavailable(1)),
-			oldSS:                makeStatefulSetWithMaxUnavailable(getMaxUnavailable(3)),
-			expectedSS:           makeStatefulSetWithMaxUnavailable(getMaxUnavailable(1)),
+			ss:                   makeStatefulSetWithMaxUnavailable(ptr.To(1)),
+			oldSS:                makeStatefulSetWithMaxUnavailable(ptr.To(3)),
+			expectedSS:           makeStatefulSetWithMaxUnavailable(ptr.To(1)),
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MaxUnavailableStatefulSet, tc.enableMaxUnavailable)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetMinReadySeconds, tc.enableMinReadySeconds)()
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MaxUnavailableStatefulSet, tc.enableMaxUnavailable)
 			old := tc.oldSS.DeepCopy()
 
 			dropStatefulSetDisabledFields(tc.ss, tc.oldSS)
@@ -496,4 +436,155 @@ func TestDropStatefulSetDisabledFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStatefulSetStrategy_RecreateStrategy_Validate(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+
+	cases := map[string]struct {
+		enableRecreateStrategyFG bool
+		set                      *apps.StatefulSet
+		wantErrs                 field.ErrorList
+	}{
+		"Validate create with Recreate strategy when feature gate is enabled": {
+			enableRecreateStrategyFG: true,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+		},
+		"Validate create with Recreate strategy when feature gate is disabled": {
+			enableRecreateStrategyFG: false,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			wantErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "updateStrategy"), nil, ""),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetRecreateStrategy, tc.enableRecreateStrategyFG)
+
+			Strategy.PrepareForCreate(ctx, tc.set)
+			if tc.set.Status.Replicas != 0 {
+				t.Error("StatefulSet should not allow setting status.replicas on create")
+			}
+			errs := Strategy.Validate(ctx, tc.set)
+			if diff := cmp.Diff(tc.wantErrs, errs, ignoreErrValueDetail); diff != "" {
+				t.Errorf("Unexpected errors (-want,+got):\n%s", diff)
+			}
+		})
+	}
+
+}
+
+func TestStatefulSetStrategy_RecreateStrategy_ValidateUpdate(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+
+	cases := map[string]struct {
+		enableRecreateStrategyFG bool
+		set                      *apps.StatefulSet
+		update                   func(*apps.StatefulSet)
+		wantErrs                 field.ErrorList
+	}{
+		"Rolling to Recreate, RecreateFG on - allowed": {
+			enableRecreateStrategyFG: true,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RollingUpdateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RecreateStatefulSetStrategyType
+			},
+		},
+		"Rolling to Recreate, RecreateFG off - forbidden": {
+			enableRecreateStrategyFG: false,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RollingUpdateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RecreateStatefulSetStrategyType
+			},
+			wantErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "updateStrategy"), nil, ""),
+			},
+		},
+		"OnDelete to Recreate, RecreateFG on - allowed": {
+			enableRecreateStrategyFG: true,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.OnDeleteStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RecreateStatefulSetStrategyType
+			},
+		},
+		"OnDelete to Recreate, RecreateFG off - forbidden": {
+			enableRecreateStrategyFG: false,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.OnDeleteStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RecreateStatefulSetStrategyType
+			},
+			wantErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "updateStrategy"), nil, ""),
+			},
+		},
+		"Recreate to Recreate, RecreateFG off - allowed": {
+			enableRecreateStrategyFG: false,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RecreateStatefulSetStrategyType
+			},
+		},
+		"Recreate to Recreate, RecreateFG on - allowed": {
+			enableRecreateStrategyFG: true,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RecreateStatefulSetStrategyType
+			},
+		},
+		"Recreate to RollingUpdate, RecreateFG on - allowed": {
+			enableRecreateStrategyFG: true,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RollingUpdateStatefulSetStrategyType
+			},
+		},
+		"Recreate to RollingUpdate, RecreateFG off - allowed": {
+			enableRecreateStrategyFG: false,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.RollingUpdateStatefulSetStrategyType
+			},
+		},
+		"Recreate to OnDelete, RecreateFG on - allowed": {
+			enableRecreateStrategyFG: true,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.OnDeleteStatefulSetStrategyType
+			},
+		},
+		"Recreate to OnDelete, RecreateFG off - allowed": {
+			enableRecreateStrategyFG: false,
+			set:                      makeValidStatefulSetWithUpdateStrategy(apps.RecreateStatefulSetStrategyType),
+			update: func(ss *apps.StatefulSet) {
+				ss.ObjectMeta.ResourceVersion = "1"
+				ss.Spec.UpdateStrategy.Type = apps.OnDeleteStatefulSetStrategyType
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetRecreateStrategy, tc.enableRecreateStrategyFG)
+
+			newSet := tc.set.DeepCopy()
+			tc.update(newSet)
+			Strategy.PrepareForUpdate(ctx, newSet, tc.set)
+			errs := Strategy.ValidateUpdate(ctx, newSet, tc.set)
+			if diff := cmp.Diff(tc.wantErrs, errs, ignoreErrValueDetail); diff != "" {
+				t.Errorf("Unexpected errors (-want,+got):\n%s", diff)
+			}
+		})
+	}
+
 }

@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/policy/poddisruptionbudget"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // REST implements a RESTStorage for pod disruption budgets against etcd.
@@ -40,9 +40,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against pod disruption budgets.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &policyapi.PodDisruptionBudget{} },
-		NewListFunc:              func() runtime.Object { return &policyapi.PodDisruptionBudgetList{} },
-		DefaultQualifiedResource: policyapi.Resource("poddisruptionbudgets"),
+		NewFunc:                   func() runtime.Object { return &policyapi.PodDisruptionBudget{} },
+		NewListFunc:               func() runtime.Object { return &policyapi.PodDisruptionBudgetList{} },
+		DefaultQualifiedResource:  policyapi.Resource("poddisruptionbudgets"),
+		SingularQualifiedResource: policyapi.Resource("poddisruptionbudget"),
 
 		CreateStrategy:      poddisruptionbudget.Strategy,
 		UpdateStrategy:      poddisruptionbudget.Strategy,

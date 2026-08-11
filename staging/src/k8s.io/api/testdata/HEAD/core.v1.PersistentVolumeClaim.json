@@ -80,8 +80,10 @@
     "dataSourceRef": {
       "apiGroup": "apiGroupValue",
       "kind": "kindValue",
-      "name": "nameValue"
-    }
+      "name": "nameValue",
+      "namespace": "namespaceValue"
+    },
+    "volumeAttributesClassName": "volumeAttributesClassNameValue"
   },
   "status": {
     "phase": "phaseValue",
@@ -104,6 +106,23 @@
     "allocatedResources": {
       "allocatedResourcesKey": "0"
     },
-    "resizeStatus": "resizeStatusValue"
+    "allocatedResourceStatuses": {
+      "allocatedResourceStatusesKey": "allocatedResourceStatusesValue"
+    },
+    "currentVolumeAttributesClassName": "currentVolumeAttributesClassNameValue",
+    "modifyVolumeStatus": {
+      "targetVolumeAttributesClassName": "targetVolumeAttributesClassNameValue",
+      "status": "statusValue"
+    },
+    "healthStatus": {
+      "healthConditions": [
+        {
+          "status": "statusValue",
+          "reason": "reasonValue",
+          "message": "messageValue"
+        }
+      ],
+      "lastTransitionTime": "2002-01-01T01:01:01Z"
+    }
   }
 }

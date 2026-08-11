@@ -19,7 +19,6 @@ package diff
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,9 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/openapi3"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/apply"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -103,22 +103,27 @@ func diffError(err error) exec.ExitError {
 type DiffOptions struct {
 	FilenameOptions resource.FilenameOptions
 
-	ServerSideApply bool
-	FieldManager    string
-	ForceConflicts  bool
+	ServerSideApply   bool
+	FieldManager      string
+	ForceConflicts    bool
+	ShowManagedFields bool
+	ShowSecrets       bool
 
+	Concurrency      int
 	Selector         string
-	OpenAPISchema    openapi.Resources
+	OpenAPIGetter    openapi.OpenAPIResourcesGetter
+	OpenAPIV3Root    openapi3.Root
 	DynamicClient    dynamic.Interface
-	DryRunVerifier   *resource.QueryParamVerifier
 	CmdNamespace     string
 	EnforceNamespace bool
 	Builder          *resource.Builder
 	Diff             *DiffProgram
-	pruner           *pruner
+
+	pruner  *pruner
+	tracker *tracker
 }
 
-func NewDiffOptions(ioStreams genericclioptions.IOStreams) *DiffOptions {
+func NewDiffOptions(ioStreams genericiooptions.IOStreams) *DiffOptions {
 	return &DiffOptions{
 		Diff: &DiffProgram{
 			Exec:      exec.New(),
@@ -127,7 +132,7 @@ func NewDiffOptions(ioStreams genericclioptions.IOStreams) *DiffOptions {
 	}
 }
 
-func NewCmdDiff(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdDiff(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	options := NewDiffOptions(streams)
 	cmd := &cobra.Command{
 		Use:                   "diff -f FILENAME",
@@ -146,7 +151,7 @@ func NewCmdDiff(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.C
 			// return 1 if there was a problem.
 			if err := options.Run(); err != nil {
 				if exitErr := diffError(err); exitErr != nil {
-					os.Exit(exitErr.ExitStatus())
+					cmdutil.CheckErr(cmdutil.ErrExit)
 				}
 				cmdutil.CheckDiffErr(err)
 			}
@@ -157,13 +162,16 @@ func NewCmdDiff(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.C
 	// command it means changes were found.
 	// Thus, it should return status code greater than 1.
 	cmd.SetFlagErrorFunc(func(command *cobra.Command, err error) error {
-		cmdutil.CheckDiffErr(cmdutil.UsageErrorf(cmd, err.Error()))
+		cmdutil.CheckDiffErr(cmdutil.UsageErrorf(cmd, "%s", err.Error()))
 		return nil
 	})
 
 	usage := "contains the configuration to diff"
-	cmd.Flags().StringArray("prune-allowlist", []string{}, "Overwrite the default whitelist with <group/version/kind> for --prune")
+	cmd.Flags().StringArray("prune-allowlist", []string{}, "Overwrite the default allowlist with <group/version/kind> for --prune")
 	cmd.Flags().Bool("prune", false, "Include resources that would be deleted by pruning. Can be used with -l and default shows all resources would be pruned")
+	cmd.Flags().BoolVar(&options.ShowManagedFields, "show-managed-fields", options.ShowManagedFields, "If true, include managed fields in the diff.")
+	cmd.Flags().BoolVar(&options.ShowSecrets, "show-secrets", false, "If true, do not mask secret values in the diff.")
+	cmd.Flags().IntVar(&options.Concurrency, "concurrency", 1, "Number of objects to process in parallel when diffing against the live version. Larger number = faster, but more memory, I/O and CPU over that shorter period of time.")
 	cmdutil.AddFilenameOptionFlags(cmd, &options.FilenameOptions, usage)
 	cmdutil.AddServerSideApplyFlags(cmd)
 	cmdutil.AddFieldManagerFlagVar(cmd, &options.FieldManager, apply.FieldManagerClientSideApply)
@@ -177,7 +185,7 @@ func NewCmdDiff(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.C
 // program. By default, `diff(1)` will be used.
 type DiffProgram struct {
 	Exec exec.Interface
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 func (d *DiffProgram) getCommand(args ...string) (string, exec.Cmd) {
@@ -284,7 +292,7 @@ type Directory struct {
 // CreateDirectory does create the actual disk directory, and return a
 // new representation of it.
 func CreateDirectory(prefix string) (*Directory, error) {
-	name, err := ioutil.TempDir("", prefix+"-")
+	name, err := os.MkdirTemp("", prefix+"-")
 	if err != nil {
 		return nil, err
 	}
@@ -319,12 +327,13 @@ type InfoObject struct {
 	LocalObj        runtime.Object
 	Info            *resource.Info
 	Encoder         runtime.Encoder
-	OpenAPI         openapi.Resources
+	OpenAPIGetter   openapi.OpenAPIResourcesGetter
+	OpenAPIV3Root   openapi3.Root
 	Force           bool
 	ServerSideApply bool
 	FieldManager    string
 	ForceConflicts  bool
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var _ Object = &InfoObject{}
@@ -391,7 +400,8 @@ func (obj InfoObject) Merged() (runtime.Object, error) {
 		Helper:          helper,
 		Overwrite:       true,
 		BackOff:         clockwork.NewRealClock(),
-		OpenapiSchema:   obj.OpenAPI,
+		OpenAPIGetter:   obj.OpenAPIGetter,
+		OpenAPIV3Root:   obj.OpenAPIV3Root,
 		ResourceVersion: resourceVersion,
 	}
 
@@ -555,7 +565,7 @@ func NewDiffer(from, to string) (*Differ, error) {
 }
 
 // Diff diffs to versions of a specific object, and print both versions to directories.
-func (d *Differ) Diff(obj Object, printer Printer) error {
+func (d *Differ) Diff(obj Object, printer Printer, showManagedFields, showSecrets bool) error {
 	from, err := d.From.getObject(obj)
 	if err != nil {
 		return err
@@ -565,8 +575,13 @@ func (d *Differ) Diff(obj Object, printer Printer) error {
 		return err
 	}
 
+	if !showManagedFields {
+		from = omitManagedFields(from)
+		to = omitManagedFields(to)
+	}
+
 	// Mask secret values if object is V1Secret
-	if gvk := to.GetObjectKind().GroupVersionKind(); gvk.Version == "v1" && gvk.Kind == "Secret" {
+	if gvk := to.GetObjectKind().GroupVersionKind(); !showSecrets && gvk.Version == "v1" && gvk.Kind == "Secret" {
 		m, err := NewMasker(from, to)
 		if err != nil {
 			return err
@@ -581,6 +596,16 @@ func (d *Differ) Diff(obj Object, printer Printer) error {
 		return err
 	}
 	return nil
+}
+
+func omitManagedFields(o runtime.Object) runtime.Object {
+	a, err := meta.Accessor(o)
+	if err != nil {
+		// The object is not a `metav1.Object`, ignore it.
+		return o
+	}
+	a.SetManagedFields(nil)
+	return o
 }
 
 // Run runs the diff program against both directories.
@@ -618,9 +643,12 @@ func (o *DiffOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []str
 	}
 
 	if !o.ServerSideApply {
-		o.OpenAPISchema, err = f.OpenAPISchema()
-		if err != nil {
-			return err
+		o.OpenAPIGetter = f
+		openAPIV3Client, err := f.OpenAPIV3Client()
+		if err == nil {
+			o.OpenAPIV3Root = openapi3.NewRoot(openAPIV3Client)
+		} else {
+			klog.V(4).Infof("warning: OpenAPI V3 Patch is enabled but is unable to be loaded. Will fall back to OpenAPI V2")
 		}
 	}
 
@@ -628,8 +656,6 @@ func (o *DiffOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []str
 	if err != nil {
 		return err
 	}
-
-	o.DryRunVerifier = resource.NewQueryParamVerifier(o.DynamicClient, f.OpenAPIGetter(), resource.QueryParamDryRun)
 
 	o.CmdNamespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -646,14 +672,15 @@ func (o *DiffOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []str
 		if err != nil {
 			return err
 		}
-		o.pruner = newPruner(o.DynamicClient, mapper, resources)
+		o.tracker = newTracker()
+		o.pruner = newPruner(o.DynamicClient, mapper, resources, o.Selector)
 	}
 
 	o.Builder = f.NewBuilder()
 	return nil
 }
 
-// RunDiff uses the factory to parse file arguments, find the version to
+// Run uses the factory to parse file arguments, find the version to
 // diff, and find each Info object for each files, and runs against the
 // differ.
 func (o *DiffOptions) Run() error {
@@ -667,6 +694,7 @@ func (o *DiffOptions) Run() error {
 
 	r := o.Builder.
 		Unstructured().
+		VisitorConcurrency(o.Concurrency).
 		NamespaceParam(o.CmdNamespace).DefaultNamespace().
 		FilenameParam(o.EnforceNamespace, &o.FilenameOptions).
 		LabelSelectorParam(o.Selector).
@@ -678,10 +706,6 @@ func (o *DiffOptions) Run() error {
 
 	err = r.Visit(func(info *resource.Info, err error) error {
 		if err != nil {
-			return err
-		}
-
-		if err := o.DryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
 			return err
 		}
 
@@ -706,7 +730,8 @@ func (o *DiffOptions) Run() error {
 				LocalObj:        local,
 				Info:            info,
 				Encoder:         scheme.DefaultJSONEncoder(),
-				OpenAPI:         o.OpenAPISchema,
+				OpenAPIGetter:   o.OpenAPIGetter,
+				OpenAPIV3Root:   o.OpenAPIV3Root,
 				Force:           force,
 				ServerSideApply: o.ServerSideApply,
 				FieldManager:    o.FieldManager,
@@ -714,11 +739,11 @@ func (o *DiffOptions) Run() error {
 				IOStreams:       o.Diff.IOStreams,
 			}
 
-			if o.pruner != nil {
-				o.pruner.MarkVisited(info)
+			if o.tracker != nil {
+				o.tracker.MarkVisited(info)
 			}
 
-			err = differ.Diff(obj, printer)
+			err = differ.Diff(obj, printer, o.ShowManagedFields, o.ShowSecrets)
 			if !isConflict(err) {
 				break
 			}
@@ -730,7 +755,7 @@ func (o *DiffOptions) Run() error {
 	})
 
 	if o.pruner != nil {
-		prunedObjs, err := o.pruner.pruneAll()
+		prunedObjs, err := o.pruner.pruneAll(o.tracker, o.CmdNamespace != "")
 		if err != nil {
 			klog.Warningf("pruning failed and could not be evaluated err: %v", err)
 		}

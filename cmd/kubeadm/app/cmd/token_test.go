@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"bytes"
+	_ "embed"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,36 +33,16 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	bootstraptokenv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/bootstraptoken/v1"
-	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
 	outputapischeme "k8s.io/kubernetes/cmd/kubeadm/app/apis/output/scheme"
-	outputapiv1alpha2 "k8s.io/kubernetes/cmd/kubeadm/app/apis/output/v1alpha2"
+	outputapiv1alpha3 "k8s.io/kubernetes/cmd/kubeadm/app/apis/output/v1alpha3"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/output"
 )
 
-const (
-	tokenExpectedRegex = "^\\S{6}\\.\\S{16}\n$"
-	testConfigToken    = `apiVersion: v1
-clusters:
-- cluster:
-    certificate-authority-data:
-    server: localhost:8000
-  name: prod
-contexts:
-- context:
-    cluster: prod
-    namespace: default
-    user: default-service-account
-  name: default
-current-context: default
-kind: Config
-preferences: {}
-users:
-- name: kubernetes-admin
-  user:
-    client-certificate-data:
-    client-key-data:
-`
-)
+//go:embed testdata/token-config.yaml
+var testConfigToken string
+
+const tokenExpectedRegex = "^\\S{6}\\.\\S{16}\n$"
 
 func TestRunGenerateToken(t *testing.T) {
 	var buf bytes.Buffer
@@ -248,23 +229,19 @@ func TestNewCmdToken(t *testing.T) {
 			if _, err = f.WriteString(tc.configToWrite); err != nil {
 				t.Errorf("Unable to write test file %q: %v", fullPath, err)
 			}
-			// store the current value of the environment variable.
-			storedEnv := os.Getenv(clientcmd.RecommendedConfigPathEnvVar)
 			if tc.kubeConfigEnv != "" {
-				os.Setenv(clientcmd.RecommendedConfigPathEnvVar, tc.kubeConfigEnv)
+				t.Setenv(clientcmd.RecommendedConfigPathEnvVar, tc.kubeConfigEnv)
 			}
 			cmd.SetArgs(tc.args)
 			err := cmd.Execute()
 			if (err != nil) != tc.expectedError {
 				t.Errorf("Test case %q: newCmdToken expected error: %v, saw: %v", tc.name, tc.expectedError, (err != nil))
 			}
-			// restore the environment variable.
-			os.Setenv(clientcmd.RecommendedConfigPathEnvVar, storedEnv)
 		})
 	}
 }
 
-func TestGetClientset(t *testing.T) {
+func TestGetClientForTokenCommands(t *testing.T) {
 	testConfigTokenFile := "test-config-file"
 
 	tmpDir, err := os.MkdirTemp("", "kubeadm-token-test")
@@ -274,14 +251,14 @@ func TestGetClientset(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 	fullPath := filepath.Join(tmpDir, testConfigTokenFile)
 
-	// test dryRun = false on a non-exisiting file
-	if _, err = getClientset(fullPath, false); err == nil {
-		t.Errorf("getClientset(); dry-run: false; did no fail for test file %q: %v", fullPath, err)
+	// test dryRun = false on a non-existing file
+	if _, err = getClientForTokenCommands(fullPath, false); err == nil {
+		t.Errorf("dry-run: false; did no fail for test file %q: %v", fullPath, err)
 	}
 
-	// test dryRun = true on a non-exisiting file
-	if _, err = getClientset(fullPath, true); err == nil {
-		t.Errorf("getClientset(); dry-run: true; did no fail for test file %q: %v", fullPath, err)
+	// test dryRun = true on a non-existing file
+	if _, err = getClientForTokenCommands(fullPath, true); err == nil {
+		t.Errorf("dry-run: true; did no fail for test file %q: %v", fullPath, err)
 	}
 
 	f, err := os.Create(fullPath)
@@ -294,9 +271,9 @@ func TestGetClientset(t *testing.T) {
 		t.Errorf("Unable to write test file %q: %v", fullPath, err)
 	}
 
-	// test dryRun = true on an exisiting file
-	if _, err = getClientset(fullPath, true); err != nil {
-		t.Errorf("getClientset(); dry-run: true; failed for test file %q: %v", fullPath, err)
+	// test dryRun = true on an existing file
+	if _, err = getClientForTokenCommands(fullPath, true); err != nil {
+		t.Errorf("dry-run: true; failed for test file %q: %v", fullPath, err)
 	}
 }
 
@@ -320,9 +297,9 @@ func TestRunDeleteTokens(t *testing.T) {
 		t.Errorf("Unable to write test file %q: %v", fullPath, err)
 	}
 
-	client, err := getClientset(fullPath, true)
+	client, err := getClientForTokenCommands(fullPath, true)
 	if err != nil {
-		t.Errorf("Unable to run getClientset() for test file %q: %v", fullPath, err)
+		t.Errorf("unable to create client for test file %q: %v", fullPath, err)
 	}
 
 	// test valid; should not fail
@@ -358,7 +335,7 @@ func TestTokenOutput(t *testing.T) {
 			outputFormat: "json",
 			expected: `{
     "kind": "BootstrapToken",
-    "apiVersion": "output.kubeadm.k8s.io/v1alpha2",
+    "apiVersion": "output.kubeadm.k8s.io/v1alpha3",
     "token": "abcdef.1234567890123456",
     "description": "valid bootstrap tooken",
     "usages": [
@@ -379,7 +356,7 @@ func TestTokenOutput(t *testing.T) {
 			usages:       []string{"signing", "authentication"},
 			extraGroups:  []string{"system:bootstrappers:kubeadm:default-node-token"},
 			outputFormat: "yaml",
-			expected: `apiVersion: output.kubeadm.k8s.io/v1alpha2
+			expected: `apiVersion: output.kubeadm.k8s.io/v1alpha3
 description: valid bootstrap tooken
 groups:
 - system:bootstrappers:kubeadm:default-node-token
@@ -426,7 +403,7 @@ abcdef.1234567890123456   <forever>   <never>   signing,authentication   valid b
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			token := outputapiv1alpha2.BootstrapToken{
+			token := outputapiv1alpha3.BootstrapToken{
 				BootstrapToken: bootstraptokenv1.BootstrapToken{
 					Token:       &bootstraptokenv1.BootstrapTokenString{ID: tc.id, Secret: tc.secret},
 					Description: tc.description,

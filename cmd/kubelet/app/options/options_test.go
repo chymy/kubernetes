@@ -21,12 +21,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/pflag"
 
-	"k8s.io/apimachinery/pkg/util/diff"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/kubernetes/pkg/kubelet/config"
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/kubernetes/pkg/kubelet/kubeletconfig"
 )
 
 func newKubeletServerOrDie() *KubeletServer {
@@ -101,8 +100,8 @@ func TestRoundTrip(t *testing.T) {
 			}
 			continue
 		}
-		if !reflect.DeepEqual(modifiedFlags, outputFlags) {
-			t.Errorf("%s: flags did not round trip: %s", testCase.name, diff.ObjectReflectDiff(modifiedFlags, outputFlags))
+		if !reflect.DeepEqual(modifiedFlags.KubeletFlags, outputFlags.KubeletFlags) {
+			t.Errorf("%s: flags did not round trip: %s", testCase.name, cmp.Diff(modifiedFlags.KubeletFlags, outputFlags.KubeletFlags))
 			continue
 		}
 	}
@@ -168,15 +167,20 @@ func TestValidateKubeletFlags(t *testing.T) {
 			error:  false,
 			labels: map[string]string{},
 		},
+		{
+			name:  "Invalid label",
+			error: true,
+			labels: map[string]string{
+				"cloud.google.com/repository": "kubernetes/kubernetes",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateKubeletFlags(&KubeletFlags{
-				ContainerRuntimeOptions: config.ContainerRuntimeOptions{
-					ContainerRuntime: kubetypes.RemoteContainerRuntime,
-				},
-				NodeLabels: tt.labels,
+				ContainerRuntimeOptions: kubeletconfig.ContainerRuntimeOptions{},
+				NodeLabels:              tt.labels,
 			})
 
 			if tt.error && err == nil {

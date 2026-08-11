@@ -20,10 +20,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	restclient "k8s.io/client-go/rest"
 	restclientwatch "k8s.io/client-go/rest/watch"
+	"k8s.io/client-go/util/watchlist"
 )
 
 func getJSON(version, kind, name string) []byte {
@@ -59,6 +61,12 @@ func getObject(version, kind, name string) *unstructured.Unstructured {
 	}
 }
 
+func getObjectFromJSON(b []byte) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	_ = obj.UnmarshalJSON(b) // can ignore parse error because the comparison will fail
+	return obj
+}
+
 func getClientServer(h func(http.ResponseWriter, *http.Request)) (Interface, *httptest.Server, error) {
 	srv := httptest.NewServer(http.HandlerFunc(h))
 	cl, err := NewForConfig(&restclient.Config{
@@ -69,6 +77,16 @@ func getClientServer(h func(http.ResponseWriter, *http.Request)) (Interface, *ht
 		return nil, nil, err
 	}
 	return cl, srv, nil
+}
+
+func TestDoesClientSupportWatchListSemantics(t *testing.T) {
+	target, err := NewForConfig(&restclient.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watchlist.DoesClientNotSupportWatchListSemantics(target) {
+		t.Fatalf("Dynamic client should support WatchList semantics")
+	}
 }
 
 func TestList(t *testing.T) {
@@ -188,6 +206,15 @@ func TestGet(t *testing.T) {
 			path:        "/apis/gtest/vtest/namespaces/nstest/rtest/namespaced_subresource_get/srtest",
 			resp:        getJSON("vTest", "srTest", "namespaced_subresource_get"),
 			want:        getObject("vTest", "srTest", "namespaced_subresource_get"),
+		},
+		{
+			resource:    "rtest",
+			subresource: []string{"srtest"},
+			namespace:   "nstest",
+			name:        "namespaced_subresource_get_list",
+			path:        "/apis/gtest/vtest/namespaces/nstest/rtest/namespaced_subresource_get_list/srtest",
+			resp:        getListJSON("vTest", "srTest", getJSON("vTest", "srTest", "a1")),
+			want:        getObjectFromJSON(getListJSON("vTest", "srTest", getJSON("vTest", "srTest", "a1"))),
 		},
 	}
 	for _, tc := range tcs {
@@ -405,7 +432,7 @@ func TestCreate(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", runtime.ContentTypeJSON)
-			data, err := ioutil.ReadAll(r.Body)
+			data, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Errorf("Create(%q) unexpected error reading body: %v", tc.name, err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -487,7 +514,7 @@ func TestUpdate(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", runtime.ContentTypeJSON)
-			data, err := ioutil.ReadAll(r.Body)
+			data, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Errorf("Update(%q) unexpected error reading body: %v", tc.name, err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -645,7 +672,7 @@ func TestPatch(t *testing.T) {
 				t.Errorf("Patch(%q) got Content-Type %s. wanted %s", tc.name, content, types.StrategicMergePatchType)
 			}
 
-			data, err := ioutil.ReadAll(r.Body)
+			data, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Errorf("Patch(%q) unexpected error reading body: %v", tc.name, err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -670,5 +697,109 @@ func TestPatch(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("Patch(%q) want: %v\ngot: %v", tc.name, tc.want, got)
 		}
+	}
+}
+
+func TestInvalidSegments(t *testing.T) {
+	name := "bad/name"
+	namespace := "bad/namespace"
+	resource := schema.GroupVersionResource{Group: "gtest", Version: "vtest", Resource: "rtest"}
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "vtest",
+			"kind":       "vkind",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+		},
+	}
+	cl, err := NewForConfig(&restclient.Config{
+		Host: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create config: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Namespace(namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Update(context.TODO(), obj, metav1.UpdateOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	_, err = cl.Resource(resource).Namespace(namespace).Update(context.TODO(), obj, metav1.UpdateOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).UpdateStatus(context.TODO(), obj, metav1.UpdateOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	_, err = cl.Resource(resource).Namespace(namespace).UpdateStatus(context.TODO(), obj, metav1.UpdateOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	err = cl.Resource(resource).Delete(context.TODO(), name, metav1.DeleteOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	err = cl.Resource(resource).Namespace(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	err = cl.Resource(resource).Namespace(namespace).DeleteCollection(context.TODO(), metav1.DeleteOptions{}, metav1.ListOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Get(context.TODO(), name, metav1.GetOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	_, err = cl.Resource(resource).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Namespace(namespace).List(context.TODO(), metav1.ListOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Namespace(namespace).Watch(context.TODO(), metav1.ListOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Patch(context.TODO(), name, types.StrategicMergePatchType, []byte("{}"), metav1.PatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	_, err = cl.Resource(resource).Namespace(namespace).Patch(context.TODO(), name, types.StrategicMergePatchType, []byte("{}"), metav1.PatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).Apply(context.TODO(), name, obj, metav1.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	_, err = cl.Resource(resource).Namespace(namespace).Apply(context.TODO(), name, obj, metav1.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
+	}
+
+	_, err = cl.Resource(resource).ApplyStatus(context.TODO(), name, obj, metav1.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource name") {
+		t.Fatalf("Expected `invalid resource name` error, got: %v", err)
+	}
+	_, err = cl.Resource(resource).Namespace(namespace).ApplyStatus(context.TODO(), name, obj, metav1.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Expected `invalid namespace` error, got: %v", err)
 	}
 }

@@ -224,14 +224,6 @@ func TestLexer(t *testing.T) {
 	}
 }
 
-func min(l, r int) (m int) {
-	m = r
-	if l < r {
-		m = l
-	}
-	return m
-}
-
 func TestLexerSequence(t *testing.T) {
 	testcases := []struct {
 		s string
@@ -644,8 +636,23 @@ func TestSetSelectorParser(t *testing.T) {
 		{"x in (abc,)", internalSelector{
 			getRequirement("x", selection.In, sets.NewString("abc", ""), t),
 		}, true, true},
+		{"x in (abc,abc)", internalSelector{
+			getRequirement("x", selection.In, sets.NewString("abc"), t),
+		}, true, true},
 		{"x in ()", internalSelector{
 			getRequirement("x", selection.In, sets.NewString(""), t),
+		}, true, true},
+		{"x in (a,,)", internalSelector{
+			getRequirement("x", selection.In, sets.NewString("a", ""), t),
+		}, true, true},
+		{"x in (a,,,)", internalSelector{
+			getRequirement("x", selection.In, sets.NewString("a", ""), t),
+		}, true, true},
+		{"x in (a,,,,,,)", internalSelector{
+			getRequirement("x", selection.In, sets.NewString("a", ""), t),
+		}, true, true},
+		{"x in (a,,a,,a,,a,,)", internalSelector{
+			getRequirement("x", selection.In, sets.NewString("a", ""), t),
 		}, true, true},
 		{"x notin (abc,,def),bar,z in (),w", internalSelector{
 			getRequirement("bar", selection.Exists, nil, t),
@@ -809,11 +816,70 @@ func BenchmarkSelectorFromValidatedSet(b *testing.B) {
 		"foo": "foo",
 		"bar": "bar",
 	}
+	matchee := Set(map[string]string{
+		"foo":   "foo",
+		"bar":   "bar",
+		"extra": "label",
+	})
 
 	for i := 0; i < b.N; i++ {
-		if SelectorFromValidatedSet(set).Empty() {
+		s := SelectorFromValidatedSet(set)
+		if s.Empty() {
 			b.Errorf("Unexpected selector")
 		}
+		if !s.Matches(matchee) {
+			b.Errorf("Unexpected match")
+		}
+	}
+}
+
+func BenchmarkSetSelector(b *testing.B) {
+	set := map[string]string{
+		"foo": "foo",
+		"bar": "bar",
+	}
+	matchee := Set(map[string]string{
+		"foo":   "foo",
+		"bar":   "bar",
+		"extra": "label",
+	})
+
+	for i := 0; i < b.N; i++ {
+		s := ValidatedSetSelector(set)
+		if s.Empty() {
+			b.Errorf("Unexpected selector")
+		}
+		if !s.Matches(matchee) {
+			b.Errorf("Unexpected match")
+		}
+	}
+}
+
+func TestSetSelectorString(t *testing.T) {
+	cases := []struct {
+		set Set
+		out string
+	}{
+		{
+			Set{},
+			"",
+		},
+		{
+			Set{"app": "foo"},
+			"app=foo",
+		},
+		{
+			Set{"app": "foo", "a": "b"},
+			"a=b,app=foo",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.out, func(t *testing.T) {
+			if got := ValidatedSetSelector(tt.set).String(); tt.out != got {
+				t.Fatalf("expected %v, got %v", tt.out, got)
+			}
+		})
 	}
 }
 
@@ -957,6 +1023,26 @@ func BenchmarkRequirementString(b *testing.B) {
 	}
 }
 
+func BenchmarkRequirementMatches(b *testing.B) {
+	r := Requirement{
+		key:      "environment",
+		operator: selection.NotIn,
+		strValues: []string{
+			"dev",
+		},
+	}
+	labels := Set(map[string]string{
+		"key":         "value",
+		"environment": "dev",
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.Matches(labels)
+	}
+}
+
 func TestRequirementEqual(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1026,5 +1112,116 @@ func TestRequirementEqual(t *testing.T) {
 				t.Errorf("cmp.Equal() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMatchesNothing(t *testing.T) {
+	tests := []struct {
+		name          string
+		selector      string
+		set           map[string]string
+		labelSelector Selector
+		want          bool
+	}{
+		{
+			name:          "MatchNothing should match Nothing()",
+			labelSelector: Nothing(),
+			want:          true,
+		},
+		{
+			name:          "MatchNothing should match sharedNothingSelector",
+			labelSelector: sharedNothingSelector,
+			want:          true,
+		},
+		{
+			name:          "MatchNothing should not match Everything()",
+			labelSelector: Everything(),
+			want:          false,
+		},
+		{
+			name:          "MatchNothing should not match sharedEverythingSelector",
+			labelSelector: sharedEverythingSelector,
+			want:          false,
+		},
+		{
+			name: "MatchNothing should not match empty set",
+			set:  map[string]string{},
+			want: false,
+		},
+		{
+			name: "MatchNothing should not match non-empty set",
+			set:  map[string]string{"key": "value"},
+			want: false,
+		},
+		{
+			name:     "MatchNothing should not match empty selector",
+			selector: "",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - exists",
+			selector: "a",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - not exists",
+			selector: "!a",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - equals",
+			selector: "a=b",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - not equals",
+			selector: "a!=b",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - in",
+			selector: "a in (b)",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - notin",
+			selector: "a notin (b)",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - conflict exists and not exists",
+			selector: "a,!a",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - conflict equals and not equals",
+			selector: "a=b,a!=b",
+			want:     false,
+		},
+		{
+			name:     "MatchNothing should not match non-empty selector - conflict in and notin",
+			selector: "a in (b),a notin (b)",
+			want:     false,
+		},
+	}
+
+	for i := 0; i < len(tests); i++ {
+		if tests[i].labelSelector != nil {
+			expectMatchNothing(t, tests[i].labelSelector, tests[i].want)
+		} else if tests[i].set != nil {
+			expectMatchNothing(t, SelectorFromSet(tests[i].set), tests[i].want)
+		} else {
+			selector, err := Parse(tests[i].selector)
+			if err != nil {
+				t.Errorf("Unable to parse %v as a selector.\n", selector)
+			}
+			expectMatchNothing(t, selector, tests[i].want)
+		}
+	}
+}
+
+func expectMatchNothing(t *testing.T, selector Selector, want bool) {
+	if MatchesNothing(selector) != want {
+		t.Errorf("Wanted %s to MatchNothing '%t', but it did not.\n", selector, want)
 	}
 }

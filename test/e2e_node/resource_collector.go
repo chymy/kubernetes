@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
 Copyright 2015 The Kubernetes Authors.
@@ -22,41 +21,33 @@ package e2enode
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"os"
+	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
 
-	cadvisorclient "github.com/google/cadvisor/client/v2"
-	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
-	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/cgroups"
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeletstatsv1alpha1 "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
-	"k8s.io/kubernetes/pkg/util/procfs"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/e2e_node/perftype"
 
-	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
+	"github.com/onsi/ginkgo/v2"
 )
 
 const (
 	// resource monitoring
-	cadvisorImageName = "gcr.io/cadvisor/cadvisor:v0.43.0"
+	cadvisorImageName = "gcr.io/cadvisor/cadvisor:v0.47.2"
 	cadvisorPodName   = "cadvisor"
 	cadvisorPort      = 8090
 	// housekeeping interval of Cadvisor (second)
@@ -70,13 +61,51 @@ var (
 // ResourceCollector is a collector object which collects
 // resource usage periodically from Cadvisor.
 type ResourceCollector struct {
-	client  *cadvisorclient.Client
-	request *cadvisorapiv2.RequestOptions
-
 	pollingInterval time.Duration
 	buffers         map[string][]*e2ekubelet.ContainerResourceUsage
 	lock            sync.RWMutex
 	stopCh          chan struct{}
+}
+
+// cadvisorContainerInfo / cadvisorContainerStats are the minimal subset of the
+// standalone cAdvisor pod's v2 /api/v2.1/stats response that this collector
+// reads. Decoding into these local types keeps test/e2e_node free of both the
+// cAdvisor Go client and its v2 API types -- it talks to the pod over HTTP+JSON.
+type cadvisorContainerInfo struct {
+	Stats []*cadvisorContainerStats `json:"stats"`
+}
+
+type cadvisorContainerStats struct {
+	Timestamp time.Time `json:"timestamp"`
+	CPU       struct {
+		Usage struct {
+			Total uint64 `json:"total"`
+		} `json:"usage"`
+	} `json:"cpu"`
+	Memory struct {
+		Usage      uint64 `json:"usage"`
+		WorkingSet uint64 `json:"working_set"`
+		RSS        uint64 `json:"rss"`
+	} `json:"memory"`
+}
+
+// cadvisorStats fetches the latest stats sample for a container from the
+// standalone cAdvisor pod's v2 REST API (replacing the cAdvisor v2 Go client).
+func cadvisorStats(name string) (map[string]*cadvisorContainerInfo, error) {
+	u := fmt.Sprintf("http://localhost:%d/api/v2.1/stats%s?count=1&type=name&recursive=false", cadvisorPort, name)
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("cadvisor stats for %q: HTTP %d", name, resp.StatusCode)
+	}
+	out := map[string]*cadvisorContainerInfo{}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // NewResourceCollector creates a resource collector object which collects
@@ -104,21 +133,20 @@ func (r *ResourceCollector) Start() {
 		framework.Failf("Failed to get runtime container name in test-e2e-node resource collector.")
 	}
 
-	wait.Poll(1*time.Second, 1*time.Minute, func() (bool, error) {
-		var err error
-		r.client, err = cadvisorclient.NewClient(fmt.Sprintf("http://localhost:%d/", cadvisorPort))
-		if err == nil {
-			return true, nil
+	// Wait for the standalone cAdvisor pod's v2 REST API to be reachable.
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 1*time.Minute, false, func(context.Context) (bool, error) {
+		resp, err := http.Get(fmt.Sprintf("http://localhost:%d/api/v2.1/machine", cadvisorPort))
+		if err != nil {
+			return false, nil
 		}
-		return false, err
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK, nil
 	})
+	framework.ExpectNoError(err, "cadvisor not ready")
 
-	gomega.Expect(r.client).NotTo(gomega.BeNil(), "cadvisor client not ready")
-
-	r.request = &cadvisorapiv2.RequestOptions{IdType: "name", Count: 1, Recursive: false}
 	r.stopCh = make(chan struct{})
 
-	oldStatsMap := make(map[string]*cadvisorapiv2.ContainerStats)
+	oldStatsMap := make(map[string]*cadvisorContainerStats)
 	go wait.Until(func() { r.collectStats(oldStatsMap) }, r.pollingInterval, r.stopCh)
 }
 
@@ -156,15 +184,15 @@ func (r *ResourceCollector) LogLatest() {
 }
 
 // collectStats collects resource usage from Cadvisor.
-func (r *ResourceCollector) collectStats(oldStatsMap map[string]*cadvisorapiv2.ContainerStats) {
+func (r *ResourceCollector) collectStats(oldStatsMap map[string]*cadvisorContainerStats) {
 	for _, name := range systemContainers {
-		ret, err := r.client.Stats(name, r.request)
+		ret, err := cadvisorStats(name)
 		if err != nil {
 			framework.Logf("Error getting container stats, err: %v", err)
 			return
 		}
 		cStats, ok := ret[name]
-		if !ok {
+		if !ok || len(cStats.Stats) == 0 {
 			framework.Logf("Missing info/stats for container %q", name)
 			return
 		}
@@ -179,11 +207,11 @@ func (r *ResourceCollector) collectStats(oldStatsMap map[string]*cadvisorapiv2.C
 }
 
 // computeContainerResourceUsage computes resource usage based on new data sample.
-func computeContainerResourceUsage(name string, oldStats, newStats *cadvisorapiv2.ContainerStats) *e2ekubelet.ContainerResourceUsage {
+func computeContainerResourceUsage(name string, oldStats, newStats *cadvisorContainerStats) *e2ekubelet.ContainerResourceUsage {
 	return &e2ekubelet.ContainerResourceUsage{
 		Name:                    name,
 		Timestamp:               newStats.Timestamp,
-		CPUUsageInCores:         float64(newStats.Cpu.Usage.Total-oldStats.Cpu.Usage.Total) / float64(newStats.Timestamp.Sub(oldStats.Timestamp).Nanoseconds()),
+		CPUUsageInCores:         float64(newStats.CPU.Usage.Total-oldStats.CPU.Usage.Total) / float64(newStats.Timestamp.Sub(oldStats.Timestamp).Nanoseconds()),
 		MemoryUsageInBytes:      newStats.Memory.Usage,
 		MemoryWorkingSetInBytes: newStats.Memory.WorkingSet,
 		MemoryRSSInBytes:        newStats.Memory.RSS,
@@ -370,7 +398,7 @@ func getCadvisorPod() *v1.Pod {
 }
 
 // deletePodsSync deletes a list of pods and block until pods disappear.
-func deletePodsSync(f *framework.Framework, pods []*v1.Pod) {
+func deletePodsSync(ctx context.Context, f *framework.Framework, pods []*v1.Pod) {
 	var wg sync.WaitGroup
 	for i := range pods {
 		pod := pods[i]
@@ -379,13 +407,7 @@ func deletePodsSync(f *framework.Framework, pods []*v1.Pod) {
 			defer ginkgo.GinkgoRecover()
 			defer wg.Done()
 
-			err := f.PodClient().Delete(context.TODO(), pod.ObjectMeta.Name, *metav1.NewDeleteOptions(30))
-			if apierrors.IsNotFound(err) {
-				framework.Failf("Unexpected error trying to delete pod %s: %v", pod.Name, err)
-			}
-
-			gomega.Expect(e2epod.WaitForPodToDisappear(f.ClientSet, f.Namespace.Name, pod.ObjectMeta.Name, labels.Everything(),
-				30*time.Second, 10*time.Minute)).NotTo(gomega.HaveOccurred())
+			e2epod.NewPodClient(f).DeleteSync(ctx, pod.ObjectMeta.Name, metav1.DeleteOptions{}, f.Timeouts.PodDelete)
 		}()
 	}
 	wg.Wait()
@@ -395,7 +417,7 @@ func deletePodsSync(f *framework.Framework, pods []*v1.Pod) {
 // newTestPods creates a list of pods (specification) for test.
 func newTestPods(numPods int, volume bool, imageName, podType string) []*v1.Pod {
 	var pods []*v1.Pod
-	for i := 0; i < numPods; i++ {
+	for range numPods {
 		podName := "test-" + string(uuid.NewUUID())
 		labels := map[string]string{
 			"type": podType,
@@ -466,38 +488,6 @@ func (r *ResourceCollector) GetResourceTimeSeries() map[string]*perftype.Resourc
 }
 
 const kubeletProcessName = "kubelet"
-
-func getPidsForProcess(name, pidFile string) ([]int, error) {
-	if len(pidFile) > 0 {
-		pid, err := getPidFromPidFile(pidFile)
-		if err == nil {
-			return []int{pid}, nil
-		}
-		// log the error and fall back to pidof
-		runtime.HandleError(err)
-	}
-	return procfs.PidOf(name)
-}
-
-func getPidFromPidFile(pidFile string) (int, error) {
-	file, err := os.Open(pidFile)
-	if err != nil {
-		return 0, fmt.Errorf("error opening pid file %s: %v", pidFile, err)
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return 0, fmt.Errorf("error reading pid file %s: %v", pidFile, err)
-	}
-
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		return 0, fmt.Errorf("error parsing %s as a number: %v", string(data), err)
-	}
-
-	return pid, nil
-}
 
 func getContainerNameForProcess(name, pidFile string) (string, error) {
 	pids, err := getPidsForProcess(name, pidFile)

@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -26,7 +27,7 @@ import (
 	mangen "github.com/cpuguy83/go-md2man/v2/md2man"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	kubectlcmd "k8s.io/kubectl/pkg/cmd"
 	"k8s.io/kubernetes/cmd/genutils"
 	apiservapp "k8s.io/kubernetes/cmd/kube-apiserver/app"
@@ -58,6 +59,7 @@ func main() {
 	// Set environment variables used by command so the output is consistent,
 	// regardless of where we run.
 	os.Setenv("HOME", "/home/username")
+	ctx := context.Background()
 
 	switch module {
 	case "kube-apiserver":
@@ -90,14 +92,14 @@ func main() {
 		}
 	case "kubelet":
 		// generate manpage for kubelet
-		kubelet := kubeletapp.NewKubeletCommand()
+		kubelet := kubeletapp.NewKubeletCommand(ctx)
 		genMarkdown(kubelet, "", outDir)
 		for _, c := range kubelet.Commands() {
 			genMarkdown(c, "kubelet", outDir)
 		}
 	case "kubectl":
 		// generate manpage for kubectl
-		kubectl := kubectlcmd.NewKubectlCommand(kubectlcmd.KubectlOptions{IOStreams: genericclioptions.IOStreams{In: bytes.NewReader(nil), Out: io.Discard, ErrOut: io.Discard}})
+		kubectl := kubectlcmd.NewKubectlCommand(kubectlcmd.KubectlOptions{IOStreams: genericiooptions.IOStreams{In: bytes.NewReader(nil), Out: io.Discard, ErrOut: io.Discard}})
 		genMarkdown(kubectl, "", outDir)
 		for _, c := range kubectl.Commands() {
 			genMarkdown(c, "kubectl", outDir)

@@ -18,9 +18,9 @@ package volumepathhandler
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
@@ -42,9 +42,9 @@ type BlockVolumePathHandler interface {
 	UnmapDevice(mapPath string, linkName string, bindMount bool) error
 	// RemovePath removes a file or directory on specified map path
 	RemoveMapPath(mapPath string) error
-	// IsSymlinkExist retruns true if specified symbolic link exists
+	// IsSymlinkExist returns true if specified symbolic link exists
 	IsSymlinkExist(mapPath string) (bool, error)
-	// IsDeviceBindMountExist retruns true if specified bind mount exists
+	// IsDeviceBindMountExist returns true if specified bind mount exists
 	IsDeviceBindMountExist(mapPath string) (bool, error)
 	// GetDeviceBindMountRefs searches bind mounts under global map path
 	GetDeviceBindMountRefs(devPath string, mapPath string) ([]string, error)
@@ -103,12 +103,12 @@ func (v VolumePathHandler) MapDevice(devicePath string, mapPath string, linkName
 	}
 
 	if bindMount {
-		return mapBindMountDevice(v, devicePath, mapPath, linkName)
+		return mapBindMountDevice(devicePath, mapPath, linkName)
 	}
-	return mapSymlinkDevice(v, devicePath, mapPath, linkName)
+	return mapSymlinkDevice(devicePath, mapPath, linkName)
 }
 
-func mapBindMountDevice(v VolumePathHandler, devicePath string, mapPath string, linkName string) error {
+func mapBindMountDevice(devicePath string, mapPath string, linkName string) error {
 	// Check bind mount exists
 	linkPath := filepath.Join(mapPath, string(linkName))
 
@@ -130,11 +130,11 @@ func mapBindMountDevice(v VolumePathHandler, devicePath string, mapPath string, 
 		// Check if device file
 		// TODO: Need to check if this device file is actually the expected bind mount
 		if file.Mode()&os.ModeDevice == os.ModeDevice {
-			klog.Warningf("Warning: Map skipped because bind mount already exist on the path: %v", linkPath)
+			klog.Warningf("Map skipped because bind mount already exists on the path: %v", linkPath)
 			return nil
 		}
 
-		klog.Warningf("Warning: file %s is already exist but not mounted, skip creating file", linkPath)
+		klog.Warningf("File %s already exists but is not mounted, skip creating file", linkPath)
 	}
 
 	// Bind mount file
@@ -146,7 +146,7 @@ func mapBindMountDevice(v VolumePathHandler, devicePath string, mapPath string, 
 	return nil
 }
 
-func mapSymlinkDevice(v VolumePathHandler, devicePath string, mapPath string, linkName string) error {
+func mapSymlinkDevice(devicePath string, mapPath string, linkName string) error {
 	// Remove old symbolic link(or file) then create new one.
 	// This should be done because current symbolic link is
 	// stale across node reboot.
@@ -177,7 +177,7 @@ func unmapBindMountDevice(v VolumePathHandler, mapPath string, linkName string) 
 	if isMountExist, checkErr := v.IsDeviceBindMountExist(linkPath); checkErr != nil {
 		return checkErr
 	} else if !isMountExist {
-		klog.Warningf("Warning: Unmap skipped because bind mount does not exist on the path: %v", linkPath)
+		klog.Warningf("Unmap skipped because bind mount does not exist on the path: %v", linkPath)
 
 		// Check if linkPath still exists
 		if _, err := os.Stat(linkPath); err != nil {
@@ -214,7 +214,7 @@ func unmapSymlinkDevice(v VolumePathHandler, mapPath string, linkName string) er
 	if islinkExist, checkErr := v.IsSymlinkExist(linkPath); checkErr != nil {
 		return checkErr
 	} else if !islinkExist {
-		klog.Warningf("Warning: Unmap skipped because symlink does not exist on the path: %v", linkPath)
+		klog.Warningf("Unmap skipped because symlink does not exist on the path: %v", linkPath)
 		return nil
 	}
 	return os.Remove(linkPath)
@@ -233,7 +233,7 @@ func (v VolumePathHandler) RemoveMapPath(mapPath string) error {
 	return nil
 }
 
-// IsSymlinkExist returns true if specified file exists and the type is symbolik link.
+// IsSymlinkExist returns true if specified file exists and the type is symbolik link or irregular file on Windows.
 // If file doesn't exist, or file exists but not symbolic link, return false with no error.
 // On other cases, return false with error from Lstat().
 func (v VolumePathHandler) IsSymlinkExist(mapPath string) (bool, error) {
@@ -248,6 +248,10 @@ func (v VolumePathHandler) IsSymlinkExist(mapPath string) (bool, error) {
 	}
 	// If file exits and it's symbolic link, return true and no error
 	if fi.Mode()&os.ModeSymlink == os.ModeSymlink {
+		return true, nil
+	}
+	// go1.23 behavior change: https://github.com/golang/go/issues/63703#issuecomment-2535941458
+	if (runtime.GOOS == "windows") && (fi.Mode()&os.ModeIrregular != 0) {
 		return true, nil
 	}
 	// If file exits but it's not symbolic link, return false and no error
@@ -279,12 +283,12 @@ func (v VolumePathHandler) IsDeviceBindMountExist(mapPath string) (bool, error) 
 // GetDeviceBindMountRefs searches bind mounts under global map path
 func (v VolumePathHandler) GetDeviceBindMountRefs(devPath string, mapPath string) ([]string, error) {
 	var refs []string
-	files, err := ioutil.ReadDir(mapPath)
+	files, err := os.ReadDir(mapPath)
 	if err != nil {
 		return nil, err
 	}
 	for _, file := range files {
-		if file.Mode()&os.ModeDevice != os.ModeDevice {
+		if file.Type()&os.ModeDevice != os.ModeDevice {
 			continue
 		}
 		filename := file.Name()

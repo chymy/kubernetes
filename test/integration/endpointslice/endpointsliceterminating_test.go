@@ -27,69 +27,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/controller/endpointslice"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/test/integration/framework"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/kubernetes/test/utils/ktesting"
+	"k8s.io/utils/ptr"
 )
 
-// TestEndpointSliceTerminating tests that terminating pods are NOT included in EndpointSlice when
-// the feature gate EndpointSliceTerminatingCondition is off. If the gate is on, it tests that
-// terminating endpoints are included but with the correct conditions set for ready, serving and terminating.
+// TestEndpointSliceTerminating tests that terminating endpoints are included with the
+// correct conditions set for ready, serving and terminating.
 func TestEndpointSliceTerminating(t *testing.T) {
 	testcases := []struct {
 		name              string
 		podStatus         corev1.PodStatus
 		expectedEndpoints []discovery.Endpoint
-		terminatingGate   bool
 	}{
 		{
-			name: "ready terminating pods not included, terminating gate off",
-			podStatus: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-				Conditions: []corev1.PodCondition{
-					{
-						Type:   corev1.PodReady,
-						Status: corev1.ConditionTrue,
-					},
-				},
-				PodIP: "10.0.0.1",
-				PodIPs: []corev1.PodIP{
-					{
-						IP: "10.0.0.1",
-					},
-				},
-			},
-			expectedEndpoints: []discovery.Endpoint{},
-			terminatingGate:   false,
-		},
-		{
-			name: "not ready terminating pods not included, terminating gate off",
-			podStatus: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-				Conditions: []corev1.PodCondition{
-					{
-						Type:   corev1.PodReady,
-						Status: corev1.ConditionFalse,
-					},
-				},
-				PodIP: "10.0.0.1",
-				PodIPs: []corev1.PodIP{
-					{
-						IP: "10.0.0.1",
-					},
-				},
-			},
-			expectedEndpoints: []discovery.Endpoint{},
-			terminatingGate:   false,
-		},
-		{
-			name: "ready terminating pods included, terminating gate on",
+			name: "ready terminating pods",
 			podStatus: corev1.PodStatus{
 				Phase: corev1.PodRunning,
 				Conditions: []corev1.PodCondition{
@@ -109,16 +65,15 @@ func TestEndpointSliceTerminating(t *testing.T) {
 				{
 					Addresses: []string{"10.0.0.1"},
 					Conditions: discovery.EndpointConditions{
-						Ready:       utilpointer.BoolPtr(false),
-						Serving:     utilpointer.BoolPtr(true),
-						Terminating: utilpointer.BoolPtr(true),
+						Ready:       ptr.To(false),
+						Serving:     ptr.To(true),
+						Terminating: ptr.To(true),
 					},
 				},
 			},
-			terminatingGate: true,
 		},
 		{
-			name: "not ready terminating pods included, terminating gate on",
+			name: "not ready terminating pods",
 			podStatus: corev1.PodStatus{
 				Phase: corev1.PodRunning,
 				Conditions: []corev1.PodCondition{
@@ -138,22 +93,19 @@ func TestEndpointSliceTerminating(t *testing.T) {
 				{
 					Addresses: []string{"10.0.0.1"},
 					Conditions: discovery.EndpointConditions{
-						Ready:       utilpointer.BoolPtr(false),
-						Serving:     utilpointer.BoolPtr(false),
-						Terminating: utilpointer.BoolPtr(true),
+						Ready:       ptr.To(false),
+						Serving:     ptr.To(false),
+						Terminating: ptr.To(true),
 					},
 				},
 			},
-			terminatingGate: true,
 		},
 	}
 
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EndpointSliceTerminatingCondition, testcase.terminatingGate)()
-
 			// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
-			server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
+			server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 			defer server.TearDownFn()
 
 			client, err := clientset.NewForConfig(server.ClientConfig)
@@ -164,7 +116,9 @@ func TestEndpointSliceTerminating(t *testing.T) {
 			resyncPeriod := 12 * time.Hour
 			informers := informers.NewSharedInformerFactory(client, resyncPeriod)
 
+			tCtx := ktesting.Init(t)
 			epsController := endpointslice.NewController(
+				tCtx,
 				informers.Core().V1().Pods(),
 				informers.Core().V1().Services(),
 				informers.Core().V1().Nodes(),
@@ -174,10 +128,8 @@ func TestEndpointSliceTerminating(t *testing.T) {
 				1*time.Second)
 
 			// Start informer and controllers
-			stopCh := make(chan struct{})
-			defer close(stopCh)
-			informers.Start(stopCh)
-			go epsController.Run(1, stopCh)
+			informers.Start(tCtx.Done())
+			go epsController.Run(tCtx, 1)
 
 			// Create namespace
 			ns := framework.CreateNamespaceOrDie(client, "test-endpoints-terminating", t)
@@ -207,7 +159,7 @@ func TestEndpointSliceTerminating(t *testing.T) {
 						"foo": "bar",
 					},
 					Ports: []corev1.ServicePort{
-						{Name: "port-443", Port: 443, Protocol: "TCP", TargetPort: intstr.FromInt(443)},
+						{Name: "port-443", Port: 443, Protocol: "TCP", TargetPort: intstr.FromInt32(443)},
 					},
 				},
 			}

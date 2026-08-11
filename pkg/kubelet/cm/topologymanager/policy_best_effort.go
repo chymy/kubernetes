@@ -16,9 +16,12 @@ limitations under the License.
 
 package topologymanager
 
+import "k8s.io/klog/v2"
+
 type bestEffortPolicy struct {
-	//List of NUMA Nodes available on the underlying machine
-	numaNodes []int
+	// numaInfo represents list of NUMA Nodes available on the underlying machine and distances between them
+	numaInfo *NUMAInfo
+	opts     PolicyOptions
 }
 
 var _ Policy = &bestEffortPolicy{}
@@ -27,8 +30,8 @@ var _ Policy = &bestEffortPolicy{}
 const PolicyBestEffort string = "best-effort"
 
 // NewBestEffortPolicy returns best-effort policy.
-func NewBestEffortPolicy(numaNodes []int) Policy {
-	return &bestEffortPolicy{numaNodes: numaNodes}
+func NewBestEffortPolicy(numaInfo *NUMAInfo, opts PolicyOptions) Policy {
+	return &bestEffortPolicy{numaInfo: numaInfo, opts: opts}
 }
 
 func (p *bestEffortPolicy) Name() string {
@@ -39,9 +42,10 @@ func (p *bestEffortPolicy) canAdmitPodResult(hint *TopologyHint) bool {
 	return true
 }
 
-func (p *bestEffortPolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
-	filteredProvidersHints := filterProvidersHints(providersHints)
-	bestHint := mergeFilteredHints(p.numaNodes, filteredProvidersHints)
+func (p *bestEffortPolicy) Merge(logger klog.Logger, providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
+	filteredHints := filterProvidersHints(logger, providersHints)
+	merger := NewHintMerger(p.numaInfo, filteredHints, p.Name(), p.opts)
+	bestHint := merger.Merge()
 	admit := p.canAdmitPodResult(&bestHint)
 	return bestHint, admit
 }

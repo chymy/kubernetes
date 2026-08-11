@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -43,8 +42,8 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"k8s.io/apimachinery/pkg/util/httpstream"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/streaming/pkg/httpstream"
 )
 
 const fakeStatusCode = 567
@@ -100,7 +99,7 @@ func (s *SimpleBackendHandler) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	s.requestHeader = req.Header
 	s.requestMethod = req.Method
 	var err error
-	s.requestBody, err = ioutil.ReadAll(req.Body)
+	s.requestBody, err = io.ReadAll(req.Body)
 	if err != nil {
 		s.t.Errorf("Unexpected error: %v", err)
 		return
@@ -169,13 +168,13 @@ func TestServeHTTP(t *testing.T) {
 	}{
 		{
 			name:         "root path, simple get",
-			method:       "GET",
+			method:       http.MethodGet,
 			requestPath:  "/",
 			expectedPath: "/",
 		},
 		{
 			name:            "no upgrade header sent",
-			method:          "GET",
+			method:          http.MethodGet,
 			requestPath:     "/",
 			upgradeRequired: true,
 			expectError: func(err error) bool {
@@ -184,13 +183,13 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:         "simple path, get",
-			method:       "GET",
+			method:       http.MethodGet,
 			requestPath:  "/path/to/test",
 			expectedPath: "/path/to/test",
 		},
 		{
 			name:          "request params",
-			method:        "POST",
+			method:        http.MethodPost,
 			requestPath:   "/some/path/",
 			expectedPath:  "/some/path/",
 			requestParams: map[string]string{"param1": "value/1", "param2": "value%2"},
@@ -198,26 +197,26 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:          "request headers",
-			method:        "PUT",
+			method:        http.MethodPut,
 			requestPath:   "/some/path",
 			expectedPath:  "/some/path",
 			requestHeader: map[string]string{"Header1": "value1", "Header2": "value2"},
 		},
 		{
 			name:         "empty path - slash should be added",
-			method:       "GET",
+			method:       http.MethodGet,
 			requestPath:  "",
 			expectedPath: "/",
 		},
 		{
 			name:         "remove CORS headers",
-			method:       "GET",
+			method:       http.MethodGet,
 			requestPath:  "/some/path",
 			expectedPath: "/some/path",
 			responseHeader: map[string]string{
 				"Header1":                      "value1",
 				"Access-Control-Allow-Origin":  "some.server",
-				"Access-Control-Allow-Methods": "GET"},
+				"Access-Control-Allow-Methods": http.MethodGet},
 			expectedRespHeader: map[string]string{
 				"Header1": "value1",
 			},
@@ -228,14 +227,14 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:            "use location host",
-			method:          "GET",
+			method:          http.MethodGet,
 			requestPath:     "/some/path",
 			expectedPath:    "/some/path",
 			useLocationHost: true,
 		},
 		{
 			name:            "use location host - invalid upgrade",
-			method:          "GET",
+			method:          http.MethodGet,
 			upgradeRequired: true,
 			requestHeader: map[string]string{
 				httpstream.HeaderConnection: httpstream.HeaderUpgrade,
@@ -249,21 +248,21 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:               "append server path to request path",
-			method:             "GET",
+			method:             http.MethodGet,
 			requestPath:        "/base",
 			expectedPath:       "/base/base",
 			appendLocationPath: true,
 		},
 		{
 			name:               "append server path to request path with ending slash",
-			method:             "GET",
+			method:             http.MethodGet,
 			requestPath:        "/base/",
 			expectedPath:       "/base/base/",
 			appendLocationPath: true,
 		},
 		{
 			name:               "don't append server path to request path",
-			method:             "GET",
+			method:             http.MethodGet,
 			requestPath:        "/base",
 			expectedPath:       "/base",
 			appendLocationPath: false,
@@ -370,7 +369,7 @@ func TestServeHTTP(t *testing.T) {
 			validateHeaders(t, test.name+" backend headers", res.Header, test.expectedRespHeader, test.notExpectedRespHeader)
 
 			// Validate Body
-			responseBody, err := ioutil.ReadAll(res.Body)
+			responseBody, err := io.ReadAll(res.Body)
 			if err != nil {
 				t.Errorf("Unexpected error reading response body: %v", err)
 			}
@@ -591,7 +590,7 @@ func TestProxyUpgradeConnectionErrorResponse(t *testing.T) {
 	defer proxy.Close()
 
 	// Send request to proxy server.
-	req, err := http.NewRequest("POST", "http://"+proxy.Listener.Addr().String()+"/some/path", nil)
+	req, err := http.NewRequest(http.MethodPost, "http://"+proxy.Listener.Addr().String()+"/some/path", nil)
 	require.NoError(t, err)
 	req.Header.Set(httpstream.HeaderConnection, httpstream.HeaderUpgrade)
 	resp, err := http.DefaultClient.Do(req)
@@ -601,7 +600,7 @@ func TestProxyUpgradeConnectionErrorResponse(t *testing.T) {
 	// Expect error response.
 	assert.True(t, responder.called)
 	assert.Equal(t, fakeStatusCode, resp.StatusCode)
-	msg, err := ioutil.ReadAll(resp.Body)
+	msg, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(msg), expectedErr.Error())
 }
@@ -634,13 +633,13 @@ func TestProxyUpgradeErrorResponseTerminates(t *testing.T) {
 			bufferedReader := bufio.NewReader(conn)
 
 			// Send upgrade request resulting in a non-101 response from the backend
-			req, _ := http.NewRequest("GET", "/", nil)
+			req, _ := http.NewRequest(http.MethodGet, "/", nil)
 			req.Header.Set(httpstream.HeaderConnection, httpstream.HeaderUpgrade)
 			require.NoError(t, req.Write(conn))
 			// Verify we get the correct response and full message body content
 			resp, err := http.ReadResponse(bufferedReader, nil)
 			require.NoError(t, err)
-			data, err := ioutil.ReadAll(resp.Body)
+			data, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			require.Equal(t, resp.StatusCode, code)
 			require.Equal(t, data, []byte(`some data`))
@@ -654,7 +653,7 @@ func TestProxyUpgradeErrorResponseTerminates(t *testing.T) {
 			}
 
 			// Send another request to another endpoint to verify it is not received
-			req, _ = http.NewRequest("GET", "/there", nil)
+			req, _ = http.NewRequest(http.MethodGet, "/there", nil)
 			req.Write(conn)
 			// wait to ensure the handler does not receive the request
 			time.Sleep(time.Second)
@@ -689,13 +688,111 @@ func TestProxyUpgradeErrorResponse(t *testing.T) {
 			bufferedReader := bufio.NewReader(conn)
 
 			// Send upgrade request resulting in a non-101 response from the backend
-			req, _ := http.NewRequest("GET", "/", nil)
+			req, _ := http.NewRequest(http.MethodGet, "/", nil)
 			req.Header.Set(httpstream.HeaderConnection, httpstream.HeaderUpgrade)
 			require.NoError(t, req.Write(conn))
 			// Verify we get the correct response and full message body content
 			resp, err := http.ReadResponse(bufferedReader, nil)
 			require.NoError(t, err)
 			assert.Equal(t, fakeStatusCode, resp.StatusCode)
+			resp.Body.Close()
+
+			// clean up
+			conn.Close()
+		})
+	}
+}
+
+func TestRejectForwardingRedirectsOption(t *testing.T) {
+	originalBody := []byte(`some data`)
+	testCases := []struct {
+		name                      string
+		rejectForwardingRedirects bool
+		serverStatusCode          int
+		redirect                  string
+		expectStatusCode          int
+		expectBody                []byte
+	}{
+		{
+			name:                      "reject redirection enabled in proxy, backend server sending 200 response",
+			rejectForwardingRedirects: true,
+			serverStatusCode:          200,
+			expectStatusCode:          200,
+			expectBody:                originalBody,
+		},
+		{
+			name:                      "reject redirection enabled in proxy, backend server sending 301 response",
+			rejectForwardingRedirects: true,
+			serverStatusCode:          301,
+			redirect:                  "/",
+			expectStatusCode:          502,
+			expectBody:                []byte(`the backend attempted to redirect this request, which is not permitted`),
+		},
+		{
+			name:                      "reject redirection enabled in proxy, backend server sending 304 response with a location header",
+			rejectForwardingRedirects: true,
+			serverStatusCode:          304,
+			redirect:                  "/",
+			expectStatusCode:          502,
+			expectBody:                []byte(`the backend attempted to redirect this request, which is not permitted`),
+		},
+		{
+			name:                      "reject redirection enabled in proxy, backend server sending 304 response with no location header",
+			rejectForwardingRedirects: true,
+			serverStatusCode:          304,
+			expectStatusCode:          304,
+			expectBody:                []byte{}, // client doesn't read the body for 304 responses
+		},
+		{
+			name:                      "reject redirection disabled in proxy, backend server sending 200 response",
+			rejectForwardingRedirects: false,
+			serverStatusCode:          200,
+			expectStatusCode:          200,
+			expectBody:                originalBody,
+		},
+		{
+			name:                      "reject redirection disabled in proxy, backend server sending 301 response",
+			rejectForwardingRedirects: false,
+			serverStatusCode:          301,
+			redirect:                  "/",
+			expectStatusCode:          301,
+			expectBody:                originalBody,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set up a backend server
+			backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.redirect != "" {
+					w.Header().Set("Location", tc.redirect)
+				}
+				w.WriteHeader(tc.serverStatusCode)
+				w.Write(originalBody)
+			}))
+			defer backendServer.Close()
+			backendServerURL, _ := url.Parse(backendServer.URL)
+
+			// Set up a proxy pointing to the backend
+			proxyHandler := NewUpgradeAwareHandler(backendServerURL, nil, false, false, &fakeResponder{t: t})
+			proxyHandler.RejectForwardingRedirects = tc.rejectForwardingRedirects
+			proxy := httptest.NewServer(proxyHandler)
+			defer proxy.Close()
+			proxyURL, _ := url.Parse(proxy.URL)
+
+			conn, err := net.Dial("tcp", proxyURL.Host)
+			require.NoError(t, err)
+			bufferedReader := bufio.NewReader(conn)
+
+			req, _ := http.NewRequest(http.MethodGet, proxyURL.String(), nil)
+			require.NoError(t, req.Write(conn))
+			// Verify we get the correct response and message body content
+			resp, err := http.ReadResponse(bufferedReader, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectStatusCode, resp.StatusCode)
+			data, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectBody, data)
+			assert.Equal(t, int64(len(tc.expectBody)), resp.ContentLength)
 			resp.Body.Close()
 
 			// clean up
@@ -878,7 +975,7 @@ func TestProxyRequestContentLengthAndTransferEncoding(t *testing.T) {
 			}
 
 			// Read body
-			body, err := ioutil.ReadAll(req.Body)
+			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				t.Errorf("%s: unexpected error %v", k, err)
 			}
@@ -941,7 +1038,7 @@ func TestProxyRequestContentLengthAndTransferEncoding(t *testing.T) {
 		}
 
 		// Read response
-		response, err := ioutil.ReadAll(conn)
+		response, err := io.ReadAll(conn)
 		if err != nil {
 			t.Errorf("%s: unexpected error %v", k, err)
 			continue
@@ -976,7 +1073,7 @@ func TestFlushIntervalHeaders(t *testing.T) {
 	frontend := httptest.NewServer(proxyHandler)
 	defer frontend.Close()
 
-	req, _ := http.NewRequest("GET", frontend.URL, nil)
+	req, _ := http.NewRequest(http.MethodGet, frontend.URL, nil)
 	req.Close = true
 
 	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
@@ -1021,7 +1118,7 @@ func TestErrorPropagation(t *testing.T) {
 	frontend := httptest.NewServer(proxyHandler)
 	defer frontend.Close()
 
-	req, _ := http.NewRequest("GET", frontend.URL, nil)
+	req, _ := http.NewRequest(http.MethodGet, frontend.URL, nil)
 	req.Close = true
 
 	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
@@ -1053,7 +1150,7 @@ func TestProxyRedirectsforRootPath(t *testing.T) {
 	}{
 		{
 			name:               "root path, simple get",
-			method:             "GET",
+			method:             http.MethodGet,
 			requestPath:        "",
 			redirect:           true,
 			expectedStatusCode: 301,
@@ -1063,14 +1160,14 @@ func TestProxyRedirectsforRootPath(t *testing.T) {
 		},
 		{
 			name:               "root path, simple put",
-			method:             "PUT",
+			method:             http.MethodPut,
 			requestPath:        "",
 			redirect:           false,
 			expectedStatusCode: 200,
 		},
 		{
 			name:               "root path, simple head",
-			method:             "HEAD",
+			method:             http.MethodHead,
 			requestPath:        "",
 			redirect:           true,
 			expectedStatusCode: 301,
@@ -1080,7 +1177,7 @@ func TestProxyRedirectsforRootPath(t *testing.T) {
 		},
 		{
 			name:               "root path, simple delete with params",
-			method:             "DELETE",
+			method:             http.MethodDelete,
 			requestPath:        "",
 			redirect:           false,
 			expectedStatusCode: 200,
@@ -1113,7 +1210,8 @@ func TestProxyRedirectsforRootPath(t *testing.T) {
 }
 
 // exampleCert was generated from crypto/tls/generate_cert.go with the following command:
-//    go run generate_cert.go  --rsa-bits 1024 --host example.com --ca --start-date "Jan 1 00:00:00 1970" --duration=1000000h
+//
+//	go run generate_cert.go  --rsa-bits 1024 --host example.com --ca --start-date "Jan 1 00:00:00 1970" --duration=1000000h
 var exampleCert = []byte(`-----BEGIN CERTIFICATE-----
 MIIDADCCAeigAwIBAgIQVHG3Fn9SdWayyLOZKCW1vzANBgkqhkiG9w0BAQsFADAS
 MRAwDgYDVQQKEwdBY21lIENvMCAXDTcwMDEwMTAwMDAwMFoYDzIwODQwMTI5MTYw

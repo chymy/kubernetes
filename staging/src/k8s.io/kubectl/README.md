@@ -1,3 +1,8 @@
+> ⚠️ **This is an automatically published [staged repository](https://git.k8s.io/kubernetes/staging#external-repository-staging-area) for Kubernetes**.   
+> Pull requests, should be made to the main Kubernetes repository: [https://github.com/kubernetes/kubernetes](https://github.com/kubernetes/kubernetes).  
+> This repository is read-only for importing, and not used for direct contributions.  
+> See [CONTRIBUTING.md](./CONTRIBUTING.md) for more details.
+
 # Kubectl
 
 ![kubectl logo](./images/kubectl-logo-medium.png)
@@ -19,7 +24,7 @@ cli client. That client will eventually move here too.
 
 - No dependence on `k8s.io/kubernetes`. Dependence on other repositories is fine.
 
-- Code must be usefully [commented](https://golang.org/doc/effective_go.html#commentary).
+- Code must be usefully [commented](https://go.dev/doc/effective_go#commentary).
   Not only for developers on the project, but also for external users of these packages.
 
 - When reviewing PRs, you are encouraged to use Golang's [code review

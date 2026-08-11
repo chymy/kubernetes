@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
 Copyright 2022 The Kubernetes Authors.
 
@@ -299,7 +301,7 @@ func findParamField(value reflect.Value, param string) (*reflect.Value, bool) {
 var wordRegex = regexp.MustCompile(`(?:^|\s)("[^"]*"|[^"]\S*)`)
 
 // Used by ParseRule
-var boolPtrType = reflect.PtrTo(reflect.TypeOf(true))
+var boolPtrType = reflect.PointerTo(reflect.TypeOf(true))
 var ipTablesValuePtrType = reflect.TypeOf((*IPTablesValue)(nil))
 
 // ParseRule parses rule. If strict is false, it will parse the recognized

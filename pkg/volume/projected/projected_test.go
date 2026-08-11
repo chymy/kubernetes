@@ -17,8 +17,13 @@ limitations under the License.
 package projected
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
-	"io/ioutil"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,33 +32,44 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	certificatesv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/version"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	clitesting "k8s.io/client-go/testing"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	pkgauthenticationv1 "k8s.io/kubernetes/pkg/apis/authentication/v1"
 	pkgcorev1 "k8s.io/kubernetes/pkg/apis/core/v1"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/emptydir"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 	"k8s.io/kubernetes/pkg/volume/util"
-	utilptr "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestCollectDataWithSecret(t *testing.T) {
 	caseMappingMode := int32(0400)
+	caseMappingUser1 := int64(1001)
+	caseMappingUser2 := int64(1002)
+
 	cases := []struct {
 		name     string
 		mappings []v1.KeyToPath
 		secret   *v1.Secret
 		mode     int32
+		user     *int64
 		optional bool
 		payload  map[string]util.FileProjection
 		success  bool
+
+		disableUserFieldsGate bool
 	}{
 		{
 			name: "no overrides",
@@ -243,10 +259,134 @@ func TestCollectDataWithSecret(t *testing.T) {
 			payload:  map[string]util.FileProjection{},
 			success:  true,
 		},
+		{
+			name: "mapping with defaultUser",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+				},
+			},
+			secret: &v1.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser1},
+			},
+			success: true,
+		},
+		{
+			name: "mapping with User",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+					User: &caseMappingUser2,
+				},
+			},
+			secret: &v1.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			mode: 0644,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser2},
+			},
+			success: true,
+		},
+		{
+			name: "mapping with defaultUser and User",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+					User: &caseMappingUser2,
+				},
+			},
+			secret: &v1.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser2},
+			},
+			success: true,
+		},
+		{
+			name:     "empty mappings",
+			mappings: []v1.KeyToPath{},
+			secret: &v1.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			mode: 0644,
+			payload: map[string]util.FileProjection{
+				"foo": {Data: []byte("foo"), Mode: 0644},
+				"bar": {Data: []byte("bar"), Mode: 0644},
+			},
+			success: true,
+		},
+		{
+			name:     "empty mappings with defaultUser",
+			mappings: []v1.KeyToPath{},
+			secret: &v1.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser1},
+				"bar": {Data: []byte("bar"), Mode: 0644, FsUser: &caseMappingUser1},
+			},
+			success: true,
+		},
+		{
+			name: "user fields with disabled feature gate",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+					User: &caseMappingUser2,
+				},
+			},
+			secret: &v1.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644},
+			},
+			success:               true,
+			disableUserFieldsGate: true,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.disableUserFieldsGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AtomicWriteVolumeUserFields, !tc.disableUserFieldsGate)
 
 			testNamespace := "test_projected_namespace"
 			tc.secret.ObjectMeta = metav1.ObjectMeta{
@@ -254,7 +394,7 @@ func TestCollectDataWithSecret(t *testing.T) {
 				Name:      tc.name,
 			}
 
-			source := makeProjection(tc.name, utilptr.Int32Ptr(tc.mode), "secret")
+			source := makeProjection(tc.name, new(tc.mode), tc.user, "secret")
 			source.Sources[0].Secret.Items = tc.mappings
 			source.Sources[0].Secret.Optional = &tc.optional
 
@@ -297,14 +437,20 @@ func TestCollectDataWithSecret(t *testing.T) {
 
 func TestCollectDataWithConfigMap(t *testing.T) {
 	caseMappingMode := int32(0400)
+	caseMappingUser1 := int64(1001)
+	caseMappingUser2 := int64(1002)
+
 	cases := []struct {
 		name      string
 		mappings  []v1.KeyToPath
 		configMap *v1.ConfigMap
 		mode      int32
+		user      *int64
 		optional  bool
 		payload   map[string]util.FileProjection
 		success   bool
+
+		disableUserFieldsGate bool
 	}{
 		{
 			name: "no overrides",
@@ -494,16 +640,149 @@ func TestCollectDataWithConfigMap(t *testing.T) {
 			payload:  map[string]util.FileProjection{},
 			success:  true,
 		},
+		{
+			name: "mapping with defaultUser",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+				},
+			},
+			configMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"foo": "foo",
+					"bar": "bar",
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser1},
+			},
+			success: true,
+		},
+		{
+			name: "mapping with User",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+					User: &caseMappingUser2,
+				},
+			},
+			configMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"foo": "foo",
+					"bar": "bar",
+				},
+			},
+			mode: 0644,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser2},
+			},
+			success: true,
+		},
+		{
+			name: "mapping with defaultUser and User",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+					User: &caseMappingUser2,
+				},
+			},
+			configMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"foo": "foo",
+					"bar": "bar",
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser2},
+			},
+			success: true,
+		},
+		{
+			name:     "empty mappings",
+			mappings: []v1.KeyToPath{},
+			configMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"foo": "foo",
+					"bar": "bar",
+				},
+				BinaryData: map[string][]byte{
+					"moo": []byte("moo"),
+				},
+			},
+			mode: 0644,
+			payload: map[string]util.FileProjection{
+				"foo": {Data: []byte("foo"), Mode: 0644},
+				"bar": {Data: []byte("bar"), Mode: 0644},
+				"moo": {Data: []byte("moo"), Mode: 0644},
+			},
+			success: true,
+		},
+		{
+			name:     "empty mappings with defaultUser",
+			mappings: []v1.KeyToPath{},
+			configMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"foo": "foo",
+					"bar": "bar",
+				},
+				BinaryData: map[string][]byte{
+					"moo": []byte("moo"),
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo": {Data: []byte("foo"), Mode: 0644, FsUser: &caseMappingUser1},
+				"bar": {Data: []byte("bar"), Mode: 0644, FsUser: &caseMappingUser1},
+				"moo": {Data: []byte("moo"), Mode: 0644, FsUser: &caseMappingUser1},
+			},
+			success: true,
+		},
+		{
+			name: "user fields with disabled feature gate",
+			mappings: []v1.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "foo.txt",
+					User: &caseMappingUser2,
+				},
+			},
+			configMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"foo": "foo",
+					"bar": "bar",
+				},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"foo.txt": {Data: []byte("foo"), Mode: 0644},
+			},
+			success:               true,
+			disableUserFieldsGate: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.disableUserFieldsGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AtomicWriteVolumeUserFields, !tc.disableUserFieldsGate)
+
 			testNamespace := "test_projected_namespace"
 			tc.configMap.ObjectMeta = metav1.ObjectMeta{
 				Namespace: testNamespace,
 				Name:      tc.name,
 			}
 
-			source := makeProjection(tc.name, utilptr.Int32Ptr(tc.mode), "configMap")
+			source := makeProjection(tc.name, new(tc.mode), tc.user, "configMap")
 			source.Sources[0].ConfigMap.Items = tc.mappings
 			source.Sources[0].ConfigMap.Optional = &tc.optional
 
@@ -548,14 +827,19 @@ func TestCollectDataWithDownwardAPI(t *testing.T) {
 	testNamespace := "test_projected_namespace"
 	testPodUID := types.UID("test_pod_uid")
 	testPodName := "podName"
+	caseMappingUser1 := int64(1001)
+	caseMappingUser2 := int64(1002)
 
 	cases := []struct {
 		name       string
 		volumeFile []v1.DownwardAPIVolumeFile
 		pod        *v1.Pod
 		mode       int32
+		user       *int64
 		payload    map[string]util.FileProjection
 		success    bool
+
+		disableUserFieldsGate bool
 	}{
 		{
 			name: "annotation",
@@ -673,16 +957,97 @@ func TestCollectDataWithDownwardAPI(t *testing.T) {
 			},
 			success: true,
 		},
+		{
+			name: "defaultUser",
+			volumeFile: []v1.DownwardAPIVolumeFile{
+				{Path: "namespace_file_name", FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace"}}},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testPodName,
+					Namespace: testNamespace,
+					UID:       testPodUID},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"namespace_file_name": {Data: []byte(testNamespace), Mode: 0644, FsUser: &caseMappingUser1},
+			},
+			success: true,
+		},
+		{
+			name: "user",
+			volumeFile: []v1.DownwardAPIVolumeFile{
+				{Path: "namespace_file_name", User: &caseMappingUser2, FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace"}}},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testPodName,
+					Namespace: testNamespace,
+					UID:       testPodUID},
+			},
+			mode: 0644,
+			payload: map[string]util.FileProjection{
+				"namespace_file_name": {Data: []byte(testNamespace), Mode: 0644, FsUser: &caseMappingUser2},
+			},
+			success: true,
+		},
+		{
+			name: "defaultUser-and-user",
+			volumeFile: []v1.DownwardAPIVolumeFile{
+				{Path: "namespace_file_name", User: &caseMappingUser2, FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace"}}},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testPodName,
+					Namespace: testNamespace,
+					UID:       testPodUID},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"namespace_file_name": {Data: []byte(testNamespace), Mode: 0644, FsUser: &caseMappingUser2},
+			},
+			success: true,
+		},
+		{
+			name: "user-fields-with-disabled-feature-gate",
+			volumeFile: []v1.DownwardAPIVolumeFile{
+				{Path: "namespace_file_name", User: &caseMappingUser2, FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace"}}},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testPodName,
+					Namespace: testNamespace,
+					UID:       testPodUID},
+			},
+			mode: 0644,
+			user: &caseMappingUser1,
+			payload: map[string]util.FileProjection{
+				"namespace_file_name": {Data: []byte(testNamespace), Mode: 0644},
+			},
+			disableUserFieldsGate: true,
+			success:               true,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			source := makeProjection("", utilptr.Int32Ptr(tc.mode), "downwardAPI")
+			if tc.disableUserFieldsGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AtomicWriteVolumeUserFields, !tc.disableUserFieldsGate)
+
+			source := makeProjection("", new(tc.mode), tc.user, "downwardAPI")
 			source.Sources[0].DownwardAPI.Items = tc.volumeFile
 
 			client := fake.NewSimpleClientset(tc.pod)
 			tempDir, host := newTestHost(t, client)
-			defer os.RemoveAll(tempDir)
+			defer func() {
+				if err := os.RemoveAll(tempDir); err != nil {
+					t.Fatal(err)
+				}
+			}()
 			var myVolumeMounter = projectedVolumeMounter{
 				projectedVolume: &projectedVolume{
 					sources: source.Sources,
@@ -726,18 +1091,22 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 		svcacct     string
 		audience    string
 		defaultMode *int32
+		defaultUser *int64
 		fsUser      *int64
 		fsGroup     *int64
+		user        *int64
 		expiration  *int64
 		path        string
 
 		wantPayload map[string]util.FileProjection
 		wantErr     error
+
+		disableUserFieldsGate bool
 	}{
 		{
 			name:        "good service account",
 			audience:    "https://example.com",
-			defaultMode: utilptr.Int32Ptr(0644),
+			defaultMode: ptr.To[int32](0644),
 			path:        "token",
 			expiration:  &minute,
 
@@ -748,7 +1117,7 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 		{
 			name:        "good service account other path",
 			audience:    "https://example.com",
-			defaultMode: utilptr.Int32Ptr(0644),
+			defaultMode: ptr.To[int32](0644),
 			path:        "other-token",
 			expiration:  &minute,
 			wantPayload: map[string]util.FileProjection{
@@ -757,7 +1126,7 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 		},
 		{
 			name:        "good service account defaults audience",
-			defaultMode: utilptr.Int32Ptr(0644),
+			defaultMode: ptr.To[int32](0644),
 			path:        "token",
 			expiration:  &minute,
 
@@ -767,7 +1136,7 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 		},
 		{
 			name:        "good service account defaults expiration",
-			defaultMode: utilptr.Int32Ptr(0644),
+			defaultMode: ptr.To[int32](0644),
 			path:        "token",
 
 			wantPayload: map[string]util.FileProjection{
@@ -781,21 +1150,76 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 		},
 		{
 			name:        "fsUser != nil",
-			defaultMode: utilptr.Int32Ptr(0644),
-			fsUser:      utilptr.Int64Ptr(1000),
+			defaultMode: ptr.To[int32](0644),
+			fsUser:      ptr.To[int64](1000),
 			path:        "token",
 			wantPayload: map[string]util.FileProjection{
 				"token": {
 					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
 					Mode:   0600,
-					FsUser: utilptr.Int64Ptr(1000),
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+		},
+		{
+			name:        "defaultUser != nil",
+			defaultMode: ptr.To[int32](0644),
+			defaultUser: ptr.To[int64](1000),
+			path:        "token",
+			wantPayload: map[string]util.FileProjection{
+				"token": {
+					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+		},
+		{
+			name:        "user != nil",
+			defaultMode: ptr.To[int32](0644),
+			user:        ptr.To[int64](1000),
+			path:        "token",
+			wantPayload: map[string]util.FileProjection{
+				"token": {
+					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+		},
+		{
+			name:        "fsUser != nil && defaultUser != nil",
+			defaultMode: ptr.To[int32](0644),
+			defaultUser: ptr.To[int64](1001),
+			fsUser:      ptr.To[int64](1000),
+			path:        "token",
+			wantPayload: map[string]util.FileProjection{
+				"token": {
+					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1001),
+				},
+			},
+		},
+		{
+			name:        "fsUser != nil && defaultUser != nil && user != nil",
+			defaultMode: ptr.To[int32](0644),
+			defaultUser: ptr.To[int64](1001),
+			fsUser:      ptr.To[int64](1000),
+			user:        ptr.To[int64](1002),
+			path:        "token",
+			wantPayload: map[string]util.FileProjection{
+				"token": {
+					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1002),
 				},
 			},
 		},
 		{
 			name:        "fsGroup != nil",
-			defaultMode: utilptr.Int32Ptr(0644),
-			fsGroup:     utilptr.Int64Ptr(1000),
+			defaultMode: ptr.To[int32](0644),
+			fsGroup:     ptr.To[int64](1000),
 			path:        "token",
 			wantPayload: map[string]util.FileProjection{
 				"token": {
@@ -806,26 +1230,48 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 		},
 		{
 			name:        "fsUser != nil && fsGroup != nil",
-			defaultMode: utilptr.Int32Ptr(0644),
-			fsGroup:     utilptr.Int64Ptr(1000),
-			fsUser:      utilptr.Int64Ptr(1000),
+			defaultMode: ptr.To[int32](0644),
+			fsGroup:     ptr.To[int64](1000),
+			fsUser:      ptr.To[int64](1000),
 			path:        "token",
 			wantPayload: map[string]util.FileProjection{
 				"token": {
 					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
 					Mode:   0600,
-					FsUser: utilptr.Int64Ptr(1000),
+					FsUser: ptr.To[int64](1000),
 				},
 			},
+		},
+		{
+			name:        "user fields with disabled feature gate",
+			defaultMode: ptr.To[int32](0644),
+			defaultUser: ptr.To[int64](1001),
+			fsUser:      ptr.To[int64](1000),
+			user:        ptr.To[int64](1002),
+			path:        "token",
+			wantPayload: map[string]util.FileProjection{
+				"token": {
+					Data:   []byte("test_projected_namespace:foo:3600:[https://api]"),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+			disableUserFieldsGate: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.disableUserFieldsGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AtomicWriteVolumeUserFields, !tc.disableUserFieldsGate)
+
 			testNamespace := "test_projected_namespace"
-			source := makeProjection(tc.name, tc.defaultMode, "serviceAccountToken")
+			source := makeProjection(tc.name, tc.defaultMode, tc.defaultUser, "serviceAccountToken")
 			source.Sources[0].ServiceAccountToken.Audience = tc.audience
 			source.Sources[0].ServiceAccountToken.ExpirationSeconds = tc.expiration
+			source.Sources[0].ServiceAccountToken.User = tc.user
 			source.Sources[0].ServiceAccountToken.Path = tc.path
 
 			testPodUID := types.UID("test_pod_uid")
@@ -873,13 +1319,776 @@ func TestCollectDataWithServiceAccountToken(t *testing.T) {
 	}
 }
 
+func TestCollectDataWithClusterTrustBundle(t *testing.T) {
+	// This test is limited by the use of a fake clientset and volume host.  We
+	// can't meaningfully test that label selectors end up doing the correct
+	// thing for example.
+
+	goodCert1 := mustMakeRoot(t, "root1")
+
+	testCases := []struct {
+		name string
+
+		source  v1.ProjectedVolumeSource
+		bundles []runtime.Object
+
+		fsUser  *int64
+		fsGroup *int64
+
+		wantPayload map[string]util.FileProjection
+		wantErr     error
+
+		disableUserFieldsGate bool
+	}{
+		{
+			name: "single ClusterTrustBundle by name",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: ptr.To("foo"),
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data: []byte(goodCert1),
+					Mode: 0644,
+				},
+			},
+		},
+		{
+			name: "single ClusterTrustBundle by signer name",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							SignerName: ptr.To("foo.example/bar"), // Note: fake client doesn't understand selection by signer name.
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"key": "non-value", // Note: fake client doesn't actually act on label selectors.
+								},
+							},
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo:example:bar",
+						Labels: map[string]string{
+							"key": "value",
+						},
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						SignerName:  "foo.example/bar",
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data: []byte(goodCert1),
+					Mode: 0644,
+				},
+			},
+		},
+		{
+			name: "single ClusterTrustBundle by name, non-default mode",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: ptr.To("foo"),
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0600),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data: []byte(goodCert1),
+					Mode: 0600,
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with fsUser",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			fsUser: ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data:   []byte(goodCert1),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with defaultUser",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultUser: ptr.To[int64](1000),
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data:   []byte(goodCert1),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with user",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+							User: ptr.To[int64](1000),
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data:   []byte(goodCert1),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with fsUser and defaultUser",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1001),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			fsUser: ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data:   []byte(goodCert1),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1001),
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with fsUser, defaultUser and user",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+							User: ptr.To[int64](1002),
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1001),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			fsUser: ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data:   []byte(goodCert1),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1002),
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with fsGroup",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			fsGroup: ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data: []byte(goodCert1),
+					Mode: 0600,
+				},
+			},
+		},
+		{
+			name: "ClusterTrustBundle with user fields and disabled feature gate",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						ClusterTrustBundle: &v1.ClusterTrustBundleProjection{
+							Name: new("foo"),
+							Path: "bundle.pem",
+							User: ptr.To[int64](1002),
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1001),
+			},
+			bundles: []runtime.Object{
+				&certificatesv1.ClusterTrustBundle{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "foo",
+					},
+					Spec: certificatesv1.ClusterTrustBundleSpec{
+						TrustBundle: string(goodCert1),
+					},
+				},
+			},
+			fsUser: ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"bundle.pem": {
+					Data:   []byte(goodCert1),
+					Mode:   0600,
+					FsUser: ptr.To[int64](1000),
+				},
+			},
+			disableUserFieldsGate: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.disableUserFieldsGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AtomicWriteVolumeUserFields, !tc.disableUserFieldsGate)
+
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					UID:       types.UID("test_pod_uid"),
+				},
+				Spec: v1.PodSpec{ServiceAccountName: "foo"},
+			}
+
+			client := fake.NewSimpleClientset(tc.bundles...)
+			tempDir, host := newTestHost(t, client)
+			defer func() {
+				if err := os.RemoveAll(tempDir); err != nil {
+					t.Fatal(err)
+				}
+			}()
+
+			var myVolumeMounter = projectedVolumeMounter{
+				projectedVolume: &projectedVolume{
+					sources: tc.source.Sources,
+					podUID:  pod.UID,
+					plugin: &projectedPlugin{
+						host:   host,
+						kvHost: host.(volume.KubeletVolumeHost),
+					},
+				},
+				source: tc.source,
+				pod:    pod,
+			}
+
+			gotPayload, err := myVolumeMounter.collectData(volume.MounterArgs{FsUser: tc.fsUser, FsGroup: tc.fsGroup})
+			if err != nil {
+				t.Fatalf("Unexpected failure making payload: %v", err)
+			}
+			if diff := cmp.Diff(tc.wantPayload, gotPayload); diff != "" {
+				t.Fatalf("Bad payload; diff (-want +got)\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCollectDataWithPodCertificate(t *testing.T) {
+	testCases := []struct {
+		name string
+
+		source  v1.ProjectedVolumeSource
+		bundles []runtime.Object
+
+		fsUser  *int64
+		fsGroup *int64
+
+		wantPayload map[string]util.FileProjection
+		wantErr     error
+
+		disableUserFieldsGate bool
+	}{
+		{
+			name: "credential bundle",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{},
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data: []byte("key\ncert\n"), // fake kubelet volume host is hardcoded to return this string.
+					Mode: 0644,
+				},
+			},
+		},
+		{
+			name: "key and cert bundle",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{},
+			wantPayload: map[string]util.FileProjection{
+				"key.pem": {
+					Data: []byte("key\n"), // fake kubelet volume host is hardcoded to return this string.
+					Mode: 0644,
+				},
+				"certificates.pem": {
+					Data: []byte("cert\n"), // fake kubelet volume host is hardcoded to return this string.
+					Mode: 0644,
+				},
+			},
+		},
+		{
+			name: "pod certificates with fsUser",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{},
+			fsUser:  ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data:   []byte("key\ncert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"key.pem": {
+					Data:   []byte("key\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"certificates.pem": {
+					Data:   []byte("cert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+			},
+		},
+		{
+			name: "pod certificates with defaultUser",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1000),
+			},
+			bundles: []runtime.Object{},
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data:   []byte("key\ncert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"key.pem": {
+					Data:   []byte("key\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"certificates.pem": {
+					Data:   []byte("cert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+			},
+		},
+		{
+			name: "pod certificates with user",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+							User:                 ptr.To[int64](1000),
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{},
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data:   []byte("key\ncert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"key.pem": {
+					Data:   []byte("key\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"certificates.pem": {
+					Data:   []byte("cert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+			},
+		},
+		{
+			name: "pod certificates with fsUser and defaultUser",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1001),
+			},
+			bundles: []runtime.Object{},
+			fsUser:  ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data:   []byte("key\ncert\n"),
+					FsUser: ptr.To[int64](1001),
+					Mode:   0600,
+				},
+				"key.pem": {
+					Data:   []byte("key\n"),
+					FsUser: ptr.To[int64](1001),
+					Mode:   0600,
+				},
+				"certificates.pem": {
+					Data:   []byte("cert\n"),
+					FsUser: ptr.To[int64](1001),
+					Mode:   0600,
+				},
+			},
+		},
+		{
+			name: "pod certificates with fsUser, defaultUser and user",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+							User:                 ptr.To[int64](1002),
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1001),
+			},
+			bundles: []runtime.Object{},
+			fsUser:  ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data:   []byte("key\ncert\n"),
+					FsUser: ptr.To[int64](1002),
+					Mode:   0600,
+				},
+				"key.pem": {
+					Data:   []byte("key\n"),
+					FsUser: ptr.To[int64](1002),
+					Mode:   0600,
+				},
+				"certificates.pem": {
+					Data:   []byte("cert\n"),
+					FsUser: ptr.To[int64](1002),
+					Mode:   0600,
+				},
+			},
+		},
+		{
+			name: "pod certificates with fsGroup",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+			},
+			bundles: []runtime.Object{},
+			fsGroup: ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data: []byte("key\ncert\n"),
+					Mode: 0600,
+				},
+				"key.pem": {
+					Data: []byte("key\n"),
+					Mode: 0600,
+				},
+				"certificates.pem": {
+					Data: []byte("cert\n"),
+					Mode: 0600,
+				},
+			},
+		},
+		{
+			name: "pod certificates with user fields and disabled feature gate",
+			source: v1.ProjectedVolumeSource{
+				Sources: []v1.VolumeProjection{
+					{
+						PodCertificate: &v1.PodCertificateProjection{
+							SignerName:           "example.com/foo",
+							KeyType:              "ED25519",
+							CredentialBundlePath: "credbundle.pem",
+							KeyPath:              "key.pem",
+							CertificateChainPath: "certificates.pem",
+							User:                 ptr.To[int64](1002),
+						},
+					},
+				},
+				DefaultMode: ptr.To[int32](0644),
+				DefaultUser: ptr.To[int64](1001),
+			},
+			bundles: []runtime.Object{},
+			fsUser:  ptr.To[int64](1000),
+			wantPayload: map[string]util.FileProjection{
+				"credbundle.pem": {
+					Data:   []byte("key\ncert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"key.pem": {
+					Data:   []byte("key\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+				"certificates.pem": {
+					Data:   []byte("cert\n"),
+					FsUser: ptr.To[int64](1000),
+					Mode:   0600,
+				},
+			},
+			disableUserFieldsGate: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.disableUserFieldsGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AtomicWriteVolumeUserFields, !tc.disableUserFieldsGate)
+
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					UID:       types.UID("test_pod_uid"),
+				},
+				Spec: v1.PodSpec{ServiceAccountName: "foo"},
+			}
+
+			client := fake.NewSimpleClientset(tc.bundles...)
+
+			tempDir, host := newTestHost(t, client)
+			defer os.RemoveAll(tempDir)
+
+			var myVolumeMounter = projectedVolumeMounter{
+				projectedVolume: &projectedVolume{
+					sources: tc.source.Sources,
+					podUID:  pod.UID,
+					plugin: &projectedPlugin{
+						host:   host,
+						kvHost: host.(volume.KubeletVolumeHost),
+					},
+				},
+				source: tc.source,
+				pod:    pod,
+			}
+
+			gotPayload, err := myVolumeMounter.collectData(volume.MounterArgs{FsUser: tc.fsUser, FsGroup: tc.fsGroup})
+			if err != nil {
+				t.Fatalf("Unexpected failure making payload: %v", err)
+			}
+			if diff := cmp.Diff(tc.wantPayload, gotPayload); diff != "" {
+				t.Fatalf("Bad payload; diff (-want +got)\n%s", diff)
+			}
+		})
+	}
+}
+
 func newTestHost(t *testing.T, clientset clientset.Interface) (string, volume.VolumeHost) {
-	tempDir, err := ioutil.TempDir("/tmp", "projected_volume_test.")
+	tempDir, err := os.MkdirTemp("", "projected_volume_test.")
 	if err != nil {
 		t.Fatalf("can't make a temp rootdir: %v", err)
 	}
 
-	return tempDir, volumetest.NewFakeVolumeHost(t, tempDir, clientset, emptydir.ProbeVolumePlugins())
+	return tempDir, volumetest.NewFakeKubeletVolumeHost(t, tempDir, clientset, emptydir.ProbeVolumePlugins())
 }
 
 func TestCanSupport(t *testing.T) {
@@ -925,7 +2134,7 @@ func TestPlugin(t *testing.T) {
 	}
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, UID: testPodUID}}
-	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -934,7 +2143,7 @@ func TestPlugin(t *testing.T) {
 	}
 
 	volumePath := mounter.GetPath()
-	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid/volumes/kubernetes.io~projected/%s", testVolumeName)) {
+	if !strings.HasSuffix(volumePath, filepath.Join("pods/test_pod_uid/volumes/kubernetes.io~projected", testVolumeName)) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
@@ -990,7 +2199,7 @@ func TestInvalidPathProjected(t *testing.T) {
 	}
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, UID: testPodUID}}
-	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -999,7 +2208,7 @@ func TestInvalidPathProjected(t *testing.T) {
 	}
 
 	volumePath := mounter.GetPath()
-	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid/volumes/kubernetes.io~projected/%s", testVolumeName)) {
+	if !strings.HasSuffix(volumePath, filepath.Join("pods/test_pod_uid/volumes/kubernetes.io~projected", testVolumeName)) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
@@ -1040,7 +2249,7 @@ func TestPluginReboot(t *testing.T) {
 	}
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, UID: testPodUID}}
-	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -1051,7 +2260,7 @@ func TestPluginReboot(t *testing.T) {
 	podMetadataDir := fmt.Sprintf("%v/pods/test_pod_uid3/plugins/kubernetes.io~projected/test_volume_name", rootDir)
 	util.SetReady(podMetadataDir)
 	volumePath := mounter.GetPath()
-	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid3/volumes/kubernetes.io~projected/test_volume_name")) {
+	if !strings.HasSuffix(volumePath, filepath.FromSlash("pods/test_pod_uid3/volumes/kubernetes.io~projected/test_volume_name")) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
@@ -1094,7 +2303,7 @@ func TestPluginOptional(t *testing.T) {
 	}
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, UID: testPodUID}}
-	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -1103,7 +2312,7 @@ func TestPluginOptional(t *testing.T) {
 	}
 
 	volumePath := mounter.GetPath()
-	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid/volumes/kubernetes.io~projected/test_volume_name")) {
+	if !strings.HasSuffix(volumePath, filepath.FromSlash("pods/test_pod_uid/volumes/kubernetes.io~projected/test_volume_name")) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
@@ -1139,7 +2348,7 @@ func TestPluginOptional(t *testing.T) {
 	}
 	datadirPath := filepath.Join(volumePath, datadir)
 
-	infos, err := ioutil.ReadDir(volumePath)
+	infos, err := os.ReadDir(volumePath)
 	if err != nil {
 		t.Fatalf("couldn't find volume path, %s", volumePath)
 	}
@@ -1151,7 +2360,7 @@ func TestPluginOptional(t *testing.T) {
 		}
 	}
 
-	infos, err = ioutil.ReadDir(datadirPath)
+	infos, err = os.ReadDir(datadirPath)
 	if err != nil {
 		t.Fatalf("couldn't find volume data path, %s", datadirPath)
 	}
@@ -1192,7 +2401,7 @@ func TestPluginOptionalKeys(t *testing.T) {
 	}
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, UID: testPodUID}}
-	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -1201,7 +2410,7 @@ func TestPluginOptionalKeys(t *testing.T) {
 	}
 
 	volumePath := mounter.GetPath()
-	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid/volumes/kubernetes.io~projected/test_volume_name")) {
+	if !strings.HasSuffix(volumePath, filepath.FromSlash("pods/test_pod_uid/volumes/kubernetes.io~projected/test_volume_name")) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
@@ -1235,7 +2444,7 @@ func makeVolumeSpec(volumeName, name string, defaultMode int32) *v1.Volume {
 	return &v1.Volume{
 		Name: volumeName,
 		VolumeSource: v1.VolumeSource{
-			Projected: makeProjection(name, utilptr.Int32Ptr(defaultMode), "secret"),
+			Projected: makeProjection(name, new(defaultMode), nil, "secret"),
 		},
 	}
 }
@@ -1254,7 +2463,7 @@ func makeSecret(namespace, name string) v1.Secret {
 	}
 }
 
-func makeProjection(name string, defaultMode *int32, kind string) *v1.ProjectedVolumeSource {
+func makeProjection(name string, defaultMode *int32, defaultUser *int64, kind string) *v1.ProjectedVolumeSource {
 	var item v1.VolumeProjection
 
 	switch kind {
@@ -1283,6 +2492,7 @@ func makeProjection(name string, defaultMode *int32, kind string) *v1.ProjectedV
 	return &v1.ProjectedVolumeSource{
 		Sources:     []v1.VolumeProjection{item},
 		DefaultMode: defaultMode,
+		DefaultUser: defaultUser,
 	}
 }
 
@@ -1292,7 +2502,7 @@ func doTestSecretDataInVolume(volumePath string, secret v1.Secret, t *testing.T)
 		if _, err := os.Stat(secretDataHostPath); err != nil {
 			t.Fatalf("SetUp() failed, couldn't find secret data on disk: %v", secretDataHostPath)
 		} else {
-			actualSecretBytes, err := ioutil.ReadFile(secretDataHostPath)
+			actualSecretBytes, err := os.ReadFile(secretDataHostPath)
 			if err != nil {
 				t.Fatalf("Couldn't read secret data from: %v", secretDataHostPath)
 			}
@@ -1322,4 +2532,31 @@ func doTestCleanAndTeardown(plugin volume.VolumePlugin, podUID types.UID, testVo
 	} else if !os.IsNotExist(err) {
 		t.Errorf("TearDown() failed: %v", err)
 	}
+}
+
+func mustMakeRoot(t *testing.T, cn string) string {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Error while generating key: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(0),
+		Subject: pkix.Name{
+			CommonName: cn,
+		},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+
+	cert, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+	if err != nil {
+		t.Fatalf("Error while making certificate: %v", err)
+	}
+
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:    "CERTIFICATE",
+		Headers: nil,
+		Bytes:   cert,
+	}))
 }

@@ -18,39 +18,47 @@ package preemption
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
 	v1 "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	componentmetrics "k8s.io/component-base/metrics"
+	"k8s.io/klog/v2/ktesting"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
+	fwk "k8s.io/kube-scheduler/framework"
+	"k8s.io/kubernetes/pkg/features"
+	apicache "k8s.io/kubernetes/pkg/scheduler/backend/api_cache"
+	apidispatcher "k8s.io/kubernetes/pkg/scheduler/backend/api_dispatcher"
+	internalcache "k8s.io/kubernetes/pkg/scheduler/backend/cache"
+	internalqueue "k8s.io/kubernetes/pkg/scheduler/backend/queue"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	apicalls "k8s.io/kubernetes/pkg/scheduler/framework/api_calls"
 	"k8s.io/kubernetes/pkg/scheduler/framework/parallelize"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/interpodaffinity"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeaffinity"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodename"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeunschedulable"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podtopologyspread"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/tainttoleration"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumebinding"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumerestrictions"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumezone"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
-	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
-	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
 )
 
 var (
-	midPriority, highPriority = int32(100), int32(1000)
+	lowPriority, midPriority, highPriority = int32(10), int32(100), int32(1000)
 
 	veryLargeRes = map[v1.ResourceName]string{
 		v1.ResourceCPU:    "500m",
@@ -58,14 +66,17 @@ var (
 	}
 )
 
+func init() {
+	metrics.Register()
+}
+
 type FakePostFilterPlugin struct {
 	numViolatingVictim int
 }
 
-func (pl *FakePostFilterPlugin) SelectVictimsOnNode(
-	ctx context.Context, state *framework.CycleState, pod *v1.Pod,
-	nodeInfo *framework.NodeInfo, pdbs []*policy.PodDisruptionBudget) (victims []*v1.Pod, numViolatingVictim int, status *framework.Status) {
-	return append(victims, nodeInfo.Pods[0].Pod), pl.numViolatingVictim, nil
+func (pl *FakePostFilterPlugin) SelectVictimsOnNode(ctx context.Context, cycleState fwk.CycleState, preemptor *v1.Pod, nodeInfo fwk.NodeInfo, allPossibleVictims []*DomainVictim, pdbs []*policy.PodDisruptionBudget) (victims []*v1.Pod, numViolatingVictim int, status *fwk.Status) {
+	victims = append(victims, nodeInfo.GetPods()[0].GetPod())
+	return victims, pl.numViolatingVictim, nil
 }
 
 func (pl *FakePostFilterPlugin) GetOffsetAndNumCandidates(nodes int32) (int32, int32) {
@@ -76,117 +87,55 @@ func (pl *FakePostFilterPlugin) CandidatesToVictimsMap(candidates []Candidate) m
 	return nil
 }
 
-func (pl *FakePostFilterPlugin) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus *framework.Status) (bool, string) {
+func (pl *FakePostFilterPlugin) PodEligibleToPreemptOthers(_ context.Context, pod *v1.Pod, nominatedNodeStatus *fwk.Status) (bool, string) {
 	return true, ""
 }
 
-func TestNodesWherePreemptionMightHelp(t *testing.T) {
-	// Prepare 4 nodes names.
-	nodeNames := []string{"node1", "node2", "node3", "node4"}
-	tests := []struct {
-		name          string
-		nodesStatuses framework.NodeToStatusMap
-		expected      sets.String // set of expected node names.
-	}{
-		{
-			name: "No node should be attempted",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.UnschedulableAndUnresolvable, nodeaffinity.ErrReasonPod),
-				"node2": framework.NewStatus(framework.UnschedulableAndUnresolvable, nodename.ErrReason),
-				"node3": framework.NewStatus(framework.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
-				"node4": framework.NewStatus(framework.UnschedulableAndUnresolvable, interpodaffinity.ErrReasonAffinityRulesNotMatch),
-			},
-			expected: sets.NewString(),
-		},
-		{
-			name: "ErrReasonAntiAffinityRulesNotMatch should be tried as it indicates that the pod is unschedulable due to inter-pod anti-affinity",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.Unschedulable, interpodaffinity.ErrReasonAntiAffinityRulesNotMatch),
-				"node2": framework.NewStatus(framework.UnschedulableAndUnresolvable, nodename.ErrReason),
-				"node3": framework.NewStatus(framework.UnschedulableAndUnresolvable, nodeunschedulable.ErrReasonUnschedulable),
-			},
-			expected: sets.NewString("node1", "node4"),
-		},
-		{
-			name: "ErrReasonAffinityRulesNotMatch should not be tried as it indicates that the pod is unschedulable due to inter-pod affinity, but ErrReasonAntiAffinityRulesNotMatch should be tried as it indicates that the pod is unschedulable due to inter-pod anti-affinity",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.UnschedulableAndUnresolvable, interpodaffinity.ErrReasonAffinityRulesNotMatch),
-				"node2": framework.NewStatus(framework.Unschedulable, interpodaffinity.ErrReasonAntiAffinityRulesNotMatch),
-			},
-			expected: sets.NewString("node2", "node3", "node4"),
-		},
-		{
-			name: "Mix of failed predicates works fine",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.UnschedulableAndUnresolvable, volumerestrictions.ErrReasonDiskConflict),
-				"node2": framework.NewStatus(framework.Unschedulable, fmt.Sprintf("Insufficient %v", v1.ResourceMemory)),
-			},
-			expected: sets.NewString("node2", "node3", "node4"),
-		},
-		{
-			name: "Node condition errors should be considered unresolvable",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.UnschedulableAndUnresolvable, nodeunschedulable.ErrReasonUnknownCondition),
-			},
-			expected: sets.NewString("node2", "node3", "node4"),
-		},
-		{
-			name: "ErrVolume... errors should not be tried as it indicates that the pod is unschedulable due to no matching volumes for pod on node",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.UnschedulableAndUnresolvable, volumezone.ErrReasonConflict),
-				"node2": framework.NewStatus(framework.UnschedulableAndUnresolvable, string(volumebinding.ErrReasonNodeConflict)),
-				"node3": framework.NewStatus(framework.UnschedulableAndUnresolvable, string(volumebinding.ErrReasonBindConflict)),
-			},
-			expected: sets.NewString("node4"),
-		},
-		{
-			name: "ErrReasonConstraintsNotMatch should be tried as it indicates that the pod is unschedulable due to topology spread constraints",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node1": framework.NewStatus(framework.Unschedulable, podtopologyspread.ErrReasonConstraintsNotMatch),
-				"node2": framework.NewStatus(framework.UnschedulableAndUnresolvable, nodename.ErrReason),
-				"node3": framework.NewStatus(framework.Unschedulable, podtopologyspread.ErrReasonConstraintsNotMatch),
-			},
-			expected: sets.NewString("node1", "node3", "node4"),
-		},
-		{
-			name: "UnschedulableAndUnresolvable status should be skipped but Unschedulable should be tried",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node2": framework.NewStatus(framework.UnschedulableAndUnresolvable, ""),
-				"node3": framework.NewStatus(framework.Unschedulable, ""),
-				"node4": framework.NewStatus(framework.UnschedulableAndUnresolvable, ""),
-			},
-			expected: sets.NewString("node1", "node3"),
-		},
-		{
-			name: "ErrReasonNodeLabelNotMatch should not be tried as it indicates that the pod is unschedulable due to node doesn't have the required label",
-			nodesStatuses: framework.NodeToStatusMap{
-				"node2": framework.NewStatus(framework.UnschedulableAndUnresolvable, podtopologyspread.ErrReasonNodeLabelNotMatch),
-				"node3": framework.NewStatus(framework.Unschedulable, ""),
-				"node4": framework.NewStatus(framework.UnschedulableAndUnresolvable, ""),
-			},
-			expected: sets.NewString("node1", "node3"),
-		},
-	}
+func (pl *FakePostFilterPlugin) PodGroupEligibleToPreemptOthers(_ context.Context, podGroupInfo *framework.PodGroupInfo) (bool, string) {
+	return true, ""
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var nodeInfos []*framework.NodeInfo
-			for _, name := range nodeNames {
-				ni := framework.NewNodeInfo()
-				ni.SetNode(st.MakeNode().Name(name).Obj())
-				nodeInfos = append(nodeInfos, ni)
+func (pl *FakePostFilterPlugin) OrderedScoreFuncs(ctx context.Context, nodesToVictims map[string]*extenderv1.Victims) []func(node string) int64 {
+	return nil
+}
+
+type FakePreemptionScorePostFilterPlugin struct{}
+
+func (pl *FakePreemptionScorePostFilterPlugin) SelectVictimsOnNode(ctx context.Context, cycleState fwk.CycleState, preemptor *v1.Pod, nodeInfo fwk.NodeInfo, allPossibleVictims []*DomainVictim, pdbs []*policy.PodDisruptionBudget) (victims []*v1.Pod, numViolatingVictim int, status *fwk.Status) {
+	victims = append(victims, nodeInfo.GetPods()[0].GetPod())
+	return victims, 1, nil
+}
+
+func (pl *FakePreemptionScorePostFilterPlugin) GetOffsetAndNumCandidates(nodes int32) (int32, int32) {
+	return 0, nodes
+}
+
+func (pl *FakePreemptionScorePostFilterPlugin) CandidatesToVictimsMap(candidates []Candidate) map[string]*extenderv1.Victims {
+	m := make(map[string]*extenderv1.Victims, len(candidates))
+	for _, c := range candidates {
+		m[c.Name()] = c.Victims()
+	}
+	return m
+}
+
+func (pl *FakePreemptionScorePostFilterPlugin) PodEligibleToPreemptOthers(_ context.Context, pod *v1.Pod, nominatedNodeStatus *fwk.Status) (bool, string) {
+	return true, ""
+}
+
+func (pl *FakePreemptionScorePostFilterPlugin) PodGroupEligibleToPreemptOthers(_ context.Context, podGroupInfo *framework.PodGroupInfo) (bool, string) {
+	return true, ""
+}
+
+func (pl *FakePreemptionScorePostFilterPlugin) OrderedScoreFuncs(ctx context.Context, nodesToVictims map[string]*extenderv1.Victims) []func(node string) int64 {
+	return []func(string) int64{
+		func(node string) int64 {
+			var sumContainers int64
+			for _, pod := range nodesToVictims[node].Pods {
+				sumContainers += int64(len(pod.Spec.Containers) + len(pod.Spec.InitContainers))
 			}
-			nodes, _ := nodesWherePreemptionMightHelp(nodeInfos, tt.nodesStatuses)
-			if len(tt.expected) != len(nodes) {
-				t.Errorf("number of nodes is not the same as expected. exptectd: %d, got: %d. Nodes: %v", len(tt.expected), len(nodes), nodes)
-			}
-			for _, node := range nodes {
-				name := node.Node().Name
-				if _, found := tt.expected[name]; !found {
-					t.Errorf("node %v is not expected.", name)
-				}
-			}
-		})
+			// The smaller the sumContainers, the higher the score.
+			return -sumContainers
+		},
 	}
 }
 
@@ -194,7 +143,7 @@ func TestDryRunPreemption(t *testing.T) {
 	tests := []struct {
 		name               string
 		nodes              []*v1.Node
-		testPods           []*v1.Pod
+		preemptors         []*v1.Pod
 		initPods           []*v1.Pod
 		numViolatingVictim int
 		expected           [][]Candidate
@@ -205,7 +154,7 @@ func TestDryRunPreemption(t *testing.T) {
 				st.MakeNode().Name("node1").Capacity(veryLargeRes).Obj(),
 				st.MakeNode().Name("node2").Capacity(veryLargeRes).Obj(),
 			},
-			testPods: []*v1.Pod{
+			preemptors: []*v1.Pod{
 				st.MakePod().Name("p").UID("p").Priority(highPriority).Obj(),
 			},
 			initPods: []*v1.Pod{
@@ -235,7 +184,7 @@ func TestDryRunPreemption(t *testing.T) {
 				st.MakeNode().Name("node1").Capacity(veryLargeRes).Obj(),
 				st.MakeNode().Name("node2").Capacity(veryLargeRes).Obj(),
 			},
-			testPods: []*v1.Pod{
+			preemptors: []*v1.Pod{
 				st.MakePod().Name("p").UID("p").Priority(highPriority).Obj(),
 			},
 			initPods: []*v1.Pod{
@@ -266,35 +215,41 @@ func TestDryRunPreemption(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registeredPlugins := append([]st.RegisterPluginFunc{
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New)},
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			logger, ctx := ktesting.NewTestContext(t)
+			registeredPlugins := append([]tf.RegisterPluginFunc{
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New)},
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 			var objs []runtime.Object
-			for _, p := range append(tt.testPods, tt.initPods...) {
+
+			for _, p := range append(tt.preemptors, tt.initPods...) {
 				objs = append(objs, p)
 			}
+
 			for _, n := range tt.nodes {
 				objs = append(objs, n)
 			}
-			informerFactory := informers.NewSharedInformerFactory(clientsetfake.NewSimpleClientset(objs...), 0)
+			informerFactory := informers.NewSharedInformerFactory(clientsetfake.NewClientset(objs...), 0)
 			parallelism := parallelize.DefaultParallelism
-			fwk, err := st.NewFramework(
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			snapshot := internalcache.NewSnapshot(tt.initPods, tt.nodes)
+			fwk, err := tf.NewFramework(
+				ctx,
 				registeredPlugins, "",
-				frameworkruntime.WithPodNominator(internalqueue.NewPodNominator(informerFactory.Core().V1().Pods().Lister())),
+				frameworkruntime.WithPodNominator(internalqueue.NewSchedulingQueue(nil, informerFactory)),
 				frameworkruntime.WithInformerFactory(informerFactory),
 				frameworkruntime.WithParallelism(parallelism),
-				frameworkruntime.WithSnapshotSharedLister(internalcache.NewSnapshot(tt.testPods, tt.nodes)),
+				frameworkruntime.WithSnapshotSharedLister(snapshot),
+				frameworkruntime.WithMutableSnapshotLister(snapshot),
+				frameworkruntime.WithLogger(logger),
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
 			informerFactory.Start(ctx.Done())
 			informerFactory.WaitForCacheSync(ctx.Done())
-			snapshot := internalcache.NewSnapshot(tt.initPods, tt.nodes)
 			nodeInfos, err := snapshot.NodeInfos().List()
 			if err != nil {
 				t.Fatal(err)
@@ -305,15 +260,15 @@ func TestDryRunPreemption(t *testing.T) {
 
 			fakePostPlugin := &FakePostFilterPlugin{numViolatingVictim: tt.numViolatingVictim}
 
-			for cycle, pod := range tt.testPods {
+			for cycle, preemptor := range tt.preemptors {
 				state := framework.NewCycleState()
 				pe := Evaluator{
 					PluginName: "FakePostFilter",
 					Handler:    fwk,
 					Interface:  fakePostPlugin,
-					State:      state,
+					executor:   NewExecutor(fwk, feature.Features{}),
 				}
-				got, _, _ := pe.DryRunPreemption(context.Background(), pod, nodeInfos, nil, 0, int32(len(nodeInfos)))
+				got, _, _ := pe.DryRunPreemption(ctx, state, preemptor, nodeInfos, nil, 0, int32(len(nodeInfos)))
 				// Sort the values (inner victims) and the candidate itself (by its NominatedNodeName).
 				for i := range got {
 					victims := got[i].Victims().Pods
@@ -330,4 +285,897 @@ func TestDryRunPreemption(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSelectCandidate(t *testing.T) {
+	tests := []struct {
+		name      string
+		nodeNames []string
+		pod       *v1.Pod
+		testPods  []*v1.Pod
+		expected  string
+	}{
+		{
+			name:      "pod has different number of containers on each node",
+			nodeNames: []string{"node1", "node2", "node3"},
+			pod:       st.MakePod().Name("p").UID("p").Priority(highPriority).Req(veryLargeRes).Obj(),
+			testPods: []*v1.Pod{
+				st.MakePod().Name("p1.1").UID("p1.1").Node("node1").Priority(midPriority).Containers([]v1.Container{
+					st.MakeContainer().Name("container1").Obj(),
+					st.MakeContainer().Name("container2").Obj(),
+				}).Obj(),
+				st.MakePod().Name("p2.1").UID("p2.1").Node("node2").Priority(midPriority).Containers([]v1.Container{
+					st.MakeContainer().Name("container1").Obj(),
+				}).Obj(),
+				st.MakePod().Name("p3.1").UID("p3.1").Node("node3").Priority(midPriority).Containers([]v1.Container{
+					st.MakeContainer().Name("container1").Obj(),
+					st.MakeContainer().Name("container2").Obj(),
+					st.MakeContainer().Name("container3").Obj(),
+				}).Obj(),
+			},
+			expected: "node2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, ctx := ktesting.NewTestContext(t)
+			nodes := make([]*v1.Node, len(tt.nodeNames))
+			for i, nodeName := range tt.nodeNames {
+				nodes[i] = st.MakeNode().Name(nodeName).Capacity(veryLargeRes).Obj()
+			}
+			registeredPlugins := append([]tf.RegisterPluginFunc{
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New)},
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			)
+			var objs []runtime.Object
+			objs = append(objs, tt.pod)
+			for _, pod := range tt.testPods {
+				objs = append(objs, pod)
+			}
+			informerFactory := informers.NewSharedInformerFactory(clientsetfake.NewClientset(objs...), 0)
+			snapshot := internalcache.NewSnapshot(tt.testPods, nodes)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			fwk, err := tf.NewFramework(
+				ctx,
+				registeredPlugins,
+				"",
+				frameworkruntime.WithPodNominator(internalqueue.NewSchedulingQueue(nil, informerFactory)),
+				frameworkruntime.WithSnapshotSharedLister(snapshot),
+				frameworkruntime.WithMutableSnapshotLister(snapshot),
+				frameworkruntime.WithInformerFactory(informerFactory),
+				frameworkruntime.WithLogger(logger),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			state := framework.NewCycleState()
+			// Some tests rely on PreFilter plugin to compute its CycleState.
+			if _, status, _ := fwk.RunPreFilterPlugins(ctx, state, tt.pod); !status.IsSuccess() {
+				t.Errorf("Unexpected PreFilter Status: %v", status)
+			}
+			nodeInfos, err := snapshot.NodeInfos().List()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			fakePreemptionScorePostFilterPlugin := &FakePreemptionScorePostFilterPlugin{}
+
+			for _, pod := range tt.testPods {
+				state := framework.NewCycleState()
+				pe := Evaluator{
+					PluginName: "FakePreemptionScorePostFilter",
+					Handler:    fwk,
+					Interface:  fakePreemptionScorePostFilterPlugin,
+					executor:   NewExecutor(fwk, feature.Features{}),
+				}
+				candidates, _, _ := pe.DryRunPreemption(ctx, state, pod, nodeInfos, nil, 0, int32(len(nodeInfos)))
+				s := pe.SelectCandidate(ctx, candidates)
+				if s == nil || len(s.Name()) == 0 {
+					t.Errorf("expect any node in %v, but no candidate selected", tt.expected)
+					return
+				}
+				if diff := cmp.Diff(tt.expected, s.Name()); diff != "" {
+					t.Errorf("expect any node in %v, but got %v", tt.expected, s.Name())
+				}
+			}
+		})
+	}
+}
+
+type fakeExtender struct {
+	ignorable            bool
+	errProcessPreemption bool
+	supportsPreemption   bool
+	returnsNoVictims     bool
+}
+
+func newFakeExtender() *fakeExtender {
+	return &fakeExtender{}
+}
+
+func (f *fakeExtender) WithIgnorable(ignorable bool) *fakeExtender {
+	f.ignorable = ignorable
+	return f
+}
+
+func (f *fakeExtender) WithErrProcessPreemption(errProcessPreemption bool) *fakeExtender {
+	f.errProcessPreemption = errProcessPreemption
+	return f
+}
+
+func (f *fakeExtender) WithSupportsPreemption(supportsPreemption bool) *fakeExtender {
+	f.supportsPreemption = supportsPreemption
+	return f
+}
+
+func (f *fakeExtender) WithReturnNoVictims(returnsNoVictims bool) *fakeExtender {
+	f.returnsNoVictims = returnsNoVictims
+	return f
+}
+
+func (f *fakeExtender) Name() string {
+	return "fakeExtender"
+}
+
+func (f *fakeExtender) IsIgnorable() bool {
+	return f.ignorable
+}
+
+func (f *fakeExtender) ProcessPreemption(
+	_ *v1.Pod,
+	victims map[string]*extenderv1.Victims,
+	_ fwk.NodeInfoLister,
+) (map[string]*extenderv1.Victims, error) {
+	if f.supportsPreemption {
+		if f.errProcessPreemption {
+			return nil, errors.New("extender preempt error")
+		}
+		if f.returnsNoVictims {
+			return map[string]*extenderv1.Victims{"mock": {}}, nil
+		}
+		return victims, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeExtender) SupportsPreemption() bool {
+	return f.supportsPreemption
+}
+
+func (f *fakeExtender) IsInterested(pod *v1.Pod) bool {
+	return pod != nil
+}
+
+func (f *fakeExtender) Filter(_ *v1.Pod, _ []fwk.NodeInfo) ([]fwk.NodeInfo, extenderv1.FailedNodesMap, extenderv1.FailedNodesMap, error) {
+	return nil, nil, nil, nil
+}
+
+func (f *fakeExtender) Prioritize(
+	_ *v1.Pod,
+	_ []fwk.NodeInfo,
+) (hostPriorities *extenderv1.HostPriorityList, weight int64, err error) {
+	return nil, 0, nil
+}
+
+func (f *fakeExtender) Bind(_ *v1.Binding) error {
+	return nil
+}
+
+func (f *fakeExtender) IsBinder() bool {
+	return true
+}
+
+func (f *fakeExtender) IsPrioritizer() bool {
+	return true
+}
+
+func (f *fakeExtender) IsFilter() bool {
+	return true
+}
+
+func TestCallExtenders(t *testing.T) {
+	var (
+		node1Name            = "node1"
+		defaultSchedulerName = "default-scheduler"
+		preemptor            = st.MakePod().Name("preemptor").UID("preemptor").
+					SchedulerName(defaultSchedulerName).Priority(highPriority).
+					Containers([]v1.Container{st.MakeContainer().Name("container1").Obj()}).
+					Obj()
+		victim = st.MakePod().Name("victim").UID("victim").
+			Node(node1Name).SchedulerName(defaultSchedulerName).Priority(midPriority).
+			Containers([]v1.Container{st.MakeContainer().Name("container1").Obj()}).
+			Obj()
+		makeCandidates = func(nodeName string, pods ...*v1.Pod) []Candidate {
+			return []Candidate{
+				&candidate{
+					name: nodeName,
+					victims: &extenderv1.Victims{
+						Pods: pods,
+					},
+				},
+			}
+		}
+	)
+	tests := []struct {
+		name           string
+		extenders      []fwk.Extender
+		candidates     []Candidate
+		wantStatus     *fwk.Status
+		wantCandidates []Candidate
+	}{
+		{
+			name:           "no extenders",
+			extenders:      []fwk.Extender{},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     nil,
+			wantCandidates: makeCandidates(node1Name, victim),
+		},
+		{
+			name: "one extender supports preemption",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithSupportsPreemption(true),
+			},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     nil,
+			wantCandidates: makeCandidates(node1Name, victim),
+		},
+		{
+			name: "one extender with return no victims",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithSupportsPreemption(true).WithReturnNoVictims(true),
+			},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     fwk.AsStatus(fmt.Errorf("expected at least one victim pod on node %q", node1Name)),
+			wantCandidates: []Candidate{},
+		},
+		{
+			name: "one extender does not support preemption",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithSupportsPreemption(false),
+			},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     nil,
+			wantCandidates: makeCandidates(node1Name, victim),
+		},
+		{
+			name: "one extender with no return victims and is ignorable",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithSupportsPreemption(true).
+					WithReturnNoVictims(true).WithIgnorable(true),
+			},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     nil,
+			wantCandidates: []Candidate{},
+		},
+		{
+			name: "one extender returns error and is ignorable",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithIgnorable(true).
+					WithSupportsPreemption(true).WithErrProcessPreemption(true),
+			},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     nil,
+			wantCandidates: makeCandidates(node1Name, victim),
+		},
+		{
+			name: "one extender returns error and is not ignorable",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithErrProcessPreemption(true).
+					WithSupportsPreemption(true),
+			},
+			candidates:     makeCandidates(node1Name, victim),
+			wantStatus:     fwk.AsStatus(fmt.Errorf("extender preempt error")),
+			wantCandidates: nil,
+		},
+		{
+			name: "one extender with empty victims input",
+			extenders: []fwk.Extender{
+				newFakeExtender().WithSupportsPreemption(true),
+			},
+			candidates:     []Candidate{},
+			wantStatus:     nil,
+			wantCandidates: []Candidate{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metrics.Register()
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			nodes := make([]*v1.Node, len([]string{node1Name}))
+			for i, nodeName := range []string{node1Name} {
+				nodes[i] = st.MakeNode().Name(nodeName).Capacity(veryLargeRes).Obj()
+			}
+			registeredPlugins := append([]tf.RegisterPluginFunc{
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New)},
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			)
+			var objs []runtime.Object
+			objs = append(objs, preemptor)
+			cs := clientsetfake.NewClientset(objs...)
+			informerFactory := informers.NewSharedInformerFactory(cs, 0)
+			apiDispatcher := apidispatcher.New(cs, 16, apicalls.Relevances)
+			apiDispatcher.Run(logger)
+			defer apiDispatcher.Close()
+			snapshot := internalcache.NewSnapshot([]*v1.Pod{preemptor}, nodes)
+			fwk, err := tf.NewFramework(
+				ctx,
+				registeredPlugins, "",
+				frameworkruntime.WithClientSet(cs),
+				frameworkruntime.WithAPIDispatcher(apiDispatcher),
+				frameworkruntime.WithLogger(logger),
+				frameworkruntime.WithExtenders(tt.extenders),
+				frameworkruntime.WithInformerFactory(informerFactory),
+				frameworkruntime.WithSnapshotSharedLister(snapshot),
+				frameworkruntime.WithMutableSnapshotLister(snapshot),
+				frameworkruntime.WithPodNominator(internalqueue.NewSchedulingQueue(nil, informerFactory)),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			informerFactory.Start(ctx.Done())
+			informerFactory.WaitForCacheSync(ctx.Done())
+			cache := internalcache.New(ctx, apiDispatcher, false, false)
+			fwk.SetAPICacher(apicache.New(nil, cache))
+
+			fakePreemptionScorePostFilterPlugin := &FakePreemptionScorePostFilterPlugin{}
+			pe := Evaluator{
+				PluginName: "FakePreemptionScorePostFilter",
+				Handler:    fwk,
+				Interface:  fakePreemptionScorePostFilterPlugin,
+			}
+			gotCandidates, status := pe.callExtenders(logger, preemptor, tt.candidates)
+			if (tt.wantStatus == nil) != (status == nil) || status.Code() != tt.wantStatus.Code() {
+				t.Errorf("callExtenders() status mismatch. got: %v, want: %v", status, tt.wantStatus)
+			}
+
+			if len(gotCandidates) != len(tt.wantCandidates) {
+				t.Errorf("callExtenders() returned unexpected number of results. got: %d, want: %d", len(gotCandidates), len(tt.wantCandidates))
+			} else {
+				for i, gotCandidate := range gotCandidates {
+					wantCandidate := tt.wantCandidates[i]
+					if gotCandidate.Name() != wantCandidate.Name() {
+						t.Errorf("callExtenders() node name mismatch. got: %s, want: %s", gotCandidate.Name(), wantCandidate.Name())
+					}
+					if len(gotCandidate.Victims().Pods) != len(wantCandidate.Victims().Pods) {
+						t.Errorf("callExtenders() number of victim pods mismatch for node %s. got: %d, want: %d", gotCandidate.Name(), len(gotCandidate.Victims().Pods), len(wantCandidate.Victims().Pods))
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGetVictimsOnNode(t *testing.T) {
+	newPodInfo := func(p *v1.Pod) fwk.PodInfo {
+		pi, _ := framework.NewPodInfo(p)
+		return pi
+	}
+
+	tests := []struct {
+		name                    string
+		enableGenericWorkload   bool
+		enableCompositePodGroup bool
+		nodes                   []*v1.Node
+		pods                    []*v1.Pod
+		podGroups               []*schedulingv1beta1.PodGroup
+		compositePodGroups      []*schedulingv1alpha3.CompositePodGroup
+		targetNode              string
+		expectedVictims         []*DomainVictim
+	}{
+		{
+			name:                  "GenericWorkload disabled, two pods on target node",
+			enableGenericWorkload: false,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Node("node1").Priority(midPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Node("node1").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods:     []fwk.PodInfo{newPodInfo(st.MakePod().Name("p1").UID("p1").Node("node1").Priority(midPriority).Obj())},
+						keyType:  fwk.PodKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: lowPriority,
+						pods:     []fwk.PodInfo{newPodInfo(st.MakePod().Name("p2").UID("p2").Node("node1").Priority(lowPriority).Obj())},
+						keyType:  fwk.PodKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                  "GenericWorkload enabled, pods with no PodGroup",
+			enableGenericWorkload: true,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Node("node1").Priority(midPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Node("node1").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods:     []fwk.PodInfo{newPodInfo(st.MakePod().Name("p1").UID("p1").Node("node1").Priority(midPriority).Obj())},
+						keyType:  fwk.PodKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: lowPriority,
+						pods:     []fwk.PodInfo{newPodInfo(st.MakePod().Name("p2").UID("p2").Node("node1").Priority(lowPriority).Obj())},
+						keyType:  fwk.PodKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                  "GenericWorkload enabled, pod belonging to PodGroup with disruptionMode All",
+			enableGenericWorkload: true,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+				st.MakeNode().Name("node2").Obj(),
+			},
+			podGroups: []*schedulingv1beta1.PodGroup{
+				st.MakePodGroup().Name("pg1").Namespace("default").Priority(midPriority).DisruptionModeAll().Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(midPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg1").Priority(midPriority).Obj(),
+				st.MakePod().Name("p3").UID("p3").Namespace("default").Node("node1").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(midPriority).Obj()),
+							newPodInfo(st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg1").Priority(midPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: lowPriority,
+						pods:     []fwk.PodInfo{newPodInfo(st.MakePod().Name("p3").UID("p3").Namespace("default").Node("node1").Priority(lowPriority).Obj())},
+						keyType:  fwk.PodKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                  "GenericWorkload enabled, pods belonging to PodGroup with disruptionMode Single",
+			enableGenericWorkload: true,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+				st.MakeNode().Name("node2").Obj(),
+			},
+			podGroups: []*schedulingv1beta1.PodGroup{
+				st.MakePodGroup().Name("pg1").Namespace("default").Priority(midPriority).DisruptionModeSingle().Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg1").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p3").UID("p3").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p4").UID("p4").Namespace("default").Node("node1").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p3").UID("p3").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: lowPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p4").UID("p4").Namespace("default").Node("node1").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                  "GenericWorkload enabled, mixed test with individual pods, PodGroup with DisruptionMode Single, and PodGroup with DisruptionMode All",
+			enableGenericWorkload: true,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+				st.MakeNode().Name("node2").Obj(),
+			},
+			podGroups: []*schedulingv1beta1.PodGroup{
+				st.MakePodGroup().Name("pg-all").Namespace("default").Priority(highPriority).DisruptionModeAll().Obj(),
+				st.MakePodGroup().Name("pg-single").Namespace("default").Priority(midPriority).DisruptionModeSingle().Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p-all-1").UID("p-all-1").Namespace("default").Node("node1").PodGroupName("pg-all").Priority(highPriority).Obj(),
+				st.MakePod().Name("p-all-2").UID("p-all-2").Namespace("default").Node("node2").PodGroupName("pg-all").Priority(highPriority).Obj(),
+				st.MakePod().Name("p-single-1").UID("p-single-1").Namespace("default").Node("node1").PodGroupName("pg-single").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p-single-2").UID("p-single-2").Namespace("default").Node("node2").PodGroupName("pg-single").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p-ind").UID("p-ind").Namespace("default").Node("node1").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: highPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p-all-1").UID("p-all-1").Namespace("default").Node("node1").PodGroupName("pg-all").Priority(highPriority).Obj()),
+							newPodInfo(st.MakePod().Name("p-all-2").UID("p-all-2").Namespace("default").Node("node2").PodGroupName("pg-all").Priority(highPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p-single-1").UID("p-single-1").Namespace("default").Node("node1").PodGroupName("pg-single").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+				{
+					Victim: &victim{
+						priority: lowPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p-ind").UID("p-ind").Namespace("default").Node("node1").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                    "CPG enabled, DisruptionModeAll on root CPG",
+			enableGenericWorkload:   true,
+			enableCompositePodGroup: true,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+				st.MakeNode().Name("node2").Obj(),
+			},
+			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg1").Namespace("default").Priority(midPriority).DisruptionModeAll().Obj(),
+			},
+			podGroups: []*schedulingv1beta1.PodGroup{
+				st.MakePodGroup().Name("pg1").Namespace("default").ParentCompositePodGroup("cpg1").Priority(lowPriority).Obj(),
+				st.MakePodGroup().Name("pg2").Namespace("default").ParentCompositePodGroup("cpg1").Priority(lowPriority).Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg2").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj()),
+							newPodInfo(st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg2").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.CompositePodGroupKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                    "CPG enabled, DisruptionModeSingle on root CPG",
+			enableGenericWorkload:   true,
+			enableCompositePodGroup: true,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+				st.MakeNode().Name("node2").Obj(),
+			},
+			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg1").Namespace("default").Priority(midPriority).DisruptionModeSingle().Obj(),
+			},
+			podGroups: []*schedulingv1beta1.PodGroup{
+				st.MakePodGroup().Name("pg1").Namespace("default").ParentCompositePodGroup("cpg1").Priority(lowPriority).Obj(),
+				st.MakePodGroup().Name("pg2").Namespace("default").ParentCompositePodGroup("cpg1").Priority(lowPriority).Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg2").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: midPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+			},
+		},
+		{
+			name:                    "CPG disabled, fallback to PodGroup",
+			enableGenericWorkload:   true,
+			enableCompositePodGroup: false,
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Obj(),
+				st.MakeNode().Name("node2").Obj(),
+			},
+			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg1").Namespace("default").Priority(midPriority).DisruptionModeAll().Obj(),
+			},
+			podGroups: []*schedulingv1beta1.PodGroup{
+				st.MakePodGroup().Name("pg1").Namespace("default").ParentCompositePodGroup("cpg1").Priority(lowPriority).DisruptionModeSingle().Obj(),
+				st.MakePodGroup().Name("pg2").Namespace("default").ParentCompositePodGroup("cpg1").Priority(lowPriority).DisruptionModeSingle().Obj(),
+			},
+			pods: []*v1.Pod{
+				st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj(),
+				st.MakePod().Name("p2").UID("p2").Namespace("default").Node("node2").PodGroupName("pg2").Priority(lowPriority).Obj(),
+			},
+			targetNode: "node1",
+			expectedVictims: []*DomainVictim{
+				{
+					Victim: &victim{
+						priority: lowPriority,
+						pods: []fwk.PodInfo{
+							newPodInfo(st.MakePod().Name("p1").UID("p1").Namespace("default").Node("node1").PodGroupName("pg1").Priority(lowPriority).Obj()),
+						},
+						keyType: fwk.PodGroupKeyType,
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.GenericWorkload:                 tt.enableGenericWorkload,
+				features.TopologyAwareWorkloadScheduling: tt.enableCompositePodGroup,
+				features.CompositePodGroup:               tt.enableCompositePodGroup,
+			})
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			var objs []runtime.Object
+			for _, p := range tt.pods {
+				objs = append(objs, p)
+			}
+			for _, pg := range tt.podGroups {
+				objs = append(objs, pg)
+			}
+			for _, cpg := range tt.compositePodGroups {
+				objs = append(objs, cpg)
+			}
+			cs := clientsetfake.NewClientset(objs...)
+			informerFactory := informers.NewSharedInformerFactory(cs, 0)
+
+			cache := internalcache.New(ctx, nil, tt.enableGenericWorkload, tt.enableCompositePodGroup)
+			for _, pg := range tt.podGroups {
+				cache.AddPodGroup(pg)
+			}
+			for _, cpg := range tt.compositePodGroups {
+				cache.AddCompositePodGroup(logger, cpg)
+			}
+			snapshot := internalcache.NewTestSnapshotWithCompositePodGroups(tt.pods, tt.nodes, tt.podGroups, tt.compositePodGroups)
+
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			}
+			fw, err := tf.NewFramework(
+				ctx,
+				registeredPlugins,
+				"",
+				frameworkruntime.WithInformerFactory(informerFactory),
+				frameworkruntime.WithSnapshotSharedLister(snapshot),
+				frameworkruntime.WithMutableSnapshotLister(snapshot),
+				frameworkruntime.WithPodGroupManager(cache),
+				frameworkruntime.WithLogger(logger),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var cpgSnapshot fwk.CompositePodGroupLister
+			if tt.enableCompositePodGroup {
+				cpgSnapshot = fw.MutableSnapshotSharedLister().CompositePodGroups()
+			}
+			pe := Evaluator{
+				PluginName:                "TestPlugin",
+				Handler:                   fw,
+				executor:                  NewExecutor(fw, feature.Features{EnableGenericWorkload: tt.enableGenericWorkload, EnableCompositePodGroup: tt.enableCompositePodGroup}),
+				podGroupSnapshot:          fw.MutableSnapshotSharedLister().PodGroups(),
+				compositePodGroupSnapshot: cpgSnapshot,
+			}
+
+			_ = informerFactory.Scheduling().V1beta1().PodGroups().Informer()
+			_ = informerFactory.Scheduling().V1alpha3().CompositePodGroups().Informer()
+
+			informerFactory.Start(ctx.Done())
+			informerFactory.WaitForCacheSync(ctx.Done())
+
+			nodeInfo, err := snapshot.NodeInfos().Get(tt.targetNode)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := pe.GetVictimsOnNode(ctx, nodeInfo)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			victimKey := func(v *DomainVictim) string {
+				var podNames []string
+				for _, p := range v.Pods() {
+					podNames = append(podNames, p.GetPod().Name)
+				}
+				sort.Strings(podNames)
+				var nodes []string
+				for n := range v.affectedNodes {
+					nodes = append(nodes, n)
+				}
+				sort.Strings(nodes)
+				return fmt.Sprintf("priority:%d/pods:%s/nodes:%s", v.Priority(), strings.Join(podNames, ","), strings.Join(nodes, ","))
+			}
+
+			gotKeys := sets.New[string]()
+			for _, v := range got {
+				gotKeys.Insert(victimKey(v))
+			}
+			expectedKeys := sets.New[string]()
+			for _, ev := range tt.expectedVictims {
+				pods := ev.Pods()
+				dv, err := newDomainVictim(snapshot, pods, ev.Priority(), ev.Type())
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectedKeys.Insert(victimKey(dv))
+			}
+
+			if diff := cmp.Diff(expectedKeys, gotKeys); diff != "" {
+				t.Errorf("GetVictimsOnNode() mismatch (-want, +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+type evaluationDurationMetricState struct {
+	count uint64
+}
+
+func captureEvaluationDurationMetric(g componentmetrics.Gatherer, preemptorType string, status string) evaluationDurationMetricState {
+	state := evaluationDurationMetricState{}
+	if count, _, err := getHistogramFromGatherer(g, "scheduler_preemption_evaluation_duration_seconds", map[string]string{"preemptor": preemptorType, "result": status}); err == nil {
+		state.count = count
+	}
+	return state
+}
+
+func TestPreemptionEvaluationDurationMetric(t *testing.T) {
+	nodeName := "node1"
+	victim := st.MakePod().Name("victim").UID("victim").Node(nodeName).Priority(midPriority).Obj()
+	preemptor := st.MakePod().Name("preemptor").UID("preemptor").Priority(highPriority).Obj()
+	node := st.MakeNode().Name(nodeName).Obj()
+
+	tests := []struct {
+		name           string
+		podEligible    bool
+		expectedStatus string
+	}{
+		{
+			name:           "eligible preemptor, success",
+			podEligible:    true,
+			expectedStatus: "Success",
+		},
+		{
+			name:           "ineligible preemptor, unschedulable",
+			podEligible:    false,
+			expectedStatus: "Unschedulable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testRegistry := componentmetrics.NewKubeRegistry()
+			testRegistry.MustRegister(metrics.PreemptionEvaluationDuration)
+
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			cs := clientsetfake.NewClientset(node, victim, preemptor)
+			informerFactory := informers.NewSharedInformerFactory(cs, 0)
+
+			snapshot := internalcache.NewSnapshot([]*v1.Pod{victim}, []*v1.Node{node})
+			fh, err := tf.NewFramework(
+				ctx,
+				[]tf.RegisterPluginFunc{
+					tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+					tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				},
+				"",
+				frameworkruntime.WithClientSet(cs),
+				frameworkruntime.WithInformerFactory(informerFactory),
+				frameworkruntime.WithWaitingPods(frameworkruntime.NewWaitingPodsMap()),
+				frameworkruntime.WithPodsInPreBind(frameworkruntime.NewPodsInPreBindMap()),
+				frameworkruntime.WithSnapshotSharedLister(snapshot),
+				frameworkruntime.WithMutableSnapshotLister(snapshot),
+				frameworkruntime.WithPodNominator(internalqueue.NewSchedulingQueue(nil, informerFactory)),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			informerFactory.Start(ctx.Done())
+			informerFactory.WaitForCacheSync(ctx.Done())
+
+			fakePostPlugin := &FakePostFilterPlugin{numViolatingVictim: 0}
+			customInterface := &customEvaluationInterface{
+				Interface:   fakePostPlugin,
+				podEligible: tt.podEligible,
+			}
+
+			pe := NewEvaluator("FakePostFilter", fh, customInterface, NewExecutor(fh, feature.Features{}))
+
+			state := framework.NewCycleState()
+			m := framework.NewNodeToStatus(
+				map[string]*fwk.Status{nodeName: fwk.NewStatus(fwk.Unschedulable)},
+				fwk.NewStatus(fwk.UnschedulableAndUnresolvable),
+			)
+
+			stateBefore := captureEvaluationDurationMetric(testRegistry, "pod", tt.expectedStatus)
+
+			pe.evaluate(ctx, state, preemptor, m)
+
+			stateAfter := captureEvaluationDurationMetric(testRegistry, "pod", tt.expectedStatus)
+
+			diff := stateAfter.count - stateBefore.count
+			if diff != 1 {
+				t.Errorf("Expected %s count delta to be 1, got %d", tt.expectedStatus, diff)
+			}
+		})
+	}
+}
+
+type customEvaluationInterface struct {
+	Interface
+	podEligible bool
+}
+
+func (c *customEvaluationInterface) PodEligibleToPreemptOthers(_ context.Context, pod *v1.Pod, nominatedNodeStatus *fwk.Status) (bool, string) {
+	if c.podEligible {
+		return true, ""
+	}
+	return false, "not eligible"
 }

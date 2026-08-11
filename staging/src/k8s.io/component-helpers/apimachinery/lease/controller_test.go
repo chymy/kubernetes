@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,14 +32,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/diff"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 	testingclock "k8s.io/utils/clock/testing"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/ktesting"
 )
 
 func TestNewNodeLease(t *testing.T) {
@@ -59,6 +61,7 @@ func TestNewNodeLease(t *testing.T) {
 			desc: "nil base without node",
 			controller: &controller{
 				client:               fake.NewSimpleClientset(),
+				leaseName:            node.Name,
 				holderIdentity:       node.Name,
 				leaseDurationSeconds: 10,
 				clock:                fakeClock,
@@ -70,8 +73,8 @@ func TestNewNodeLease(t *testing.T) {
 					Namespace: corev1.NamespaceNodeLease,
 				},
 				Spec: coordinationv1.LeaseSpec{
-					HolderIdentity:       pointer.StringPtr(node.Name),
-					LeaseDurationSeconds: pointer.Int32Ptr(10),
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](10),
 					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now()},
 				},
 			},
@@ -80,6 +83,7 @@ func TestNewNodeLease(t *testing.T) {
 			desc: "nil base with node",
 			controller: &controller{
 				client:               fake.NewSimpleClientset(node),
+				leaseName:            node.Name,
 				holderIdentity:       node.Name,
 				leaseDurationSeconds: 10,
 				clock:                fakeClock,
@@ -99,8 +103,8 @@ func TestNewNodeLease(t *testing.T) {
 					},
 				},
 				Spec: coordinationv1.LeaseSpec{
-					HolderIdentity:       pointer.StringPtr(node.Name),
-					LeaseDurationSeconds: pointer.Int32Ptr(10),
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](10),
 					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now()},
 				},
 			},
@@ -119,8 +123,8 @@ func TestNewNodeLease(t *testing.T) {
 					Namespace: corev1.NamespaceNodeLease,
 				},
 				Spec: coordinationv1.LeaseSpec{
-					HolderIdentity:       pointer.StringPtr(node.Name),
-					LeaseDurationSeconds: pointer.Int32Ptr(10),
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](10),
 					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now().Add(-10 * time.Second)},
 				},
 			},
@@ -138,8 +142,8 @@ func TestNewNodeLease(t *testing.T) {
 					},
 				},
 				Spec: coordinationv1.LeaseSpec{
-					HolderIdentity:       pointer.StringPtr(node.Name),
-					LeaseDurationSeconds: pointer.Int32Ptr(10),
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](10),
 					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now()},
 				},
 			},
@@ -166,8 +170,8 @@ func TestNewNodeLease(t *testing.T) {
 					},
 				},
 				Spec: coordinationv1.LeaseSpec{
-					HolderIdentity:       pointer.StringPtr(node.Name),
-					LeaseDurationSeconds: pointer.Int32Ptr(10),
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](10),
 					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now().Add(-10 * time.Second)},
 				},
 			},
@@ -185,8 +189,55 @@ func TestNewNodeLease(t *testing.T) {
 					},
 				},
 				Spec: coordinationv1.LeaseSpec{
-					HolderIdentity:       pointer.StringPtr(node.Name),
-					LeaseDurationSeconds: pointer.Int32Ptr(10),
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](10),
+					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now()},
+				},
+			},
+		},
+		{
+			desc: "non-nil base with owner ref, lease duration is updated",
+			controller: &controller{
+				client:               fake.NewSimpleClientset(node),
+				holderIdentity:       node.Name,
+				leaseDurationSeconds: 456,
+				clock:                fakeClock,
+			},
+			base: &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      node.Name,
+					Namespace: corev1.NamespaceNodeLease,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: corev1.SchemeGroupVersion.WithKind("Node").Version,
+							Kind:       corev1.SchemeGroupVersion.WithKind("Node").Kind,
+							Name:       node.Name,
+							UID:        node.UID,
+						},
+					},
+				},
+				Spec: coordinationv1.LeaseSpec{
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](123),
+					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now().Add(-10 * time.Second)},
+				},
+			},
+			expect: &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      node.Name,
+					Namespace: corev1.NamespaceNodeLease,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: corev1.SchemeGroupVersion.WithKind("Node").Version,
+							Kind:       corev1.SchemeGroupVersion.WithKind("Node").Kind,
+							Name:       node.Name,
+							UID:        node.UID,
+						},
+					},
+				},
+				Spec: coordinationv1.LeaseSpec{
+					HolderIdentity:       ptr.To(node.Name),
+					LeaseDurationSeconds: ptr.To[int32](456),
 					RenewTime:            &metav1.MicroTime{Time: fakeClock.Now()},
 				},
 			},
@@ -195,14 +246,15 @@ func TestNewNodeLease(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			tc.controller.newLeasePostProcessFunc = setNodeOwnerFunc(tc.controller.client, node.Name)
+			logger, _ := ktesting.NewTestContext(t)
+			tc.controller.newLeasePostProcessFunc = setNodeOwnerFunc(logger, tc.controller.client, node.Name)
 			tc.controller.leaseNamespace = corev1.NamespaceNodeLease
 			newLease, _ := tc.controller.newLease(tc.base)
 			if newLease == tc.base {
 				t.Fatalf("the new lease must be newly allocated, but got same address as base")
 			}
 			if !apiequality.Semantic.DeepEqual(tc.expect, newLease) {
-				t.Errorf("unexpected result from newLease: %s", diff.ObjectDiff(tc.expect, newLease))
+				t.Errorf("expected %#v, got %#v", tc.expect, newLease)
 			}
 		})
 	}
@@ -224,6 +276,7 @@ func TestRetryUpdateNodeLease(t *testing.T) {
 		getReactor                 func(action clienttesting.Action) (bool, runtime.Object, error)
 		onRepeatedHeartbeatFailure func()
 		expectErr                  bool
+		client                     *fake.Clientset
 	}{
 		{
 			desc: "no errors",
@@ -233,6 +286,7 @@ func TestRetryUpdateNodeLease(t *testing.T) {
 			getReactor:                 nil,
 			onRepeatedHeartbeatFailure: nil,
 			expectErr:                  false,
+			client:                     fake.NewSimpleClientset(node),
 		},
 		{
 			desc: "connection errors",
@@ -242,6 +296,7 @@ func TestRetryUpdateNodeLease(t *testing.T) {
 			getReactor:                 nil,
 			onRepeatedHeartbeatFailure: nil,
 			expectErr:                  true,
+			client:                     fake.NewSimpleClientset(node),
 		},
 		{
 			desc: "optimistic lock errors",
@@ -264,11 +319,24 @@ func TestRetryUpdateNodeLease(t *testing.T) {
 			},
 			onRepeatedHeartbeatFailure: func() { t.Fatalf("onRepeatedHeartbeatFailure called") },
 			expectErr:                  false,
+			client:                     fake.NewSimpleClientset(node),
+		},
+		{
+			desc: "node not found errors",
+			updateReactor: func(action clienttesting.Action) (bool, runtime.Object, error) {
+				t.Fatalf("lease was updated when node does not exist!")
+				return true, nil, nil
+			},
+			getReactor:                 nil,
+			onRepeatedHeartbeatFailure: nil,
+			expectErr:                  true,
+			client:                     fake.NewSimpleClientset(),
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			cl := fake.NewSimpleClientset(node)
+			logger, ctx := ktesting.NewTestContext(t)
+			cl := tc.client
 			if tc.updateReactor != nil {
 				cl.PrependReactor("update", "leases", tc.updateReactor)
 			}
@@ -283,9 +351,9 @@ func TestRetryUpdateNodeLease(t *testing.T) {
 				leaseNamespace:             corev1.NamespaceNodeLease,
 				leaseDurationSeconds:       10,
 				onRepeatedHeartbeatFailure: tc.onRepeatedHeartbeatFailure,
-				newLeasePostProcessFunc:    setNodeOwnerFunc(cl, node.Name),
+				newLeasePostProcessFunc:    setNodeOwnerFunc(logger, cl, node.Name),
 			}
-			if err := c.retryUpdateLease(nil); tc.expectErr != (err != nil) {
+			if err := c.retryUpdateLease(ctx, nil); tc.expectErr != (err != nil) {
 				t.Fatalf("got %v, expected %v", err != nil, tc.expectErr)
 			}
 		})
@@ -403,6 +471,7 @@ func TestUpdateUsingLatestLease(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			logger, ctx := ktesting.NewTestContext(t)
 			cl := fake.NewSimpleClientset(tc.existingObjs...)
 			if tc.updateReactor != nil {
 				cl.PrependReactor("update", "leases", tc.updateReactor)
@@ -421,10 +490,10 @@ func TestUpdateUsingLatestLease(t *testing.T) {
 				leaseNamespace:          corev1.NamespaceNodeLease,
 				leaseDurationSeconds:    10,
 				latestLease:             tc.latestLease,
-				newLeasePostProcessFunc: setNodeOwnerFunc(cl, node.Name),
+				newLeasePostProcessFunc: setNodeOwnerFunc(logger, cl, node.Name),
 			}
 
-			c.sync()
+			c.sync(ctx)
 
 			if tc.expectLatestLease {
 				if tc.expectLeaseResourceVersion != c.latestLease.ResourceVersion {
@@ -439,9 +508,54 @@ func TestUpdateUsingLatestLease(t *testing.T) {
 	}
 }
 
+// TestStopDoesNotBlockWhenLeaseCannotBeCreated verifies that Stop returns
+// while sync is retrying a lease create that will never succeed. sync holds
+// the reconciling lock across the retries, so Stop must interrupt them.
+func TestStopDoesNotBlockWhenLeaseCannotBeCreated(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cl := fake.NewSimpleClientset()
+	retrying := make(chan struct{})
+	var retryingOnce sync.Once
+	cl.PrependReactor("create", "leases", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		retryingOnce.Do(func() { close(retrying) })
+		return true, nil, apierrors.NewInvalid(
+			schema.GroupKind{Group: coordinationv1.GroupName, Kind: "Lease"}, "foo", nil)
+	})
+
+	c := NewController(testingclock.NewFakeClock(time.Now()), cl, "foo", 60, nil,
+		10*time.Millisecond, "foo", corev1.NamespaceNodeLease, nil)
+	go c.Run(ctx)
+
+	// Wait until sync is inside the create retry loop, holding the
+	// reconciling lock.
+	select {
+	case <-retrying:
+	case <-time.After(wait.ForeverTestTimeout):
+		t.Fatal("timed out waiting for the controller to attempt lease creation")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		c.Stop()
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(wait.ForeverTestTimeout):
+		t.Fatal("Stop() did not return while lease creation keeps failing")
+	}
+
+	// Stop must be safe to call more than once.
+	c.Stop()
+}
+
 // setNodeOwnerFunc helps construct a newLeasePostProcessFunc which sets
 // a node OwnerReference to the given lease object
-func setNodeOwnerFunc(c clientset.Interface, nodeName string) func(lease *coordinationv1.Lease) error {
+func setNodeOwnerFunc(logger klog.Logger, c clientset.Interface, nodeName string) func(lease *coordinationv1.Lease) error {
 	return func(lease *coordinationv1.Lease) error {
 		// Setting owner reference needs node's UID. Note that it is different from
 		// kubelet.nodeRef.UID. When lease is initially created, it is possible that
@@ -458,7 +572,7 @@ func setNodeOwnerFunc(c clientset.Interface, nodeName string) func(lease *coordi
 					},
 				}
 			} else {
-				klog.Errorf("failed to get node %q when trying to set owner ref to the node lease: %v", nodeName, err)
+				logger.Error(err, "failed to get node when trying to set owner ref to the node lease", "node", nodeName)
 				return err
 			}
 		}

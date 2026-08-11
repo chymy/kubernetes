@@ -130,7 +130,7 @@ kube::log::usage_from_stdin() {
 # Print out some info that isn't a top level status line
 kube::log::info() {
   local V="${V:-0}"
-  if [[ ${KUBE_VERBOSE} < ${V} ]]; then
+  if (( KUBE_VERBOSE < V )); then
     return
   fi
 
@@ -158,7 +158,7 @@ kube::log::info_from_stdin() {
 # Print a status line.  Formatted to show up in a stream of output.
 kube::log::status() {
   local V="${V:-0}"
-  if [[ ${KUBE_VERBOSE} < ${V} ]]; then
+  if (( KUBE_VERBOSE < V )); then
     return
   fi
 
@@ -169,3 +169,13 @@ kube::log::status() {
     echo "    ${message}"
   done
 }
+
+# Log a command and run it. Uses a subshell which gets replaced by the command after logging.
+kube::log::run() (
+  V="${V:-0}"
+  if (( KUBE_VERBOSE >= V )); then
+    timestamp=$(date +"[%m%d %H:%M:%S]")
+    echo "+++ ${timestamp} ${*}"
+  fi
+  exec "${@}"
+)

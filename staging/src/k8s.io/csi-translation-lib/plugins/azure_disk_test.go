@@ -22,9 +22,10 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	storage "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2/ktesting"
+	_ "k8s.io/klog/v2/ktesting/init"
 )
 
 func TestIsManagedDisk(t *testing.T) {
@@ -98,8 +99,9 @@ func TestGetDiskName(t *testing.T) {
 }
 
 func TestTranslateAzureDiskInTreeInlineVolumeToCSI(t *testing.T) {
-	sharedBlobDiskKind := v1.AzureDedicatedBlobDisk
+	sharedBlobDiskKind := corev1.AzureDedicatedBlobDisk
 	translator := NewAzureDiskCSITranslator()
+	logger, _ := ktesting.NewTestContext(t)
 
 	cases := []struct {
 		name   string
@@ -159,7 +161,7 @@ func TestTranslateAzureDiskInTreeInlineVolumeToCSI(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Logf("Testing %v", tc.name)
-		got, err := translator.TranslateInTreeInlineVolumeToCSI(tc.volume, "")
+		got, err := translator.TranslateInTreeInlineVolumeToCSI(logger, tc.volume, "")
 		if err != nil && !tc.expErr {
 			t.Errorf("Did not expect error but got: %v", err)
 		}
@@ -176,8 +178,9 @@ func TestTranslateAzureDiskInTreeInlineVolumeToCSI(t *testing.T) {
 
 func TestTranslateAzureDiskInTreePVToCSI(t *testing.T) {
 	translator := NewAzureDiskCSITranslator()
+	logger, _ := ktesting.NewTestContext(t)
 
-	sharedBlobDiskKind := v1.AzureDedicatedBlobDisk
+	sharedBlobDiskKind := corev1.AzureDedicatedBlobDisk
 	cachingMode := corev1.AzureDataDiskCachingMode("cachingmode")
 	fsType := "fstype"
 	readOnly := true
@@ -251,7 +254,7 @@ func TestTranslateAzureDiskInTreePVToCSI(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Logf("Testing %v", tc.name)
-		got, err := translator.TranslateInTreePVToCSI(tc.volume)
+		got, err := translator.TranslateInTreePVToCSI(logger, tc.volume)
 		if err != nil && !tc.expErr {
 			t.Errorf("Did not expect error but got: %v", err)
 		}
@@ -273,7 +276,7 @@ func TestTranslateTranslateCSIPVToInTree(t *testing.T) {
 	fsType := "fstype"
 	readOnly := true
 	diskURI := "/subscriptions/12/resourceGroups/23/providers/Microsoft.Compute/disks/name"
-	managed := v1.AzureManagedDisk
+	managed := corev1.AzureManagedDisk
 
 	translator := NewAzureDiskCSITranslator()
 	cases := []struct {
@@ -448,6 +451,7 @@ func TestTranslateTranslateCSIPVToInTree(t *testing.T) {
 
 func TestTranslateInTreeStorageClassToCSI(t *testing.T) {
 	translator := NewAzureDiskCSITranslator()
+	logger, _ := ktesting.NewTestContext(t)
 
 	tcs := []struct {
 		name       string
@@ -482,12 +486,12 @@ func TestTranslateInTreeStorageClassToCSI(t *testing.T) {
 		},
 		{
 			name:       "some translated topology",
-			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(v1.LabelTopologyZone, []string{"foo"})),
+			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(corev1.LabelTopologyZone, []string{"foo"})),
 			expOptions: NewStorageClass(map[string]string{}, generateToplogySelectors(AzureDiskTopologyKey, []string{"foo"})),
 		},
 		{
 			name:       "some translated topology with beta labels",
-			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(v1.LabelFailureDomainBetaZone, []string{"foo"})),
+			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(corev1.LabelFailureDomainBetaZone, []string{"foo"})),
 			expOptions: NewStorageClass(map[string]string{}, generateToplogySelectors(AzureDiskTopologyKey, []string{"foo"})),
 		},
 		{
@@ -497,24 +501,24 @@ func TestTranslateInTreeStorageClassToCSI(t *testing.T) {
 		},
 		{
 			name:       "topology in regions without zones",
-			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(v1.LabelTopologyZone, []string{"0"})),
+			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(corev1.LabelTopologyZone, []string{"0"})),
 			expOptions: NewStorageClass(map[string]string{}, generateToplogySelectors(AzureDiskTopologyKey, []string{""})),
 		},
 		{
 			name:       "longer topology in regions without zones",
-			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(v1.LabelTopologyZone, []string{"1234"})),
+			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(corev1.LabelTopologyZone, []string{"1234"})),
 			expOptions: NewStorageClass(map[string]string{}, generateToplogySelectors(AzureDiskTopologyKey, []string{""})),
 		},
 		{
 			name:       "topology in regions with zones",
-			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(v1.LabelTopologyZone, []string{"centralus-1"})),
+			options:    NewStorageClass(map[string]string{}, generateToplogySelectors(corev1.LabelTopologyZone, []string{"centralus-1"})),
 			expOptions: NewStorageClass(map[string]string{}, generateToplogySelectors(AzureDiskTopologyKey, []string{"centralus-1"})),
 		},
 	}
 
 	for _, tc := range tcs {
 		t.Logf("Testing %v", tc.name)
-		gotOptions, err := translator.TranslateInTreeStorageClassToCSI(tc.options)
+		gotOptions, err := translator.TranslateInTreeStorageClassToCSI(logger, tc.options)
 		if err != nil && !tc.expErr {
 			t.Errorf("Did not expect error but got: %v", err)
 		}

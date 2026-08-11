@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/flowcontrol/flowschema"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // FlowSchemaStorage implements storage for flow schema.
@@ -46,9 +46,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against flow schemas.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &flowcontrol.FlowSchema{} },
-		NewListFunc:              func() runtime.Object { return &flowcontrol.FlowSchemaList{} },
-		DefaultQualifiedResource: flowcontrol.Resource("flowschemas"),
+		NewFunc:                   func() runtime.Object { return &flowcontrol.FlowSchema{} },
+		NewListFunc:               func() runtime.Object { return &flowcontrol.FlowSchemaList{} },
+		DefaultQualifiedResource:  flowcontrol.Resource("flowschemas"),
+		SingularQualifiedResource: flowcontrol.Resource("flowschema"),
 
 		CreateStrategy:      flowschema.Strategy,
 		UpdateStrategy:      flowschema.Strategy,

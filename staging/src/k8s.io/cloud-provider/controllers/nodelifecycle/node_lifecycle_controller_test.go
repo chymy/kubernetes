@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cloud
+package nodelifecycle
 
 import (
 	"context"
@@ -22,6 +22,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,8 +34,11 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	cloudprovider "k8s.io/cloud-provider"
 	fakecloud "k8s.io/cloud-provider/fake"
+	k8stest "k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/ktesting"
 )
 
 func Test_NodesDeleted(t *testing.T) {
@@ -62,6 +67,7 @@ func Test_NodesDeleted(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				ExistsByProviderID: false,
@@ -176,6 +182,7 @@ func Test_NodesDeleted(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				ExistsByProviderID: false,
@@ -287,6 +294,7 @@ func Test_NodesDeleted(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				EnableInstancesV2:  true,
@@ -404,6 +412,7 @@ func Test_NodesDeleted(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				EnableInstancesV2:  true,
@@ -504,23 +513,25 @@ func Test_NodesDeleted(t *testing.T) {
 
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			clientset := fake.NewSimpleClientset(testcase.existingNode)
 			informer := informers.NewSharedInformerFactory(clientset, time.Second)
 			nodeInformer := informer.Core().V1().Nodes()
 
-			if err := syncNodeStore(nodeInformer, clientset); err != nil {
+			if err := syncNodeStore(ctx, nodeInformer, clientset); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
 
-			eventBroadcaster := record.NewBroadcaster()
+			eventBroadcaster := record.NewBroadcaster(record.WithContext(ctx))
 			cloudNodeLifecycleController := &CloudNodeLifecycleController{
-				nodeLister:        nodeInformer.Lister(),
-				kubeClient:        clientset,
-				cloud:             testcase.fakeCloud,
-				recorder:          eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "cloud-node-lifecycle-controller"}),
-				nodeMonitorPeriod: 1 * time.Second,
+				nodeLister:                   nodeInformer.Lister(),
+				kubeClient:                   clientset,
+				cloud:                        testcase.fakeCloud,
+				recorder:                     eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "cloud-node-lifecycle-controller"}),
+				nodeMonitorPeriod:            1 * time.Second,
+				concurrentNodeLifecycleSyncs: 1,
 			}
 
 			w := eventBroadcaster.StartLogging(klog.Infof)
@@ -599,6 +610,167 @@ func Test_NodesShutdown(t *testing.T) {
 			},
 		},
 		{
+			name: "node with empty spec providerID is not ready and was shutdown, but exists",
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "node0",
+					CreationTimestamp: metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.Local),
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "",
+				},
+				Status: v1.NodeStatus{
+					Conditions: []v1.NodeCondition{
+						{
+							Type:               v1.NodeReady,
+							Status:             v1.ConditionFalse,
+							LastHeartbeatTime:  metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+							LastTransitionTime: metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+						},
+					},
+				},
+			},
+			expectedNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "node0",
+					CreationTimestamp: metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.Local),
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "",
+					Taints: []v1.Taint{
+						*ShutdownTaint,
+					},
+				},
+				Status: v1.NodeStatus{
+					Conditions: []v1.NodeCondition{
+						{
+							Type:               v1.NodeReady,
+							Status:             v1.ConditionFalse,
+							LastHeartbeatTime:  metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+							LastTransitionTime: metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+						},
+					},
+				},
+			},
+			expectedDeleted: false,
+			fakeCloud: &fakecloud.Cloud{
+				NodeShutdown:            true,
+				ExistsByProviderID:      true,
+				ErrShutdownByProviderID: nil,
+				ExtID: map[types.NodeName]string{
+					types.NodeName("node0"): "foo://12345",
+				},
+			},
+		},
+		{
+			name: "node with non-existing providerID (missing in cloud provider) gets deleted",
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "node0",
+					CreationTimestamp: metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.Local),
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "",
+				},
+				Status: v1.NodeStatus{
+					Conditions: []v1.NodeCondition{
+						{
+							Type:               v1.NodeReady,
+							Status:             v1.ConditionFalse,
+							LastHeartbeatTime:  metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+							LastTransitionTime: metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+						},
+					},
+				},
+			},
+			expectedNode:    &v1.Node{},
+			expectedDeleted: true,
+			fakeCloud: &fakecloud.Cloud{
+				ErrShutdownByProviderID: nil,
+				ExtID: map[types.NodeName]string{
+					types.NodeName("node0"): "",
+				},
+			},
+		},
+		{
+			name: "node with error when getting providerID does not have shutdown taint",
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "node0",
+					CreationTimestamp: metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.Local),
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "",
+				},
+				Status: v1.NodeStatus{
+					Conditions: []v1.NodeCondition{
+						{
+							Type:               v1.NodeReady,
+							Status:             v1.ConditionFalse,
+							LastHeartbeatTime:  metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+							LastTransitionTime: metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+						},
+					},
+				},
+			},
+			expectedNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "node0",
+					CreationTimestamp: metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.Local),
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "",
+				},
+				Status: v1.NodeStatus{
+					Conditions: []v1.NodeCondition{
+						{
+							Type:               v1.NodeReady,
+							Status:             v1.ConditionFalse,
+							LastHeartbeatTime:  metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+							LastTransitionTime: metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+						},
+					},
+				},
+			},
+			expectedDeleted: false,
+			fakeCloud: &fakecloud.Cloud{
+				ErrShutdownByProviderID: nil,
+				ExtIDErr: map[types.NodeName]error{
+					types.NodeName("node0"): errors.New("err!"),
+				},
+			},
+		},
+		{
+			name: "node with InstanceID returning InstanceNotFound gets deleted",
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "node0",
+					CreationTimestamp: metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.Local),
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "",
+				},
+				Status: v1.NodeStatus{
+					Conditions: []v1.NodeCondition{
+						{
+							Type:               v1.NodeReady,
+							Status:             v1.ConditionFalse,
+							LastHeartbeatTime:  metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+							LastTransitionTime: metav1.Date(2015, 1, 1, 12, 0, 0, 0, time.Local),
+						},
+					},
+				},
+			},
+			expectedNode:    &v1.Node{},
+			expectedDeleted: true,
+			fakeCloud: &fakecloud.Cloud{
+				ErrShutdownByProviderID: nil,
+				ExtIDErr: map[types.NodeName]error{
+					types.NodeName("node0"): cloudprovider.InstanceNotFound,
+				},
+			},
+		},
+		{
 			name: "node is not ready, but there is error checking if node is shutdown",
 			existingNode: &v1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -616,6 +788,7 @@ func Test_NodesShutdown(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				NodeShutdown:            false,
@@ -640,6 +813,7 @@ func Test_NodesShutdown(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				NodeShutdown:            false,
@@ -704,6 +878,7 @@ func Test_NodesShutdown(t *testing.T) {
 					},
 				},
 			},
+			expectedNode:    &v1.Node{},
 			expectedDeleted: true,
 			fakeCloud: &fakecloud.Cloud{
 				NodeShutdown:            true,
@@ -715,28 +890,39 @@ func Test_NodesShutdown(t *testing.T) {
 
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			clientset := fake.NewSimpleClientset(testcase.existingNode)
 			informer := informers.NewSharedInformerFactory(clientset, time.Second)
 			nodeInformer := informer.Core().V1().Nodes()
 
-			if err := syncNodeStore(nodeInformer, clientset); err != nil {
+			if err := syncNodeStore(ctx, nodeInformer, clientset); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
 
-			eventBroadcaster := record.NewBroadcaster()
+			eventBroadcaster := record.NewBroadcaster(record.WithContext(ctx))
 			cloudNodeLifecycleController := &CloudNodeLifecycleController{
-				nodeLister:        nodeInformer.Lister(),
-				kubeClient:        clientset,
-				cloud:             testcase.fakeCloud,
-				recorder:          eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "cloud-node-lifecycle-controller"}),
-				nodeMonitorPeriod: 1 * time.Second,
+				nodeLister:                   nodeInformer.Lister(),
+				kubeClient:                   clientset,
+				cloud:                        testcase.fakeCloud,
+				recorder:                     eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "cloud-node-lifecycle-controller"}),
+				nodeMonitorPeriod:            1 * time.Second,
+				concurrentNodeLifecycleSyncs: 1,
 			}
 
-			w := eventBroadcaster.StartLogging(klog.Infof)
-			defer w.Stop()
-			cloudNodeLifecycleController.MonitorNodes(context.TODO())
+			e := eventBroadcaster.StartEventWatcher(func(e *v1.Event) {
+				loggerV := klog.FromContext(t.Context()).V(0)
+				loggerV.Info("Event occurred", "object", klog.KRef(e.InvolvedObject.Namespace, e.InvolvedObject.Name), "fieldPath", e.InvolvedObject.FieldPath, "kind", e.InvolvedObject.Kind, "apiVersion", e.InvolvedObject.APIVersion, "type", e.Type, "reason", e.Reason, "message", e.Message)
+				if e.InvolvedObject.APIVersion == "" {
+					t.Fatalf("event involvedObject.apiVersion is empty")
+				}
+			})
+			defer e.Stop()
+			cloudNodeLifecycleController.MonitorNodes(ctx)
 
-			updatedNode, err := clientset.CoreV1().Nodes().Get(context.TODO(), testcase.existingNode.Name, metav1.GetOptions{})
+			updatedNode, err := clientset.CoreV1().Nodes().Get(ctx, testcase.existingNode.Name, metav1.GetOptions{})
 			if testcase.expectedDeleted != apierrors.IsNotFound(err) {
 				t.Fatalf("unexpected error happens when getting the node: %v", err)
 			}
@@ -749,8 +935,162 @@ func Test_NodesShutdown(t *testing.T) {
 	}
 }
 
-func syncNodeStore(nodeinformer coreinformers.NodeInformer, f *fake.Clientset) error {
-	nodes, err := f.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+func Test_GetProviderID(t *testing.T) {
+	testcases := []struct {
+		name               string
+		fakeCloud          *fakecloud.Cloud
+		existingNode       *v1.Node
+		expectedProviderID string
+		expectedErr        error
+	}{
+		{
+			name: "node initialized with provider ID",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: false,
+				Err:               nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "fake://12345",
+				},
+			},
+			expectedProviderID: "fake://12345",
+			expectedErr:        nil,
+		},
+		{
+			name: "node initialized with provider ID with InstancesV2",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: true,
+				Err:               nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+				Spec: v1.NodeSpec{
+					ProviderID: "fake://12345",
+				},
+			},
+			expectedProviderID: "fake://12345",
+			expectedErr:        nil,
+		},
+		{
+			name: "cloud implemented with Instances",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: false,
+				ExtID: map[types.NodeName]string{
+					types.NodeName("node0"): "12345",
+				},
+				Err: nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+			},
+			expectedProviderID: "fake://12345",
+			expectedErr:        nil,
+		},
+		{
+			name: "cloud implemented with InstancesV2",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: true,
+				ProviderID: map[types.NodeName]string{
+					types.NodeName("node0"): "fake://12345",
+				},
+				Err: nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+			},
+			expectedProviderID: "fake://12345",
+			expectedErr:        nil,
+		},
+		{
+			name: "cloud implemented with InstancesV2 (without providerID)",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: true,
+				Err:               nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+			},
+			expectedProviderID: "",
+			expectedErr:        nil,
+		},
+		{
+			name: "cloud implemented with Instances with instance missing",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: false,
+				ExtIDErr: map[types.NodeName]error{
+					types.NodeName("node0"): cloudprovider.InstanceNotFound,
+				},
+				Err: nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+			},
+			expectedProviderID: "",
+			expectedErr:        cloudprovider.InstanceNotFound,
+		},
+		{
+			name: "cloud implemented with Instances with unknown error",
+			fakeCloud: &fakecloud.Cloud{
+				EnableInstancesV2: false,
+				ExtIDErr: map[types.NodeName]error{
+					types.NodeName("node0"): errors.New("unknown error"),
+				},
+				Err: nil,
+			},
+			existingNode: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node0",
+				},
+			},
+			expectedProviderID: "",
+			expectedErr:        errors.New("failed to get instance ID from cloud provider: unknown error"),
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
+
+			cloudNodeLifecycleController := &CloudNodeLifecycleController{
+				cloud:                        testcase.fakeCloud,
+				concurrentNodeLifecycleSyncs: 1,
+			}
+
+			providerID, err := cloudNodeLifecycleController.getProviderID(ctx, testcase.existingNode)
+
+			if err != nil && testcase.expectedErr == nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err == nil && testcase.expectedErr != nil {
+				t.Fatalf("did not get expected error %q", testcase.expectedErr)
+			}
+			if err != nil && err.Error() != testcase.expectedErr.Error() {
+				t.Fatalf("expected error %q, got %q", testcase.expectedErr.Error(), err.Error())
+			}
+
+			if !cmp.Equal(providerID, testcase.expectedProviderID) {
+				t.Errorf("unexpected providerID %s", cmp.Diff(providerID, testcase.expectedProviderID))
+			}
+		})
+	}
+}
+
+func syncNodeStore(ctx context.Context, nodeinformer coreinformers.NodeInformer, f *fake.Clientset) error {
+	nodes, err := f.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -759,4 +1099,142 @@ func syncNodeStore(nodeinformer coreinformers.NodeInformer, f *fake.Clientset) e
 		newElems = append(newElems, &nodes.Items[i])
 	}
 	return nodeinformer.Informer().GetStore().Replace(newElems, "newRV")
+}
+
+func TestNewCloudNodeLifecycleController(t *testing.T) {
+	_, _ = ktesting.NewTestContext(t)
+	clientset := fake.NewSimpleClientset()
+	informer := informers.NewSharedInformerFactory(clientset, time.Second)
+	nodeInformer := informer.Core().V1().Nodes()
+	fakeCloud := &fakecloud.Cloud{}
+
+	testcases := []struct {
+		name            string
+		workers         int
+		expectedWorkers int
+		expectErr       bool
+	}{
+		{
+			name:            "valid workers count",
+			workers:         5,
+			expectedWorkers: 5,
+			expectErr:       false,
+		},
+		{
+			name:      "workers count is 0, expect error",
+			workers:   0,
+			expectErr: true,
+		},
+		{
+			name:      "workers count is negative, expect error",
+			workers:   -5,
+			expectErr: true,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewCloudNodeLifecycleController(
+				nodeInformer,
+				clientset,
+				fakeCloud,
+				1*time.Second,
+				tc.workers,
+			)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error creating controller, but got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error creating controller: %v", err)
+			}
+			if c.concurrentNodeLifecycleSyncs != tc.expectedWorkers {
+				t.Errorf("expected concurrentNodeLifecycleSyncs to be %d, but got %d", tc.expectedWorkers, c.concurrentNodeLifecycleSyncs)
+			}
+		})
+	}
+}
+
+func TestMonitorNodesMetrics(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+	clientset := fake.NewSimpleClientset()
+	informer := informers.NewSharedInformerFactory(clientset, time.Second)
+	nodeInformer := informer.Core().V1().Nodes()
+	fakeCloud := &fakecloud.Cloud{}
+
+	// Create 2 ready nodes and 1 not-ready node
+	node0 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node0"},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}},
+		},
+	}
+	node1 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node1"},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}},
+		},
+	}
+	node2 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node2"},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionFalse}},
+		},
+	}
+
+	// Create nodes in API server via clientset
+	for _, node := range []*v1.Node{node0, node1, node2} {
+		_, err := clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("failed to create node: %v", err)
+		}
+	}
+
+	// Sync node informer store with clientset to populate the cache
+	if err := syncNodeStore(ctx, nodeInformer, clientset); err != nil {
+		t.Fatalf("failed to sync node store: %v", err)
+	}
+
+	// Instantiate controller (registers metrics automatically)
+	c, err := NewCloudNodeLifecycleController(
+		nodeInformer,
+		clientset,
+		fakeCloud,
+		1*time.Second,
+		1, // workers = 1
+	)
+	if err != nil {
+		t.Fatalf("failed to create controller: %v", err)
+	}
+	c.broadcaster = record.NewBroadcaster(record.WithContext(ctx))
+	c.recorder = c.broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "cloud-node-lifecycle-controller"})
+
+	// Setup fake cloud to report node2 still exists so it is processed under "cloud" path without deleting
+	fakeCloud.Exists = true
+	fakeCloud.ExistsByProviderID = true
+
+	// Reset metrics registry/vectors to clean state before running loop
+	cloudProviderCalls.Reset()
+
+	// Execute MonitorNodes loop
+	c.MonitorNodes(ctx)
+
+	// 1. Verify cloudProviderCalls {"operation": "instance_exists", "result": "success"} is exactly 1
+	existsCount, err := k8stest.GetCounterMetricValue(cloudProviderCalls.WithLabelValues(instanceExistsOp, "success"))
+	if err != nil {
+		t.Errorf("unexpected error getting %s count: %v", instanceExistsOp, err)
+	}
+	if existsCount != 1.0 {
+		t.Errorf("expected %s calls count to be 1.0, but got %f", instanceExistsOp, existsCount)
+	}
+
+	shutdownCount, err := k8stest.GetCounterMetricValue(cloudProviderCalls.WithLabelValues(instanceShutdownOp, "success"))
+	if err != nil {
+		t.Errorf("unexpected error getting %s count: %v", instanceShutdownOp, err)
+	}
+	if shutdownCount != 1.0 {
+		t.Errorf("expected %s calls count to be 1.0, but got %f", instanceShutdownOp, shutdownCount)
+	}
 }

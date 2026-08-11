@@ -88,11 +88,11 @@ func (plugin *downwardAPIPlugin) SupportsMountOption() bool {
 	return false
 }
 
-func (plugin *downwardAPIPlugin) SupportsBulkVolumeVerification() bool {
-	return false
+func (plugin *downwardAPIPlugin) SupportsSELinuxContextMount(spec *volume.Spec) (bool, error) {
+	return false, nil
 }
 
-func (plugin *downwardAPIPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod, opts volume.VolumeOptions) (volume.Mounter, error) {
+func (plugin *downwardAPIPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod) (volume.Mounter, error) {
 	v := &downwardAPIVolume{
 		volName:         spec.Name(),
 		items:           spec.Volume.DownwardAPI.Items,
@@ -104,7 +104,6 @@ func (plugin *downwardAPIPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod, opts
 	return &downwardAPIVolumeMounter{
 		downwardAPIVolume: v,
 		source:            *spec.Volume.DownwardAPI,
-		opts:              &opts,
 	}, nil
 }
 
@@ -119,14 +118,16 @@ func (plugin *downwardAPIPlugin) NewUnmounter(volName string, podUID types.UID) 
 	}, nil
 }
 
-func (plugin *downwardAPIPlugin) ConstructVolumeSpec(volumeName, mountPath string) (*volume.Spec, error) {
+func (plugin *downwardAPIPlugin) ConstructVolumeSpec(volumeName, mountPath string) (volume.ReconstructedVolume, error) {
 	downwardAPIVolume := &v1.Volume{
 		Name: volumeName,
 		VolumeSource: v1.VolumeSource{
 			DownwardAPI: &v1.DownwardAPIVolumeSource{},
 		},
 	}
-	return volume.NewSpecFromVolume(downwardAPIVolume), nil
+	return volume.ReconstructedVolume{
+		Spec: volume.NewSpecFromVolume(downwardAPIVolume),
+	}, nil
 }
 
 // downwardAPIVolume retrieves downward API data and placing them into the volume on the host.
@@ -144,7 +145,6 @@ type downwardAPIVolume struct {
 type downwardAPIVolumeMounter struct {
 	*downwardAPIVolume
 	source v1.DownwardAPIVolumeSource
-	opts   *volume.VolumeOptions
 }
 
 // downwardAPIVolumeMounter implements volume.Mounter interface
@@ -170,13 +170,13 @@ func (b *downwardAPIVolumeMounter) SetUp(mounterArgs volume.MounterArgs) error {
 func (b *downwardAPIVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs) error {
 	klog.V(3).Infof("Setting up a downwardAPI volume %v for pod %v/%v at %v", b.volName, b.pod.Namespace, b.pod.Name, dir)
 	// Wrap EmptyDir. Here we rely on the idempotency of the wrapped plugin to avoid repeatedly mounting
-	wrapped, err := b.plugin.host.NewWrapperMounter(b.volName, wrappedVolumeSpec(), b.pod, *b.opts)
+	wrapped, err := b.plugin.host.NewWrapperMounter(b.volName, wrappedVolumeSpec(), b.pod)
 	if err != nil {
 		klog.Errorf("Couldn't setup downwardAPI volume %v for pod %v/%v: %s", b.volName, b.pod.Namespace, b.pod.Name, err.Error())
 		return err
 	}
 
-	data, err := CollectData(b.source.Items, b.pod, b.plugin.host, b.source.DefaultMode)
+	data, err := CollectData(b.source.Items, b.pod, b.plugin.host, b.source.DefaultMode, b.source.DefaultUser)
 	if err != nil {
 		klog.Errorf("Error preparing data for downwardAPI volume %v for pod %v/%v: %s", b.volName, b.pod.Namespace, b.pod.Name, err.Error())
 		return err
@@ -202,7 +202,7 @@ func (b *downwardAPIVolumeMounter) SetUpAt(dir string, mounterArgs volume.Mounte
 			}
 			tearDownErr := unmounter.TearDown()
 			if tearDownErr != nil {
-				klog.Errorf("error tearing down volume %s with : %v", b.volName, tearDownErr)
+				klog.Errorf("error tearing down volume %s: %v", b.volName, tearDownErr)
 			}
 		}
 	}()
@@ -214,15 +214,15 @@ func (b *downwardAPIVolumeMounter) SetUpAt(dir string, mounterArgs volume.Mounte
 		return err
 	}
 
-	err = writer.Write(data)
+	setPerms := func(_ string) error {
+		// This may be the first time writing and new files get created outside the timestamp subdirectory:
+		// change the permissions on the whole volume and not only in the timestamp directory.
+		ownershipChanger := volume.NewVolumeOwnership(b, dir, mounterArgs.FsGroup, nil /*fsGroupChangePolicy*/, volumeutil.FSGroupCompleteHook(b.plugin, nil))
+		return ownershipChanger.ChangePermissions()
+	}
+	err = writer.Write(data, setPerms)
 	if err != nil {
 		klog.Errorf("Error writing payload to dir: %v", err)
-		return err
-	}
-
-	err = volume.SetVolumeOwnership(b, mounterArgs.FsGroup, nil /*fsGroupChangePolicy*/, volumeutil.FSGroupCompleteHook(b.plugin, nil))
-	if err != nil {
-		klog.Errorf("Error applying volume ownership settings for group: %v", mounterArgs.FsGroup)
 		return err
 	}
 
@@ -235,7 +235,7 @@ func (b *downwardAPIVolumeMounter) SetUpAt(dir string, mounterArgs volume.Mounte
 // Map's value is the (sorted) content of the field to be dumped in the file.
 //
 // Note: this function is exported so that it can be called from the projection volume driver
-func CollectData(items []v1.DownwardAPIVolumeFile, pod *v1.Pod, host volume.VolumeHost, defaultMode *int32) (map[string]volumeutil.FileProjection, error) {
+func CollectData(items []v1.DownwardAPIVolumeFile, pod *v1.Pod, host volume.VolumeHost, defaultMode *int32, defaultUser *int64) (map[string]volumeutil.FileProjection, error) {
 	if defaultMode == nil {
 		return nil, fmt.Errorf("no defaultMode used, not even the default value for it")
 	}
@@ -245,6 +245,8 @@ func CollectData(items []v1.DownwardAPIVolumeFile, pod *v1.Pod, host volume.Volu
 	for _, fileInfo := range items {
 		var fileProjection volumeutil.FileProjection
 		fPath := filepath.Clean(fileInfo.Path)
+
+		fileProjection.FsUser = volumeutil.ResolvesFsUser(defaultUser, fileInfo.User)
 		if fileInfo.Mode != nil {
 			fileProjection.Mode = *fileInfo.Mode
 		} else {

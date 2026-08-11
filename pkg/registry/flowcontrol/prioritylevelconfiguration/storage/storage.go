@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/flowcontrol/prioritylevelconfiguration"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // PriorityLevelConfigurationStorage implements storage for priority level configuration.
@@ -46,9 +46,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against priority level configuration.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &flowcontrol.PriorityLevelConfiguration{} },
-		NewListFunc:              func() runtime.Object { return &flowcontrol.PriorityLevelConfigurationList{} },
-		DefaultQualifiedResource: flowcontrol.Resource("prioritylevelconfigurations"),
+		NewFunc:                   func() runtime.Object { return &flowcontrol.PriorityLevelConfiguration{} },
+		NewListFunc:               func() runtime.Object { return &flowcontrol.PriorityLevelConfigurationList{} },
+		DefaultQualifiedResource:  flowcontrol.Resource("prioritylevelconfigurations"),
+		SingularQualifiedResource: flowcontrol.Resource("prioritylevelconfiguration"),
 
 		CreateStrategy:      prioritylevelconfiguration.Strategy,
 		UpdateStrategy:      prioritylevelconfiguration.Strategy,

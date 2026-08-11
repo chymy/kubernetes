@@ -17,7 +17,6 @@ limitations under the License.
 package apiserver
 
 import (
-	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,30 +33,32 @@ import (
 	"k8s.io/kubernetes/pkg/controlplane"
 	"k8s.io/kubernetes/pkg/controlplane/reconcilers"
 	"k8s.io/kubernetes/test/integration/framework"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 func TestWebhookLoopback(t *testing.T) {
 	webhookPath := "/webhook-test"
 
-	called := int32(0)
+	var called atomic.Int32
 
-	client, _, tearDownFn := framework.StartTestServer(t, framework.TestServerSetup{
+	tCtx := ktesting.Init(t)
+	client, _, tearDownFn := framework.StartTestServer(tCtx, t, framework.TestServerSetup{
 		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
 		},
 		ModifyServerConfig: func(config *controlplane.Config) {
-			// Avoid resolveable kubernetes service
-			config.ExtraConfig.EndpointReconcilerType = reconcilers.NoneEndpointReconcilerType
+			// Avoid resolvable kubernetes service
+			config.Extra.EndpointReconcilerType = reconcilers.NoneEndpointReconcilerType
 
 			// Hook into audit to watch requests
-			config.GenericConfig.AuditBackend = auditSinkFunc(func(events ...*auditinternal.Event) {})
-			config.GenericConfig.AuditPolicyRuleEvaluator = auditPolicyRuleEvaluator(func(attrs authorizer.Attributes) audit.RequestAuditConfigWithLevel {
+			config.ControlPlane.Generic.AuditBackend = auditSinkFunc(func(events ...*auditinternal.Event) {})
+			config.ControlPlane.Generic.AuditPolicyRuleEvaluator = auditPolicyRuleEvaluator(func(attrs authorizer.Attributes) audit.RequestAuditConfig {
 				if attrs.GetPath() == webhookPath {
 					if attrs.GetUser().GetName() != "system:apiserver" {
 						t.Errorf("expected user %q, got %q", "system:apiserver", attrs.GetUser().GetName())
 					}
-					atomic.AddInt32(&called, 1)
+					called.Add(1)
 				}
-				return audit.RequestAuditConfigWithLevel{
+				return audit.RequestAuditConfig{
 					Level: auditinternal.LevelNone,
 				}
 			})
@@ -67,7 +68,7 @@ func TestWebhookLoopback(t *testing.T) {
 
 	fail := admissionregistrationv1.Fail
 	noSideEffects := admissionregistrationv1.SideEffectClassNone
-	_, err := client.AdmissionregistrationV1().MutatingWebhookConfigurations().Create(context.TODO(), &admissionregistrationv1.MutatingWebhookConfiguration{
+	_, err := client.AdmissionregistrationV1().MutatingWebhookConfigurations().Create(tCtx, &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{Name: "webhooktest.example.com"},
 		Webhooks: []admissionregistrationv1.MutatingWebhook{{
 			Name: "webhooktest.example.com",
@@ -88,14 +89,14 @@ func TestWebhookLoopback(t *testing.T) {
 	}
 
 	err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (done bool, err error) {
-		_, err = client.CoreV1().ConfigMaps("default").Create(context.TODO(), &v1.ConfigMap{
+		_, err = client.CoreV1().ConfigMaps("default").Create(tCtx, &v1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: "webhook-test"},
 			Data:       map[string]string{"invalid key": "value"},
 		}, metav1.CreateOptions{})
 		if err == nil {
 			t.Fatal("Unexpected success")
 		}
-		if called > 0 {
+		if called.Load() > 0 {
 			return true, nil
 		}
 		t.Logf("%v", err)
@@ -107,9 +108,9 @@ func TestWebhookLoopback(t *testing.T) {
 	}
 }
 
-type auditPolicyRuleEvaluator func(authorizer.Attributes) audit.RequestAuditConfigWithLevel
+type auditPolicyRuleEvaluator func(authorizer.Attributes) audit.RequestAuditConfig
 
-func (f auditPolicyRuleEvaluator) EvaluatePolicyRule(attrs authorizer.Attributes) audit.RequestAuditConfigWithLevel {
+func (f auditPolicyRuleEvaluator) EvaluatePolicyRule(attrs authorizer.Attributes) audit.RequestAuditConfig {
 	return f(attrs)
 }
 

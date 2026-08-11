@@ -22,37 +22,78 @@ import (
 	"sync"
 	"testing"
 
+	authnv1 "k8s.io/api/authentication/v1"
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestEnabled(t *testing.T) {
+	tests := []struct {
+		name          string
+		ctx           *AuditContext
+		expectEnabled bool
+	}{{
+		name:          "nil context",
+		expectEnabled: false,
+	}, {
+		name:          "empty context",
+		ctx:           &AuditContext{},
+		expectEnabled: true, // An AuditContext should be considered enabled before the level is set
+	}, {
+		name: "level None",
+		ctx: func() *AuditContext {
+			ctx := &AuditContext{}
+			if err := ctx.Init(RequestAuditConfig{Level: auditinternal.LevelNone}, nil); err != nil {
+				t.Fatal(err)
+			}
+			return ctx
+		}(),
+		expectEnabled: false,
+	}, {
+		name: "level Metadata",
+		ctx: func() *AuditContext {
+			ctx := &AuditContext{}
+			if err := ctx.Init(RequestAuditConfig{Level: auditinternal.LevelMetadata}, nil); err != nil {
+				t.Fatal(err)
+			}
+			return ctx
+		}(),
+		expectEnabled: true,
+	}, {
+		name: "level RequestResponse",
+		ctx: func() *AuditContext {
+			ctx := &AuditContext{}
+			if err := ctx.Init(RequestAuditConfig{Level: auditinternal.LevelRequestResponse}, nil); err != nil {
+				t.Fatal(err)
+			}
+			return ctx
+		}(),
+		expectEnabled: true,
+	}}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.expectEnabled, test.ctx.Enabled())
+		})
+	}
+}
 
 func TestAddAuditAnnotation(t *testing.T) {
 	const (
 		annotationKeyTemplate = "test-annotation-%d"
 		annotationValue       = "test-annotation-value"
+		annotationExtraValue  = "test-existing-annotation"
 		numAnnotations        = 10
 	)
 
 	expectAnnotations := func(t *testing.T, annotations map[string]string) {
 		assert.Len(t, annotations, numAnnotations)
 	}
-	noopValidator := func(_ *testing.T, _ context.Context) {}
-	preEventValidator := func(t *testing.T, ctx context.Context) {
-		ev := auditinternal.Event{
-			Level: auditinternal.LevelMetadata,
-		}
-		addAuditAnnotationsFrom(ctx, &ev)
-		expectAnnotations(t, ev.Annotations)
-	}
-	postEventValidator := func(t *testing.T, ctx context.Context) {
-		ev := AuditEventFrom(ctx)
-		expectAnnotations(t, ev.Annotations)
-	}
-	postEventEmptyValidator := func(t *testing.T, ctx context.Context) {
-		ev := AuditEventFrom(ctx)
-		assert.Empty(t, ev.Annotations)
-	}
+
+	ctxWithAnnotation := withAuditContextAndLevel(context.Background(), t, auditinternal.LevelMetadata)
+	AddAuditAnnotation(ctxWithAnnotation, fmt.Sprintf(annotationKeyTemplate, 0), annotationExtraValue)
 
 	tests := []struct {
 		description string
@@ -61,23 +102,39 @@ func TestAddAuditAnnotation(t *testing.T) {
 	}{{
 		description: "no audit",
 		ctx:         context.Background(),
-		validator:   noopValidator,
+		validator:   func(_ *testing.T, _ context.Context) {},
 	}, {
-		description: "no annotations context",
-		ctx:         WithAuditContext(context.Background(), newAuditContext(auditinternal.LevelMetadata)),
-		validator:   postEventValidator,
+		description: "context initialized, policy not evaluated",
+		// Audit context is initialized, but the policy has not yet been evaluated (no level).
+		// Annotations should be retained.
+		ctx: WithAuditContext(context.Background()),
+		validator: func(t *testing.T, ctx context.Context) {
+			ev := AuditContextFrom(ctx).event
+			expectAnnotations(t, ev.Annotations)
+		},
 	}, {
-		description: "no audit context",
-		ctx:         WithAuditAnnotations(context.Background()),
-		validator:   preEventValidator,
+		description: "with metadata level",
+		ctx:         withAuditContextAndLevel(context.Background(), t, auditinternal.LevelMetadata),
+		validator: func(t *testing.T, ctx context.Context) {
+			ev := AuditContextFrom(ctx).event
+			expectAnnotations(t, ev.Annotations)
+		},
 	}, {
-		description: "both contexts metadata level",
-		ctx:         WithAuditContext(WithAuditAnnotations(context.Background()), newAuditContext(auditinternal.LevelMetadata)),
-		validator:   postEventValidator,
+		description: "with none level",
+		ctx:         withAuditContextAndLevel(context.Background(), t, auditinternal.LevelNone),
+		validator: func(t *testing.T, ctx context.Context) {
+			ev := AuditContextFrom(ctx).event
+			assert.Empty(t, ev.Annotations)
+		},
 	}, {
-		description: "both contexts none level",
-		ctx:         WithAuditContext(WithAuditAnnotations(context.Background()), newAuditContext(auditinternal.LevelNone)),
-		validator:   postEventEmptyValidator,
+		description: "with overlapping annotations",
+		ctx:         ctxWithAnnotation,
+		validator: func(t *testing.T, ctx context.Context) {
+			ev := AuditContextFrom(ctx).event
+			expectAnnotations(t, ev.Annotations)
+			// Verify that the pre-existing annotation is not overwritten.
+			assert.Equal(t, annotationExtraValue, ev.Annotations[fmt.Sprintf(annotationKeyTemplate, 0)])
+		},
 	}}
 
 	for _, test := range tests {
@@ -97,24 +154,186 @@ func TestAddAuditAnnotation(t *testing.T) {
 	}
 }
 
-func TestLogAnnotation(t *testing.T) {
-	ev := &auditinternal.Event{
-		Level:   auditinternal.LevelMetadata,
-		AuditID: "fake id",
-	}
-	logAnnotation(ev, "foo", "bar")
-	logAnnotation(ev, "foo", "baz")
-	assert.Equal(t, "bar", ev.Annotations["foo"], "audit annotation should not be overwritten.")
+func TestAuditAnnotationsWithAuditLoggingSetup(t *testing.T) {
+	// No audit context data in the request context
+	ctx := context.Background()
+	AddAuditAnnotation(ctx, "nil", "0")
 
-	logAnnotation(ev, "qux", "")
-	logAnnotation(ev, "qux", "baz")
-	assert.Equal(t, "", ev.Annotations["qux"], "audit annotation should not be overwritten.")
+	// initialize audit context, policy not evaluated yet
+	ctx = WithAuditContext(ctx)
+	AddAuditAnnotation(ctx, "before-evaluation", "1")
+
+	// policy evaluated, audit logging enabled
+	if err := AuditContextFrom(ctx).Init(RequestAuditConfig{Level: auditinternal.LevelMetadata}, nil); err != nil {
+		t.Fatal(err)
+	}
+	AddAuditAnnotation(ctx, "after-evaluation", "2")
+
+	expected := map[string]string{
+		"before-evaluation": "1",
+		"after-evaluation":  "2",
+	}
+	actual := AuditContextFrom(ctx).event.Annotations
+	assert.Equal(t, expected, actual)
 }
 
-func newAuditContext(l auditinternal.Level) *AuditContext {
-	return &AuditContext{
-		Event: &auditinternal.Event{
-			Level: l,
+func TestGetEventUser(t *testing.T) {
+	tests := []struct {
+		name           string
+		auditEventUser authnv1.UserInfo
+		wantUser       authnv1.UserInfo
+	}{
+		{
+			name:           "fields with zero values are returned as fields with zero values",
+			auditEventUser: authnv1.UserInfo{},
+			wantUser:       authnv1.UserInfo{},
+		},
+		{
+			name: "fields with non-zero values are returned as copies",
+			auditEventUser: authnv1.UserInfo{
+				Username: "test-user",
+				UID:      "test-uid",
+				Groups:   []string{"test-group1", "test-group2"},
+				Extra: map[string]authnv1.ExtraValue{
+					"test-extra1": {"test-extra1-val1", "test-extra1-val2"},
+					"test-extra2": {"test-extra2-val1", "test-extra2-val2"},
+				},
+			},
+			wantUser: authnv1.UserInfo{
+				Username: "test-user",
+				UID:      "test-uid",
+				Groups:   []string{"test-group1", "test-group2"},
+				Extra: map[string]authnv1.ExtraValue{
+					"test-extra1": {"test-extra1-val1", "test-extra1-val2"},
+					"test-extra2": {"test-extra2-val1", "test-extra2-val2"},
+				},
+			},
 		},
 	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ac := AuditContext{event: auditinternal.Event{User: test.auditEventUser}}
+			got := ac.GetEventUser()
+			require.Equal(t, test.wantUser, got)
+		})
+	}
+
+	t.Run("mutating the returned groups does not change the audit event's User's groups", func(t *testing.T) {
+		ac := AuditContext{
+			event: auditinternal.Event{
+				User: authnv1.UserInfo{
+					Groups: []string{"test-group1", "test-group2"},
+				},
+			},
+		}
+		got := ac.GetEventUser()
+		require.Equal(t, []string{"test-group1", "test-group2"}, got.Groups)
+		got.Groups[0] = "mutated group"
+		require.Equal(t, []string{"mutated group", "test-group2"}, got.Groups)
+		// The event's groups are not changed.
+		require.Equal(t, []string{"test-group1", "test-group2"}, ac.event.User.Groups)
+	})
+
+	t.Run("mutating the returned extras does not change the audit event's User's extras", func(t *testing.T) {
+		ac := AuditContext{
+			event: auditinternal.Event{
+				User: authnv1.UserInfo{
+					Extra: map[string]authnv1.ExtraValue{"test-extra": {"test-extra-val"}},
+				},
+			},
+		}
+		got := ac.GetEventUser()
+		require.Equal(t, map[string]authnv1.ExtraValue{"test-extra": {"test-extra-val"}}, got.Extra)
+		got.Extra["test-extra"] = authnv1.ExtraValue{"mutated value"}
+		require.Equal(t, map[string]authnv1.ExtraValue{"test-extra": {"mutated value"}}, got.Extra)
+		// The event's extras are not changed.
+		require.Equal(t, map[string]authnv1.ExtraValue{"test-extra": {"test-extra-val"}}, ac.event.User.Extra)
+	})
+}
+
+func TestGetEventImpersonatedUser(t *testing.T) {
+	tests := []struct {
+		name                       string
+		auditEventImpersonatedUser *authnv1.UserInfo
+		wantUser                   *authnv1.UserInfo
+	}{
+		{
+			name:                       "nil ImpersonatedUser returns nil",
+			auditEventImpersonatedUser: nil,
+			wantUser:                   nil,
+		},
+		{
+			name:                       "fields with zero values are returned as fields with zero values",
+			auditEventImpersonatedUser: &authnv1.UserInfo{},
+			wantUser:                   &authnv1.UserInfo{},
+		},
+		{
+			name: "fields with non-zero values are returned as copies",
+			auditEventImpersonatedUser: &authnv1.UserInfo{
+				Username: "test-user",
+				UID:      "test-uid",
+				Groups:   []string{"test-group1", "test-group2"},
+				Extra: map[string]authnv1.ExtraValue{
+					"test-extra1": {"test-extra1-val1", "test-extra1-val2"},
+					"test-extra2": {"test-extra2-val1", "test-extra2-val2"},
+				},
+			},
+			wantUser: &authnv1.UserInfo{
+				Username: "test-user",
+				UID:      "test-uid",
+				Groups:   []string{"test-group1", "test-group2"},
+				Extra: map[string]authnv1.ExtraValue{
+					"test-extra1": {"test-extra1-val1", "test-extra1-val2"},
+					"test-extra2": {"test-extra2-val1", "test-extra2-val2"},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ac := AuditContext{event: auditinternal.Event{ImpersonatedUser: test.auditEventImpersonatedUser}}
+			got := ac.GetEventImpersonatedUser()
+			require.Equal(t, test.wantUser, got)
+		})
+	}
+
+	t.Run("mutating the returned groups does not change the audit event's ImpersonatedUser's groups", func(t *testing.T) {
+		ac := AuditContext{
+			event: auditinternal.Event{
+				ImpersonatedUser: &authnv1.UserInfo{
+					Groups: []string{"test-group1", "test-group2"},
+				},
+			},
+		}
+		got := ac.GetEventImpersonatedUser()
+		require.Equal(t, []string{"test-group1", "test-group2"}, got.Groups)
+		got.Groups[0] = "mutated group"
+		require.Equal(t, []string{"mutated group", "test-group2"}, got.Groups)
+		// The event's groups are not changed.
+		require.Equal(t, []string{"test-group1", "test-group2"}, ac.event.ImpersonatedUser.Groups)
+	})
+
+	t.Run("mutating the returned extras does not change the audit event's ImpersonatedUser's extras", func(t *testing.T) {
+		ac := AuditContext{
+			event: auditinternal.Event{
+				ImpersonatedUser: &authnv1.UserInfo{
+					Extra: map[string]authnv1.ExtraValue{"test-extra": {"test-extra-val"}},
+				},
+			},
+		}
+		got := ac.GetEventImpersonatedUser()
+		require.Equal(t, map[string]authnv1.ExtraValue{"test-extra": {"test-extra-val"}}, got.Extra)
+		got.Extra["test-extra"] = authnv1.ExtraValue{"mutated value"}
+		require.Equal(t, map[string]authnv1.ExtraValue{"test-extra": {"mutated value"}}, got.Extra)
+		// The event's extras are not changed.
+		require.Equal(t, map[string]authnv1.ExtraValue{"test-extra": {"test-extra-val"}}, ac.event.ImpersonatedUser.Extra)
+	})
+}
+
+func withAuditContextAndLevel(ctx context.Context, t *testing.T, l auditinternal.Level) context.Context {
+	ctx = WithAuditContext(ctx)
+	if err := AuditContextFrom(ctx).Init(RequestAuditConfig{Level: l}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return ctx
 }

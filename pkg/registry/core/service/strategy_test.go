@@ -20,18 +20,19 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/diff"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
-	"k8s.io/kubernetes/pkg/features"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestCheckGeneratedNameError(t *testing.T) {
@@ -89,7 +90,7 @@ func makeValidServicePort(name string, proto api.Protocol, port int32) api.Servi
 		Name:       name,
 		Protocol:   proto,
 		Port:       port,
-		TargetPort: intstr.FromInt(int(port)),
+		TargetPort: intstr.FromInt32(port),
 	}
 }
 
@@ -107,14 +108,18 @@ func TestServiceStatusStrategy(t *testing.T) {
 		t.Errorf("Service must be namespace scoped")
 	}
 	oldService := makeValidService()
-	newService := makeValidService()
+	oldService.Spec.Type = api.ServiceTypeLoadBalancer
 	oldService.ResourceVersion = "4"
-	newService.ResourceVersion = "4"
+	oldService.Spec.SessionAffinity = "None"
+	newService := oldService.DeepCopy()
 	newService.Spec.SessionAffinity = "ClientIP"
 	newService.Status = api.ServiceStatus{
 		LoadBalancer: api.LoadBalancerStatus{
 			Ingress: []api.LoadBalancerIngress{
-				{IP: "127.0.0.2"},
+				{
+					IP:     "127.0.0.2",
+					IPMode: ptr.To(api.LoadBalancerIPModeVIP),
+				},
 			},
 		},
 	}
@@ -128,6 +133,18 @@ func TestServiceStatusStrategy(t *testing.T) {
 	errs := StatusStrategy.ValidateUpdate(ctx, newService, oldService)
 	if len(errs) != 0 {
 		t.Errorf("Unexpected error %v", errs)
+	}
+
+	warnings := StatusStrategy.WarningsOnUpdate(ctx, newService, oldService)
+	if len(warnings) != 0 {
+		t.Errorf("Unexpected warnings %v", errs)
+	}
+
+	// Bad IP warning (leading zeros)
+	newService.Status.LoadBalancer.Ingress[0].IP = "127.000.000.002"
+	warnings = StatusStrategy.WarningsOnUpdate(ctx, newService, oldService)
+	if len(warnings) != 1 {
+		t.Errorf("Did not get warning for bad IP")
 	}
 }
 
@@ -153,167 +170,67 @@ func makeServiceWithPorts(ports []api.PortStatus) *api.Service {
 	}
 }
 
-func makeServiceWithInternalTrafficPolicy(policy *api.ServiceInternalTrafficPolicyType) *api.Service {
-	return &api.Service{
-		Spec: api.ServiceSpec{
-			InternalTrafficPolicy: policy,
-		},
-	}
-}
-
 func TestDropDisabledField(t *testing.T) {
-	localInternalTrafficPolicy := api.ServiceInternalTrafficPolicyLocal
-
 	testCases := []struct {
-		name                        string
-		enableMixedProtocol         bool
-		enableInternalTrafficPolicy bool
-		svc                         *api.Service
-		oldSvc                      *api.Service
-		compareSvc                  *api.Service
+		name       string
+		svc        *api.Service
+		oldSvc     *api.Service
+		compareSvc *api.Service
 	}{
 		/* svc.Status.Conditions */
 		{
-			name:                "mixed protocol not enabled, field not used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions(nil),
+			name:       "mixed protocol enabled, field not used in old, not used in new",
+			svc:        makeServiceWithConditions(nil),
+			oldSvc:     makeServiceWithConditions(nil),
+			compareSvc: makeServiceWithConditions(nil),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old and in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions([]metav1.Condition{}),
+			name:       "mixed protocol enabled, field used in old and in new",
+			svc:        makeServiceWithConditions([]metav1.Condition{}),
+			oldSvc:     makeServiceWithConditions([]metav1.Condition{}),
+			compareSvc: makeServiceWithConditions([]metav1.Condition{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field not used in old, used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions(nil),
+			name:       "mixed protocol enabled, field not used in old, used in new",
+			svc:        makeServiceWithConditions([]metav1.Condition{}),
+			oldSvc:     makeServiceWithConditions(nil),
+			compareSvc: makeServiceWithConditions([]metav1.Condition{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old and in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions([]metav1.Condition{}),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions([]metav1.Condition{}),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions(nil),
+			name:       "mixed protocol enabled, field used in old, not used in new",
+			svc:        makeServiceWithConditions(nil),
+			oldSvc:     makeServiceWithConditions([]metav1.Condition{}),
+			compareSvc: makeServiceWithConditions(nil),
 		},
 		/* svc.Status.LoadBalancer.Ingress.Ports */
 		{
-			name:                "mixed protocol not enabled, field not used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts(nil),
+			name:       "mixed protocol enabled, field not used in old, not used in new",
+			svc:        makeServiceWithPorts(nil),
+			oldSvc:     makeServiceWithPorts(nil),
+			compareSvc: makeServiceWithPorts(nil),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old and in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts([]api.PortStatus{}),
+			name:       "mixed protocol enabled, field used in old and in new",
+			svc:        makeServiceWithPorts([]api.PortStatus{}),
+			oldSvc:     makeServiceWithPorts([]api.PortStatus{}),
+			compareSvc: makeServiceWithPorts([]api.PortStatus{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field not used in old, used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts(nil),
+			name:       "mixed protocol enabled, field not used in old, used in new",
+			svc:        makeServiceWithPorts([]api.PortStatus{}),
+			oldSvc:     makeServiceWithPorts(nil),
+			compareSvc: makeServiceWithPorts([]api.PortStatus{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old and in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts([]api.PortStatus{}),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts([]api.PortStatus{}),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts(nil),
-		},
-		/* svc.spec.internalTrafficPolicy */
-		{
-			name:                        "internal traffic policy not enabled, field used in old, not used in new",
-			enableInternalTrafficPolicy: false,
-			svc:                         makeServiceWithInternalTrafficPolicy(nil),
-			oldSvc:                      makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
-			compareSvc:                  makeServiceWithInternalTrafficPolicy(nil),
-		},
-		{
-			name:                        "internal traffic policy not enabled, field not used in old, used in new",
-			enableInternalTrafficPolicy: false,
-			svc:                         makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
-			oldSvc:                      makeServiceWithInternalTrafficPolicy(nil),
-			compareSvc:                  makeServiceWithInternalTrafficPolicy(nil),
-		},
-		{
-			name:                        "internal traffic policy enabled, field not used in old, used in new",
-			enableInternalTrafficPolicy: true,
-			svc:                         makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
-			oldSvc:                      makeServiceWithInternalTrafficPolicy(nil),
-			compareSvc:                  makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
+			name:       "mixed protocol enabled, field used in old, not used in new",
+			svc:        makeServiceWithPorts(nil),
+			oldSvc:     makeServiceWithPorts([]api.PortStatus{}),
+			compareSvc: makeServiceWithPorts(nil),
 		},
 		/* add more tests for other dropped fields as needed */
 	}
 	for _, tc := range testCases {
 		func() {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MixedProtocolLBService, tc.enableMixedProtocol)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ServiceInternalTrafficPolicy, tc.enableInternalTrafficPolicy)()
 			old := tc.oldSvc.DeepCopy()
 
 			// to test against user using IPFamily not set on cluster
@@ -321,11 +238,11 @@ func TestDropDisabledField(t *testing.T) {
 
 			// old node should never be changed
 			if !reflect.DeepEqual(tc.oldSvc, old) {
-				t.Errorf("%v: old svc changed: %v", tc.name, diff.ObjectReflectDiff(tc.oldSvc, old))
+				t.Errorf("%v: old svc changed: %v", tc.name, cmp.Diff(tc.oldSvc, old))
 			}
 
 			if !reflect.DeepEqual(tc.svc, tc.compareSvc) {
-				t.Errorf("%v: unexpected svc spec: %v", tc.name, diff.ObjectReflectDiff(tc.svc, tc.compareSvc))
+				t.Errorf("%v: unexpected svc spec: %v", tc.name, cmp.Diff(tc.svc, tc.compareSvc))
 			}
 		}()
 	}
@@ -364,6 +281,18 @@ func TestDropTypeDependentFields(t *testing.T) {
 			svc.Spec.Ports[i].NodePort += 100
 		}
 	}
+	setExternalIPs := func(svc *api.Service) {
+		svc.Spec.ExternalIPs = []string{"1.1.1.1"}
+	}
+	clearExternalIPs := func(svc *api.Service) {
+		svc.Spec.ExternalIPs = nil
+	}
+	setExternalTrafficPolicyCluster := func(svc *api.Service) {
+		svc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyCluster
+	}
+	clearExternalTrafficPolicy := func(svc *api.Service) {
+		svc.Spec.ExternalTrafficPolicy = ""
+	}
 	clearIPFamilies := func(svc *api.Service) {
 		svc.Spec.IPFamilies = nil
 	}
@@ -388,7 +317,7 @@ func TestDropTypeDependentFields(t *testing.T) {
 		svc.Spec.Ports[0].Protocol = "UDP"
 	}
 	setHCNodePort := func(svc *api.Service) {
-		svc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyTypeLocal
+		svc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyLocal
 		svc.Spec.HealthCheckNodePort = int32(32000)
 	}
 	changeHCNodePort := func(svc *api.Service) {
@@ -402,22 +331,22 @@ func TestDropTypeDependentFields(t *testing.T) {
 		}
 	}
 	setAllocateLoadBalancerNodePortsTrue := func(svc *api.Service) {
-		svc.Spec.AllocateLoadBalancerNodePorts = utilpointer.BoolPtr(true)
+		svc.Spec.AllocateLoadBalancerNodePorts = ptr.To(true)
 	}
 	setAllocateLoadBalancerNodePortsFalse := func(svc *api.Service) {
-		svc.Spec.AllocateLoadBalancerNodePorts = utilpointer.BoolPtr(false)
+		svc.Spec.AllocateLoadBalancerNodePorts = ptr.To(false)
 	}
 	clearAllocateLoadBalancerNodePorts := func(svc *api.Service) {
 		svc.Spec.AllocateLoadBalancerNodePorts = nil
 	}
 	setLoadBalancerClass := func(svc *api.Service) {
-		svc.Spec.LoadBalancerClass = utilpointer.StringPtr("test-load-balancer-class")
+		svc.Spec.LoadBalancerClass = ptr.To("test-load-balancer-class")
 	}
 	clearLoadBalancerClass := func(svc *api.Service) {
 		svc.Spec.LoadBalancerClass = nil
 	}
 	changeLoadBalancerClass := func(svc *api.Service) {
-		svc.Spec.LoadBalancerClass = utilpointer.StringPtr("test-load-balancer-class-changed")
+		svc.Spec.LoadBalancerClass = ptr.To("test-load-balancer-class-changed")
 	}
 
 	testCases := []struct {
@@ -505,7 +434,7 @@ func TestDropTypeDependentFields(t *testing.T) {
 			name:   "don't clear changed healthCheckNodePort",
 			svc:    makeValidServiceCustom(setTypeLoadBalancer, setHCNodePort),
 			patch:  patches(setTypeClusterIP, changeHCNodePort),
-			expect: makeValidServiceCustom(setHCNodePort, changeHCNodePort),
+			expect: makeValidServiceCustom(setHCNodePort, changeHCNodePort, clearExternalTrafficPolicy),
 		}, { // allocatedLoadBalancerNodePorts cases
 			name:   "clear allocatedLoadBalancerNodePorts true -> true",
 			svc:    makeValidServiceCustom(setTypeLoadBalancer, setAllocateLoadBalancerNodePortsTrue),
@@ -576,6 +505,11 @@ func TestDropTypeDependentFields(t *testing.T) {
 			svc:    makeValidServiceCustom(setTypeLoadBalancer, setLoadBalancerClass),
 			patch:  nil,
 			expect: makeValidServiceCustom(setTypeLoadBalancer, setLoadBalancerClass),
+		}, {
+			name:   "clear externalTrafficPolicy when removing externalIPs for Type=ClusterIP",
+			svc:    makeValidServiceCustom(setTypeClusterIP, setExternalIPs, setExternalTrafficPolicyCluster),
+			patch:  patches(clearExternalIPs),
+			expect: makeValidServiceCustom(setTypeClusterIP, clearExternalTrafficPolicy),
 		}}
 
 	for _, tc := range testCases {
@@ -612,6 +546,215 @@ func TestDropTypeDependentFields(t *testing.T) {
 			}
 			if !reflect.DeepEqual(result.Spec.LoadBalancerClass, tc.expect.Spec.LoadBalancerClass) {
 				t.Errorf("failed %q: expected LoadBalancerClass %v, got %v", tc.name, tc.expect.Spec.LoadBalancerClass, result.Spec.LoadBalancerClass)
+			}
+			if !reflect.DeepEqual(result.Spec.ExternalTrafficPolicy, tc.expect.Spec.ExternalTrafficPolicy) {
+				t.Errorf("failed %q: expected ExternalTrafficPolicy %v, got %v", tc.name, tc.expect.Spec.ExternalTrafficPolicy, result.Spec.ExternalTrafficPolicy)
+			}
+		})
+	}
+}
+
+func TestMatchService(t *testing.T) {
+	noHeadlessServiceRequirement, err := labels.NewRequirement(v1.IsHeadlessService, selection.DoesNotExist, nil)
+	if err != nil {
+		t.Fatalf("Error creating no headless service requirement: %v", err)
+	}
+	noHeadlessServiceLabelSelector := labels.NewSelector().Add(*noHeadlessServiceRequirement)
+	testCases := []struct {
+		name          string
+		in            *api.Service
+		fieldSelector fields.Selector
+		labelSelector labels.Selector
+		expectMatch   bool
+	}{
+		{
+			name: "match on name",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=test"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "match on namespace",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.namespace=testns"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on name",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=nomatch"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name: "no match on namespace",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.namespace=nomatch"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name: "match on loadbalancer type service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{Type: api.ServiceTypeLoadBalancer},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.type=LoadBalancer"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on nodeport type service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{Type: api.ServiceTypeNodePort},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.type=LoadBalancer"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name: "match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=None"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on clusterIP service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=None"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name: "match on clusterIP service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=192.168.1.1"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "match on non-headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=None"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "match on any ClusterIP set service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=\"\""),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "match on clusterIP IPv6 service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "2001:db2::1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=2001:db2::1"),
+			labelSelector: labels.Everything(),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=192.168.1.1"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name: "no match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=2001:db2::1"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name:          "no match on empty service",
+			in:            &api.Service{},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=None"),
+			labelSelector: labels.Everything(),
+			expectMatch:   false,
+		},
+		{
+			name: "no match on headless service",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.IsHeadlessService: "",
+					},
+				},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=None"),
+			labelSelector: noHeadlessServiceLabelSelector,
+			expectMatch:   false,
+		},
+		{
+			name: "no match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=None"),
+			labelSelector: noHeadlessServiceLabelSelector,
+			expectMatch:   false,
+		},
+		{
+			name:          "match on empty service",
+			in:            &api.Service{},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=None"),
+			labelSelector: noHeadlessServiceLabelSelector,
+			expectMatch:   true,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			m := Matcher(testCase.labelSelector, testCase.fieldSelector)
+			result, err := m.Matches(testCase.in)
+			if err != nil {
+				t.Errorf("Unexpected error %v", err)
+			}
+			if result != testCase.expectMatch {
+				t.Errorf("Result %v, Expected %v, Selector: %v, Service: %v", result, testCase.expectMatch, testCase.fieldSelector.String(), testCase.in)
 			}
 		})
 	}

@@ -19,23 +19,26 @@ package csistoragecapacity
 import (
 	"context"
 
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	storageutil "k8s.io/kubernetes/pkg/api/storage"
 	"k8s.io/kubernetes/pkg/apis/storage"
 	"k8s.io/kubernetes/pkg/apis/storage/validation"
 )
 
 // csiStorageCapacityStrategy implements behavior for CSIStorageCapacity objects
 type csiStorageCapacityStrategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Strategy is the default logic that applies when creating and updating
 // CSIStorageCapacity objects via the REST API.
-var Strategy = csiStorageCapacityStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = csiStorageCapacityStrategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 func (csiStorageCapacityStrategy) NamespaceScoped() bool {
 	return true
@@ -47,23 +50,23 @@ func (csiStorageCapacityStrategy) PrepareForCreate(ctx context.Context, obj runt
 
 func (csiStorageCapacityStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	csiStorageCapacity := obj.(*storage.CSIStorageCapacity)
-
-	errs := validation.ValidateCSIStorageCapacity(csiStorageCapacity)
-	errs = append(errs, validation.ValidateCSIStorageCapacity(csiStorageCapacity)...)
-
+	opts := validation.CSIStorageCapacityValidateOptions{
+		AllowInvalidLabelValueInSelector: false,
+	}
+	errs := validation.ValidateCSIStorageCapacity(csiStorageCapacity, opts)
 	return errs
 }
 
 // WarningsOnCreate returns warnings for the creation of the given object.
 func (csiStorageCapacityStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
-	return nil
+	return storageutil.GetWarningsForCSIStorageCapacity(obj.(*storage.CSIStorageCapacity))
 }
 
 // Canonicalize normalizes the object after validation.
 func (csiStorageCapacityStrategy) Canonicalize(obj runtime.Object) {
 }
 
-func (csiStorageCapacityStrategy) AllowCreateOnUpdate() bool {
+func (csiStorageCapacityStrategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return false
 }
 
@@ -74,15 +77,23 @@ func (csiStorageCapacityStrategy) PrepareForUpdate(ctx context.Context, obj, old
 func (csiStorageCapacityStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	newCSIStorageCapacityObj := obj.(*storage.CSIStorageCapacity)
 	oldCSIStorageCapacityObj := old.(*storage.CSIStorageCapacity)
-	errorList := validation.ValidateCSIStorageCapacity(newCSIStorageCapacityObj)
+	opts := validation.CSIStorageCapacityValidateOptions{
+		AllowInvalidLabelValueInSelector: hasInvalidLabelValueInLabelSelector(oldCSIStorageCapacityObj),
+	}
+	errorList := validation.ValidateCSIStorageCapacity(newCSIStorageCapacityObj, opts)
 	return append(errorList, validation.ValidateCSIStorageCapacityUpdate(newCSIStorageCapacityObj, oldCSIStorageCapacityObj)...)
 }
 
 // WarningsOnUpdate returns warnings for the given update.
 func (csiStorageCapacityStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
-	return nil
+	return storageutil.GetWarningsForCSIStorageCapacity(obj.(*storage.CSIStorageCapacity))
 }
 
-func (csiStorageCapacityStrategy) AllowUnconditionalUpdate() bool {
+func (csiStorageCapacityStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return false
+}
+
+func hasInvalidLabelValueInLabelSelector(capacity *storage.CSIStorageCapacity) bool {
+	labelSelectorValidationOptions := metav1validation.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: false}
+	return len(metav1validation.ValidateLabelSelector(capacity.NodeTopology, labelSelectorValidationOptions, nil)) > 0
 }

@@ -18,22 +18,27 @@ package plugins
 
 import (
 	"k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultpreemption"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/deferredpodscheduling"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/dynamicresources"
 	plfeature "k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/gangscheduling"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/imagelocality"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/interpodaffinity"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeaffinity"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodedeclaredfeatures"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodename"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeports"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/noderesources"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeunschedulable"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podgrouppodscount"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podtopologyspread"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/selectorspread"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/schedulinggates"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/tainttoleration"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/topologyaware"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumebinding"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumerestrictions"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumezone"
@@ -44,35 +49,33 @@ import (
 // A scheduler that runs out of tree plugins can register additional plugins
 // through the WithFrameworkOutOfTreeRegistry option.
 func NewInTreeRegistry() runtime.Registry {
-	fts := plfeature.Features{
-		EnableReadWriteOncePod:                       feature.DefaultFeatureGate.Enabled(features.ReadWriteOncePod),
-		EnableVolumeCapacityPriority:                 feature.DefaultFeatureGate.Enabled(features.VolumeCapacityPriority),
-		EnableMinDomainsInPodTopologySpread:          feature.DefaultFeatureGate.Enabled(features.MinDomainsInPodTopologySpread),
-		EnableNodeInclusionPolicyInPodTopologySpread: feature.DefaultFeatureGate.Enabled(features.NodeInclusionPolicyInPodTopologySpread),
-	}
-
-	return runtime.Registry{
-		selectorspread.Name:                  selectorspread.New,
+	fts := plfeature.NewSchedulerFeaturesFromGates(feature.DefaultFeatureGate)
+	registry := runtime.Registry{
+		dynamicresources.Name:                runtime.FactoryAdapter(fts, dynamicresources.New),
 		imagelocality.Name:                   imagelocality.New,
-		tainttoleration.Name:                 tainttoleration.New,
-		nodename.Name:                        nodename.New,
-		nodeports.Name:                       nodeports.New,
-		nodeaffinity.Name:                    nodeaffinity.New,
+		tainttoleration.Name:                 runtime.FactoryAdapter(fts, tainttoleration.New),
+		nodename.Name:                        runtime.FactoryAdapter(fts, nodename.New),
+		nodeports.Name:                       runtime.FactoryAdapter(fts, nodeports.New),
+		nodeaffinity.Name:                    runtime.FactoryAdapter(fts, nodeaffinity.New),
+		nodedeclaredfeatures.Name:            runtime.FactoryAdapter(fts, nodedeclaredfeatures.New),
 		podtopologyspread.Name:               runtime.FactoryAdapter(fts, podtopologyspread.New),
-		nodeunschedulable.Name:               nodeunschedulable.New,
+		deferredpodscheduling.Name:           runtime.FactoryAdapter(fts, deferredpodscheduling.New),
+		nodeunschedulable.Name:               runtime.FactoryAdapter(fts, nodeunschedulable.New),
 		noderesources.Name:                   runtime.FactoryAdapter(fts, noderesources.NewFit),
 		noderesources.BalancedAllocationName: runtime.FactoryAdapter(fts, noderesources.NewBalancedAllocation),
 		volumebinding.Name:                   runtime.FactoryAdapter(fts, volumebinding.New),
 		volumerestrictions.Name:              runtime.FactoryAdapter(fts, volumerestrictions.New),
-		volumezone.Name:                      volumezone.New,
+		volumezone.Name:                      runtime.FactoryAdapter(fts, volumezone.New),
 		nodevolumelimits.CSIName:             runtime.FactoryAdapter(fts, nodevolumelimits.NewCSI),
-		nodevolumelimits.EBSName:             runtime.FactoryAdapter(fts, nodevolumelimits.NewEBS),
-		nodevolumelimits.GCEPDName:           runtime.FactoryAdapter(fts, nodevolumelimits.NewGCEPD),
-		nodevolumelimits.AzureDiskName:       runtime.FactoryAdapter(fts, nodevolumelimits.NewAzureDisk),
-		nodevolumelimits.CinderName:          runtime.FactoryAdapter(fts, nodevolumelimits.NewCinder),
-		interpodaffinity.Name:                interpodaffinity.New,
+		interpodaffinity.Name:                runtime.FactoryAdapter(fts, interpodaffinity.New),
 		queuesort.Name:                       queuesort.New,
 		defaultbinder.Name:                   defaultbinder.New,
 		defaultpreemption.Name:               runtime.FactoryAdapter(fts, defaultpreemption.New),
+		schedulinggates.Name:                 runtime.FactoryAdapter(fts, schedulinggates.New),
+		gangscheduling.Name:                  runtime.FactoryAdapter(fts, gangscheduling.New),
+		topologyaware.Name:                   runtime.FactoryAdapter(fts, topologyaware.New),
+		podgrouppodscount.Name:               runtime.FactoryAdapter(fts, podgrouppodscount.New),
 	}
+
+	return registry
 }

@@ -17,7 +17,6 @@ limitations under the License.
 package util
 
 import (
-	"crypto/md5"
 	"errors"
 	"fmt"
 	"path"
@@ -26,7 +25,6 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ParseRFC3339 parses an RFC3339 date in either RFC3339Nano or RFC3339 format.
@@ -41,21 +39,12 @@ func ParseRFC3339(s string, nowFn func() metav1.Time) (metav1.Time, error) {
 	return metav1.Time{Time: t}, nil
 }
 
-// HashObject returns the hash of a Object hash by a Codec
-func HashObject(obj runtime.Object, codec runtime.Codec) (string, error) {
-	data, err := runtime.Encode(codec, obj)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", md5.Sum(data)), nil
-}
-
 // ParseFileSource parses the source given.
 //
-//  Acceptable formats include:
-//   1.  source-path: the basename will become the key name
-//   2.  source-name=source-path: the source-name will become the key name and
-//       source-path is the path to the key file.
+//	Acceptable formats include:
+//	 1.  source-path: the basename will become the key name
+//	 2.  source-name=source-path: the source-name will become the key name and
+//	     source-path is the path to the key file.
 //
 // Key names cannot include '='.
 func ParseFileSource(source string) (keyName, filePath string, err error) {

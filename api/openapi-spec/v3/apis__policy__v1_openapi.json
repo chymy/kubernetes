@@ -19,7 +19,7 @@
               }
             ],
             "default": {},
-            "description": "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
+            "description": "metadata is the standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           },
           "spec": {
             "allOf": [
@@ -28,7 +28,7 @@
               }
             ],
             "default": {},
-            "description": "Specification of the desired behavior of the PodDisruptionBudget."
+            "description": "spec is the specification of the desired behavior of the PodDisruptionBudget."
           },
           "status": {
             "allOf": [
@@ -37,7 +37,7 @@
               }
             ],
             "default": {},
-            "description": "Most recently observed status of the PodDisruptionBudget."
+            "description": "status is the most recently observed status of the PodDisruptionBudget."
           }
         },
         "type": "object",
@@ -59,12 +59,7 @@
           "items": {
             "description": "Items is a list of PodDisruptionBudgets",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
             },
             "type": "array"
           },
@@ -103,7 +98,7 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.util.intstr.IntOrString"
               }
             ],
-            "description": "An eviction is allowed if at most \"maxUnavailable\" pods selected by \"selector\" are unavailable after the eviction, i.e. even in absence of the evicted pod. For example, one can prevent all voluntary evictions by specifying 0. This is a mutually exclusive setting with \"minAvailable\"."
+            "description": "maxUnavailable indicates that an eviction is allowed if at most \"maxUnavailable\" pods selected by \"selector\" are unavailable after the eviction, i.e. even in absence of the evicted pod. For example, one can prevent all voluntary evictions by specifying 0. This is a mutually exclusive setting with \"minAvailable\"."
           },
           "minAvailable": {
             "allOf": [
@@ -111,7 +106,7 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.util.intstr.IntOrString"
               }
             ],
-            "description": "An eviction is allowed if at least \"minAvailable\" pods selected by \"selector\" will still be available after the eviction, i.e. even in the absence of the evicted pod.  So for example you can prevent all voluntary evictions by specifying \"100%\"."
+            "description": "minAvailable indicates that an eviction is allowed if at least \"minAvailable\" pods selected by \"selector\" will still be available after the eviction, i.e. even in the absence of the evicted pod.  So for example you can prevent all voluntary evictions by specifying \"100%\"."
           },
           "selector": {
             "allOf": [
@@ -119,8 +114,12 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
               }
             ],
-            "description": "Label query over pods whose evictions are managed by the disruption budget. A null selector will match no pods, while an empty ({}) selector will select all pods within the namespace.",
+            "description": "selector is a label query over pods whose evictions are managed by the disruption budget. A null selector will match no pods, while an empty ({}) selector will select all pods within the namespace.",
             "x-kubernetes-patch-strategy": "replace"
+          },
+          "unhealthyPodEvictionPolicy": {
+            "description": "unhealthyPodEvictionPolicy defines the criteria for when unhealthy pods should be considered for eviction. Current implementation considers healthy pods, as pods that have status.conditions item with type=\"Ready\",status=\"True\".\n\nValid policies are IfHealthyBudget and AlwaysAllow. If no policy is specified, the default behavior will be used, which corresponds to the IfHealthyBudget policy.\n\nIfHealthyBudget policy means that running pods (status.phase=\"Running\"), but not yet healthy can be evicted only if the guarded application is not disrupted (status.currentHealthy is at least equal to status.desiredHealthy). Healthy pods will be subject to the PDB for eviction.\n\nAlwaysAllow policy means that all running pods (status.phase=\"Running\"), but not yet healthy are considered disrupted and can be evicted regardless of whether the criteria in a PDB is met. This means perspective running pods of a disrupted application might not get a chance to become healthy. Healthy pods will be subject to the PDB for eviction.\n\nAdditional policies may be added in the future. Clients making eviction decisions should disallow eviction of unhealthy pods if they encounter an unrecognized policy in this field.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -131,12 +130,7 @@
           "conditions": {
             "description": "Conditions contain conditions for PDB. The disruption controller sets the DisruptionAllowed condition. The following are known values for the reason field (additional reasons could be added in the future): - SyncFailed: The controller encountered an error and wasn't able to compute\n              the number of allowed disruptions. Therefore no disruptions are\n              allowed and the status of the condition will be False.\n- InsufficientPods: The number of pods are either at or below the number\n                    required by the PodDisruptionBudget. No disruptions are\n                    allowed and the status of the condition will be False.\n- SufficientPods: There are more pods than required by the PodDisruptionBudget.\n                  The condition will be True, and the number of allowed\n                  disruptions are provided by the disruptionsAllowed property.",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
             },
             "type": "array",
             "x-kubernetes-list-map-keys": [
@@ -160,12 +154,7 @@
           },
           "disruptedPods": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
             },
             "description": "DisruptedPods contains information about pods whose eviction was processed by the API server eviction subresource handler but has not yet been observed by the PodDisruptionBudget controller. A pod will be in this map from the time when the API server processed the eviction request to the time when the pod is seen by PDB controller as having been marked for deletion (or after a timeout). The key in the map is the name of the pod and the value is the time when the API server processed the eviction request. If the deletion didn't occur and a pod is still there it will be removed from the list automatically by PodDisruptionBudget controller after some time. If everything goes smooth this map should be empty for the most of the time. Large number of entries in the map may indicate problems with pod deletions.",
             "type": "object"
@@ -188,12 +177,6 @@
             "type": "integer"
           }
         },
-        "required": [
-          "disruptionsAllowed",
-          "currentHealthy",
-          "desiredHealthy",
-          "expectedPods"
-        ],
         "type": "object"
       },
       "io.k8s.apimachinery.pkg.apis.meta.v1.APIResource": {
@@ -202,10 +185,10 @@
           "categories": {
             "description": "categories is a list of the grouped resources this resource belongs to (e.g. 'all')",
             "items": {
-              "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "group": {
             "description": "group is the preferred group of the resource.  Empty implies the group of the containing resource list. For subresources, this may have a different value, for example: Scale\".",
@@ -229,10 +212,10 @@
           "shortNames": {
             "description": "shortNames is a list of suggested short names of the resource.",
             "items": {
-              "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "singularName": {
             "default": "",
@@ -246,7 +229,6 @@
           "verbs": {
             "description": "verbs is a list of supported kube verbs (this includes get, list, watch, create, update, patch, delete, deletecollection, and proxy)",
             "items": {
-              "default": "",
               "type": "string"
             },
             "type": "array"
@@ -284,14 +266,10 @@
           "resources": {
             "description": "resources contains the name of the resources and if they are namespaced.",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.APIResource"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.APIResource"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           }
         },
         "required": [
@@ -316,7 +294,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable."
           },
           "message": {
@@ -364,15 +341,19 @@
           "dryRun": {
             "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
             "items": {
-              "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "gracePeriodSeconds": {
             "description": "The duration in seconds before the object should be deleted. Value must be non-negative integer. The value zero indicates delete immediately. If this value is nil, the default grace period for the specified type will be used. Defaults to a per object value if not specified. zero means delete immediately.",
             "format": "int64",
             "type": "integer"
+          },
+          "ignoreStoreReadErrorWithClusterBreakingPotential": {
+            "description": "if set to true, it will trigger an unsafe deletion of the resource in case the normal deletion flow fails with a corrupt object error. A resource is considered corrupt if it can not be retrieved from the underlying storage successfully because of a) its data can not be transformed e.g. decryption failure, or b) it fails to decode into an object. NOTE: unsafe deletion ignores finalizer constraints, skips precondition checks, and removes the object from the storage. WARNING: This may potentially break the cluster if the workload associated with the resource being unsafe-deleted relies on normal deletion flow. Use only if you REALLY know what you are doing. The default value is false, and the user must opt in to enable it",
+            "type": "boolean"
           },
           "kind": {
             "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
@@ -403,259 +384,9 @@
             "version": "v1"
           },
           {
-            "group": "admission.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "admission.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "admissionregistration.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "admissionregistration.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apiextensions.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "apiextensions.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apiregistration.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "apiregistration.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apps",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "apps",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apps",
-            "kind": "DeleteOptions",
-            "version": "v1beta2"
-          },
-          {
-            "group": "authentication.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "authentication.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "authorization.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "authorization.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "DeleteOptions",
-            "version": "v2"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "DeleteOptions",
-            "version": "v2beta1"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "DeleteOptions",
-            "version": "v2beta2"
-          },
-          {
-            "group": "batch",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "batch",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "certificates.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "certificates.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "coordination.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "coordination.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "discovery.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "discovery.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "events.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "events.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "extensions",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "flowcontrol.apiserver.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "flowcontrol.apiserver.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "flowcontrol.apiserver.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta2"
-          },
-          {
-            "group": "imagepolicy.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "internal.apiserver.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "networking.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "networking.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "node.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "node.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "node.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
             "group": "policy",
             "kind": "DeleteOptions",
             "version": "v1"
-          },
-          {
-            "group": "policy",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "rbac.authorization.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "rbac.authorization.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "rbac.authorization.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "scheduling.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "scheduling.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "scheduling.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
-          },
-          {
-            "group": "storage.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1"
-          },
-          {
-            "group": "storage.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "storage.k8s.io",
-            "kind": "DeleteOptions",
-            "version": "v1beta1"
           }
         ]
       },
@@ -669,18 +400,13 @@
           "matchExpressions": {
             "description": "matchExpressions is a list of label selector requirements. The requirements are ANDed.",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "matchLabels": {
             "additionalProperties": {
-              "default": "",
               "type": "string"
             },
             "description": "matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is \"key\", the operator is \"In\", and the values array contains only \"value\". The requirements are ANDed.",
@@ -696,9 +422,7 @@
           "key": {
             "default": "",
             "description": "key is the label key that the selector applies to.",
-            "type": "string",
-            "x-kubernetes-patch-merge-key": "key",
-            "x-kubernetes-patch-strategy": "merge"
+            "type": "string"
           },
           "operator": {
             "default": "",
@@ -708,10 +432,10 @@
           "values": {
             "description": "values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.",
             "items": {
-              "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           }
         },
         "required": [
@@ -739,6 +463,14 @@
           "selfLink": {
             "description": "Deprecated: selfLink is a legacy read-only field that is no longer populated by the system.",
             "type": "string"
+          },
+          "shardInfo": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ShardInfo"
+              }
+            ],
+            "description": "shardInfo is set when the list is a filtered subset of the full collection, as selected by a shard selector on the request. It echoes back the selector so clients can verify which shard they received and merge sharded responses. Clients should not cache sharded list responses as a full representation of the collection.\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate."
           }
         },
         "type": "object"
@@ -790,10 +522,9 @@
         "properties": {
           "annotations": {
             "additionalProperties": {
-              "default": "",
               "type": "string"
             },
-            "description": "Annotations is an unstructured key value map stored with a resource that may be set by external tools to store and retrieve arbitrary metadata. They are not queryable and should be preserved when modifying objects. More info: http://kubernetes.io/docs/user-guide/annotations",
+            "description": "Annotations is an unstructured key value map stored with a resource that may be set by external tools to store and retrieve arbitrary metadata. They are not queryable and should be preserved when modifying objects. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations",
             "type": "object"
           },
           "creationTimestamp": {
@@ -802,7 +533,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC.\n\nPopulated by the system. Read-only. Null for lists. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           },
           "deletionGracePeriodSeconds": {
@@ -821,10 +551,10 @@
           "finalizers": {
             "description": "Must be empty before the object is deleted from the registry. Each entry is an identifier for the responsible component that will remove the entry from the list. If the deletionTimestamp of the object is non-nil, entries in this list can only be removed. Finalizers may be processed and removed in any order.  Order is NOT enforced because it introduces significant risk of stuck finalizers. finalizers is a shared field, any actor with permission can reorder it. If the finalizer list is processed in order, then this can lead to a situation in which the component responsible for the first finalizer in the list is waiting for a signal (field value, external system, or other) produced by a component responsible for a finalizer later in the list, resulting in a deadlock. Without enforced ordering finalizers are free to order amongst themselves and are not vulnerable to ordering changes in the list.",
             "items": {
-              "default": "",
               "type": "string"
             },
             "type": "array",
+            "x-kubernetes-list-type": "set",
             "x-kubernetes-patch-strategy": "merge"
           },
           "generateName": {
@@ -838,43 +568,37 @@
           },
           "labels": {
             "additionalProperties": {
-              "default": "",
               "type": "string"
             },
-            "description": "Map of string keys and values that can be used to organize and categorize (scope and select) objects. May match selectors of replication controllers and services. More info: http://kubernetes.io/docs/user-guide/labels",
+            "description": "Map of string keys and values that can be used to organize and categorize (scope and select) objects. May match selectors of replication controllers and services. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels",
             "type": "object"
           },
           "managedFields": {
             "description": "ManagedFields maps workflow-id and version to the set of fields that are managed by that workflow. This is mostly for internal housekeeping, and users typically shouldn't need to set or understand this field. A workflow can be the user's name, a controller's name, or the name of a specific apply path like \"ci-cd\". The set of fields is always in the version that the workflow used when modifying the object.",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "name": {
-            "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+            "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
             "type": "string"
           },
           "namespace": {
-            "description": "Namespace defines the space within which each name must be unique. An empty namespace is equivalent to the \"default\" namespace, but \"default\" is the canonical representation. Not all objects are required to be scoped to a namespace - the value of this field for those objects will be empty.\n\nMust be a DNS_LABEL. Cannot be updated. More info: http://kubernetes.io/docs/user-guide/namespaces",
+            "description": "Namespace defines the space within which each name must be unique. An empty namespace is equivalent to the \"default\" namespace, but \"default\" is the canonical representation. Not all objects are required to be scoped to a namespace - the value of this field for those objects will be empty.\n\nMust be a DNS_LABEL. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces",
             "type": "string"
           },
           "ownerReferences": {
             "description": "List of objects depended by this object. If ALL objects in the list have been deleted, this object will be garbage collected. If this object is managed by a controller, then an entry in this list will point to this controller, with the controller field set to true. There cannot be more than one managing controller.",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference"
             },
             "type": "array",
+            "x-kubernetes-list-map-keys": [
+              "uid"
+            ],
+            "x-kubernetes-list-type": "map",
             "x-kubernetes-patch-merge-key": "uid",
             "x-kubernetes-patch-strategy": "merge"
           },
@@ -887,7 +611,7 @@
             "type": "string"
           },
           "uid": {
-            "description": "UID is the unique in time and space value for this object. It is typically generated by the server on successful creation of a resource and is not allowed to change on PUT operations.\n\nPopulated by the system. Read-only. More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+            "description": "UID is the unique in time and space value for this object. It is typically generated by the server on successful creation of a resource and is not allowed to change on PUT operations.\n\nPopulated by the system. Read-only. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
             "type": "string"
           }
         },
@@ -916,12 +640,12 @@
           },
           "name": {
             "default": "",
-            "description": "Name of the referent. More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+            "description": "Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
             "type": "string"
           },
           "uid": {
             "default": "",
-            "description": "UID of the referent. More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+            "description": "UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
             "type": "string"
           }
         },
@@ -950,6 +674,20 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "io.k8s.apimachinery.pkg.apis.meta.v1.ShardInfo": {
+        "description": "ShardInfo describes the shard selector that was applied to produce a list response. Its presence on a list response indicates the list is a filtered subset.",
+        "properties": {
+          "selector": {
+            "default": "",
+            "description": "selector is the shard selector string from the request, echoed back so clients can verify which shard they received and merge responses from multiple shards.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
         "type": "object"
       },
       "io.k8s.apimachinery.pkg.apis.meta.v1.Status": {
@@ -1031,14 +769,10 @@
           "causes": {
             "description": "The Causes array includes more details associated with the StatusReason failure. Not all StatusReasons may provide detailed causes.",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.StatusCause"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.StatusCause"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "group": {
             "description": "The group attribute of the resource associated with the status StatusReason.",
@@ -1058,7 +792,7 @@
             "type": "integer"
           },
           "uid": {
-            "description": "UID of the resource. (when there is a single resource which can be described). More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+            "description": "UID of the resource. (when there is a single resource which can be described). More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
             "type": "string"
           }
         },
@@ -1078,7 +812,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.runtime.RawExtension"
               }
             ],
-            "default": {},
             "description": "Object is:\n * If Type is Added or Modified: the new state of the object.\n * If Type is Deleted: the state of the object immediately before deletion.\n * If Type is Error: *Status is recommended; other types may make sense\n   depending on context."
           },
           "type": {
@@ -1098,264 +831,14 @@
             "version": "v1"
           },
           {
-            "group": "admission.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "admission.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "admissionregistration.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "admissionregistration.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apiextensions.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "apiextensions.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apiregistration.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "apiregistration.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apps",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "apps",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "apps",
-            "kind": "WatchEvent",
-            "version": "v1beta2"
-          },
-          {
-            "group": "authentication.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "authentication.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "authorization.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "authorization.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "WatchEvent",
-            "version": "v2"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "WatchEvent",
-            "version": "v2beta1"
-          },
-          {
-            "group": "autoscaling",
-            "kind": "WatchEvent",
-            "version": "v2beta2"
-          },
-          {
-            "group": "batch",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "batch",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "certificates.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "certificates.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "coordination.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "coordination.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "discovery.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "discovery.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "events.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "events.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "extensions",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "flowcontrol.apiserver.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "flowcontrol.apiserver.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "flowcontrol.apiserver.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta2"
-          },
-          {
-            "group": "imagepolicy.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "internal.apiserver.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "networking.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "networking.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "node.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "node.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "node.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
             "group": "policy",
             "kind": "WatchEvent",
             "version": "v1"
-          },
-          {
-            "group": "policy",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "rbac.authorization.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "rbac.authorization.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "rbac.authorization.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "scheduling.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "scheduling.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "scheduling.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
-          },
-          {
-            "group": "storage.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1"
-          },
-          {
-            "group": "storage.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1alpha1"
-          },
-          {
-            "group": "storage.k8s.io",
-            "kind": "WatchEvent",
-            "version": "v1beta1"
           }
         ]
       },
       "io.k8s.apimachinery.pkg.runtime.RawExtension": {
-        "description": "RawExtension is used to hold extensions in external versions.\n\nTo use this, make a field which has RawExtension as its type in your external, versioned struct, and Object in your internal struct. You also need to register your various plugin types.\n\n// Internal package: type MyAPIObject struct {\n\truntime.TypeMeta `json:\",inline\"`\n\tMyPlugin runtime.Object `json:\"myPlugin\"`\n} type PluginA struct {\n\tAOption string `json:\"aOption\"`\n}\n\n// External package: type MyAPIObject struct {\n\truntime.TypeMeta `json:\",inline\"`\n\tMyPlugin runtime.RawExtension `json:\"myPlugin\"`\n} type PluginA struct {\n\tAOption string `json:\"aOption\"`\n}\n\n// On the wire, the JSON will look something like this: {\n\t\"kind\":\"MyAPIObject\",\n\t\"apiVersion\":\"v1\",\n\t\"myPlugin\": {\n\t\t\"kind\":\"PluginA\",\n\t\t\"aOption\":\"foo\",\n\t},\n}\n\nSo what happens? Decode first uses json or yaml to unmarshal the serialized data into your external MyAPIObject. That causes the raw JSON to be stored, but not unpacked. The next step is to copy (using pkg/conversion) into the internal struct. The runtime package's DefaultScheme has conversion functions installed which will unpack the JSON stored in RawExtension, turning it into the correct object type, and storing it in the Object. (TODO: In the case where the object is of an unknown type, a runtime.Unknown object will be created and stored.)",
+        "description": "RawExtension is used to hold extensions in external versions.\n\nTo use this, make a field which has RawExtension as its type in your external, versioned struct, and Object in your internal struct. You also need to register your various plugin types.\n\n// Internal package:\n\n\ttype MyAPIObject struct {\n\t\truntime.TypeMeta `json:\"\"`\n\t\tMyPlugin runtime.Object `json:\"myPlugin\"`\n\t}\n\n\ttype PluginA struct {\n\t\tAOption string `json:\"aOption\"`\n\t}\n\n// External package:\n\n\ttype MyAPIObject struct {\n\t\truntime.TypeMeta `json:\"\"`\n\t\tMyPlugin runtime.RawExtension `json:\"myPlugin\"`\n\t}\n\n\ttype PluginA struct {\n\t\tAOption string `json:\"aOption\"`\n\t}\n\n// On the wire, the JSON will look something like this:\n\n\t{\n\t\t\"kind\":\"MyAPIObject\",\n\t\t\"apiVersion\":\"v1\",\n\t\t\"myPlugin\": {\n\t\t\t\"kind\":\"PluginA\",\n\t\t\t\"aOption\":\"foo\",\n\t\t},\n\t}\n\nSo what happens? Decode first uses json or yaml to unmarshal the serialized data into your external MyAPIObject. That causes the raw JSON to be stored, but not unpacked. The next step is to copy (using pkg/conversion) into the internal struct. The runtime package's DefaultScheme has conversion functions installed which will unpack the JSON stored in RawExtension, turning it into the correct object type, and storing it in the Object. (TODO: In the case where the object is of an unknown type, a runtime.Unknown object will be created and stored.)",
         "type": "object"
       },
       "io.k8s.apimachinery.pkg.util.intstr.IntOrString": {
@@ -1393,6 +876,11 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.APIResourceList"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.APIResourceList"
@@ -1462,6 +950,15 @@
             }
           },
           {
+            "description": "if set to true, it will trigger an unsafe deletion of the resource in case the normal deletion flow fails with a corrupt object error. A resource is considered corrupt if it can not be retrieved from the underlying storage successfully because of a) its data can not be transformed e.g. decryption failure, or b) it fails to decode into an object. NOTE: unsafe deletion ignores finalizer constraints, skips precondition checks, and removes the object from the storage. WARNING: This may potentially break the cluster if the workload associated with the resource being unsafe-deleted relies on normal deletion flow. Use only if you REALLY know what you are doing. The default value is false, and the user must opt in to enable it",
+            "in": "query",
+            "name": "ignoreStoreReadErrorWithClusterBreakingPotential",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
             "in": "query",
             "name": "labelSelector",
@@ -1516,6 +1013,24 @@
             }
           },
           {
+            "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+            "in": "query",
+            "name": "sendInitialEvents",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+            "in": "query",
+            "name": "shardSelector",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
             "in": "query",
             "name": "timeoutSeconds",
@@ -1537,6 +1052,11 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
@@ -1637,6 +1157,24 @@
             }
           },
           {
+            "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+            "in": "query",
+            "name": "sendInitialEvents",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+            "in": "query",
+            "name": "shardSelector",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
             "in": "query",
             "name": "timeoutSeconds",
@@ -1658,6 +1196,16 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudgetList"
+                }
+              },
+              "application/cbor-seq": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudgetList"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudgetList"
@@ -1712,7 +1260,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -1744,7 +1292,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -1760,11 +1308,17 @@
                 "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -1785,6 +1339,11 @@
           },
           "201": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -1805,6 +1364,11 @@
           },
           "202": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -1862,6 +1426,15 @@
             }
           },
           {
+            "description": "if set to true, it will trigger an unsafe deletion of the resource in case the normal deletion flow fails with a corrupt object error. A resource is considered corrupt if it can not be retrieved from the underlying storage successfully because of a) its data can not be transformed e.g. decryption failure, or b) it fails to decode into an object. NOTE: unsafe deletion ignores finalizer constraints, skips precondition checks, and removes the object from the storage. WARNING: This may potentially break the cluster if the workload associated with the resource being unsafe-deleted relies on normal deletion flow. Use only if you REALLY know what you are doing. The default value is false, and the user must opt in to enable it",
+            "in": "query",
+            "name": "ignoreStoreReadErrorWithClusterBreakingPotential",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "Deprecated: please use the PropagationPolicy, this field will be deprecated in 1.7. Should the dependent objects be orphaned. If true/false, the \"orphan\" finalizer will be added to/removed from the object's finalizers list. Either this field or PropagationPolicy may be set, but not both.",
             "in": "query",
             "name": "orphanDependents",
@@ -1892,6 +1465,11 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
@@ -1912,6 +1490,11 @@
           },
           "202": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
@@ -1950,6 +1533,11 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2004,7 +1592,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2036,7 +1624,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2056,6 +1644,11 @@
         ],
         "requestBody": {
           "content": {
+            "application/apply-patch+cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
             "application/apply-patch+yaml": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
@@ -2076,11 +1669,17 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2101,6 +1700,11 @@
           },
           "201": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2156,7 +1760,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2172,11 +1776,17 @@
                 "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2197,6 +1807,11 @@
           },
           "201": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2237,6 +1852,11 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2291,7 +1911,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2323,7 +1943,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2343,6 +1963,11 @@
         ],
         "requestBody": {
           "content": {
+            "application/apply-patch+cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
             "application/apply-patch+yaml": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
@@ -2363,11 +1988,17 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2388,6 +2019,11 @@
           },
           "201": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2443,7 +2079,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2459,11 +2095,17 @@
                 "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2484,6 +2126,11 @@
           },
           "201": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudget"
@@ -2524,6 +2171,16 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudgetList"
+                }
+              },
+              "application/cbor-seq": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudgetList"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.api.policy.v1.PodDisruptionBudgetList"
@@ -2613,7 +2270,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2634,6 +2291,24 @@
           "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
           "in": "query",
           "name": "resourceVersionMatch",
+          "schema": {
+            "type": "string",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+          "in": "query",
+          "name": "sendInitialEvents",
+          "schema": {
+            "type": "boolean",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+          "in": "query",
+          "name": "shardSelector",
           "schema": {
             "type": "string",
             "uniqueItems": true
@@ -2666,6 +2341,16 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+                }
+              },
+              "application/cbor-seq": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
@@ -2765,7 +2450,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2786,6 +2471,24 @@
           "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
           "in": "query",
           "name": "resourceVersionMatch",
+          "schema": {
+            "type": "string",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+          "in": "query",
+          "name": "sendInitialEvents",
+          "schema": {
+            "type": "boolean",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+          "in": "query",
+          "name": "shardSelector",
           "schema": {
             "type": "string",
             "uniqueItems": true
@@ -2818,6 +2521,16 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+                }
+              },
+              "application/cbor-seq": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
@@ -2927,7 +2640,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2948,6 +2661,24 @@
           "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
           "in": "query",
           "name": "resourceVersionMatch",
+          "schema": {
+            "type": "string",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+          "in": "query",
+          "name": "sendInitialEvents",
+          "schema": {
+            "type": "boolean",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+          "in": "query",
+          "name": "shardSelector",
           "schema": {
             "type": "string",
             "uniqueItems": true
@@ -2980,6 +2711,16 @@
         "responses": {
           "200": {
             "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+                }
+              },
+              "application/cbor-seq": {
+                "schema": {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+                }
+              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
@@ -3069,7 +2810,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -3090,6 +2831,24 @@
           "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
           "in": "query",
           "name": "resourceVersionMatch",
+          "schema": {
+            "type": "string",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+          "in": "query",
+          "name": "sendInitialEvents",
+          "schema": {
+            "type": "boolean",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+          "in": "query",
+          "name": "shardSelector",
           "schema": {
             "type": "string",
             "uniqueItems": true

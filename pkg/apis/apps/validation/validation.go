@@ -17,6 +17,7 @@ limitations under the License.
 package validation
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -28,25 +29,36 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/apis/apps"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	apivalidation "k8s.io/kubernetes/pkg/apis/core/validation"
-	"k8s.io/kubernetes/pkg/features"
 )
+
+// StatefulSetValidationOptions is a struct that can be passed to ValidateStatefulSetSpec to record the validate options
+type StatefulSetValidationOptions struct {
+	// Allow invalid DNS1123 ServiceName
+	AllowInvalidServiceName bool
+	// Skip validating pod template spec, which is used for StatefulSet update
+	SkipValidatePodTemplateSpec bool
+	// Skip validating volume claim templates, which is used for StatefulSet update
+	SkipValidateVolumeClaimTemplates bool
+	// Allow setting Recreate strategy to StatefulSet update strategy
+	AllowStatefulSetRecreateStrategy bool
+}
 
 // ValidateStatefulSetName can be used to check whether the given StatefulSet name is valid.
 // Prefix indicates this name will be used as part of generation, in which case
 // trailing dashes are allowed.
 func ValidateStatefulSetName(name string, prefix bool) []string {
-	// TODO: Validate that there's name for the suffix inserted by the pods.
+	// TODO: Validate that there's room for the suffix inserted by the pods.
 	// Currently this is just "-index". In the future we may allow a user
 	// specified list of suffixes and we need  to validate the longest one.
-	return apimachineryvalidation.NameIsDNSSubdomain(name, prefix)
+	return apimachineryvalidation.NameIsDNSLabel(name, prefix)
 }
 
 // ValidatePodTemplateSpecForStatefulSet validates the given template and ensures that it is in accordance with the desired selector.
-func ValidatePodTemplateSpecForStatefulSet(template *api.PodTemplateSpec, selector labels.Selector, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
+func ValidatePodTemplateSpecForStatefulSet(template *api.PodTemplateSpec, selector labels.Selector, fldPath *field.Path, opts apivalidation.PodValidationOptions,
+	setOpts StatefulSetValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if template == nil {
 		allErrs = append(allErrs, field.Required(fldPath, ""))
@@ -58,10 +70,9 @@ func ValidatePodTemplateSpecForStatefulSet(template *api.PodTemplateSpec, select
 				allErrs = append(allErrs, field.Invalid(fldPath.Child("metadata", "labels"), template.Labels, "`selector` does not match template `labels`"))
 			}
 		}
-		// TODO: Add validation for PodSpec, currently this will check volumes, which we know will
-		// fail. We should really check that the union of the given volumes and volumeClaims match
-		// volume mounts in the containers.
-		// allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(template, fldPath)...)
+		if !setOpts.SkipValidatePodTemplateSpec {
+			allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(template, fldPath, opts)...)
+		}
 		allErrs = append(allErrs, unversionedvalidation.ValidateLabels(template.Labels, fldPath.Child("labels"))...)
 		allErrs = append(allErrs, apivalidation.ValidateAnnotations(template.Annotations, fldPath.Child("annotations"))...)
 		allErrs = append(allErrs, apivalidation.ValidatePodSpecificAnnotations(template.Annotations, &template.Spec, fldPath.Child("annotations"), opts)...)
@@ -89,8 +100,33 @@ func ValidatePersistentVolumeClaimRetentionPolicy(policy *apps.StatefulSetPersis
 	return allErrs
 }
 
+func volumesToAddForTemplates(spec *apps.StatefulSetSpec) map[string]api.Volume {
+	volumes := make(map[string]api.Volume)
+	templates := spec.VolumeClaimTemplates
+	for i := range templates {
+		volumes[templates[i].Name] = api.Volume{
+			Name: templates[i].Name,
+			VolumeSource: api.VolumeSource{
+				PersistentVolumeClaim: &api.PersistentVolumeClaimVolumeSource{
+					ClaimName: templates[i].Name,
+				},
+			},
+		}
+	}
+	return volumes
+}
+
+func validateVolumeClaimTemplates(volumeClaimTemplates []api.PersistentVolumeClaim, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	opts := apivalidation.ValidationOptionsForPersistentVolumeClaimCreate()
+	for i, pvc := range volumeClaimTemplates {
+		allErrs = append(allErrs, apivalidation.ValidatePersistentVolumeClaimSpec(&pvc.Spec, fldPath.Index(i).Child("spec"), opts)...)
+	}
+	return allErrs
+}
+
 // ValidateStatefulSetSpec tests if required fields in the StatefulSet spec are set.
-func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
+func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions, setOpts StatefulSetValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	switch spec.PodManagementPolicy {
@@ -101,10 +137,10 @@ func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path, op
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("podManagementPolicy"), spec.PodManagementPolicy, fmt.Sprintf("must be '%s' or '%s'", apps.OrderedReadyPodManagement, apps.ParallelPodManagement)))
 	}
 
-	switch spec.UpdateStrategy.Type {
-	case "":
+	switch {
+	case spec.UpdateStrategy.Type == "":
 		allErrs = append(allErrs, field.Required(fldPath.Child("updateStrategy"), ""))
-	case apps.OnDeleteStatefulSetStrategyType:
+	case spec.UpdateStrategy.Type == apps.OnDeleteStatefulSetStrategyType:
 		if spec.UpdateStrategy.RollingUpdate != nil {
 			allErrs = append(
 				allErrs,
@@ -113,29 +149,48 @@ func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path, op
 					spec.UpdateStrategy.RollingUpdate,
 					fmt.Sprintf("only allowed for updateStrategy '%s'", apps.RollingUpdateStatefulSetStrategyType)))
 		}
-	case apps.RollingUpdateStatefulSetStrategyType:
+	case spec.UpdateStrategy.Type == apps.RollingUpdateStatefulSetStrategyType:
 		if spec.UpdateStrategy.RollingUpdate != nil {
 			allErrs = append(allErrs, validateRollingUpdateStatefulSet(spec.UpdateStrategy.RollingUpdate, fldPath.Child("updateStrategy", "rollingUpdate"))...)
-
+		}
+	case spec.UpdateStrategy.Type == apps.RecreateStatefulSetStrategyType && setOpts.AllowStatefulSetRecreateStrategy:
+		if spec.UpdateStrategy.RollingUpdate != nil {
+			allErrs = append(
+				allErrs,
+				field.Invalid(
+					fldPath.Child("updateStrategy").Child("rollingUpdate"),
+					spec.UpdateStrategy.RollingUpdate,
+					fmt.Sprintf("only allowed for updateStrategy '%s'", apps.RollingUpdateStatefulSetStrategyType)))
 		}
 	default:
-		allErrs = append(allErrs,
-			field.Invalid(fldPath.Child("updateStrategy"), spec.UpdateStrategy,
-				fmt.Sprintf("must be '%s' or '%s'",
-					apps.RollingUpdateStatefulSetStrategyType,
-					apps.OnDeleteStatefulSetStrategyType)))
+		validValues := fmt.Sprintf("must be '%s' or '%s'", apps.RollingUpdateStatefulSetStrategyType, apps.OnDeleteStatefulSetStrategyType)
+		if setOpts.AllowStatefulSetRecreateStrategy {
+			validValues = fmt.Sprintf("must be '%s', '%s', or '%s'", apps.RollingUpdateStatefulSetStrategyType, apps.OnDeleteStatefulSetStrategyType, apps.RecreateStatefulSetStrategyType)
+		}
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("updateStrategy"), spec.UpdateStrategy, validValues))
 	}
 
 	allErrs = append(allErrs, ValidatePersistentVolumeClaimRetentionPolicy(spec.PersistentVolumeClaimRetentionPolicy, fldPath.Child("persistentVolumeClaimRetentionPolicy"))...)
+	if !setOpts.SkipValidateVolumeClaimTemplates {
+		allErrs = append(allErrs, validateVolumeClaimTemplates(spec.VolumeClaimTemplates, fldPath.Child("volumeClaimTemplates"))...)
+	}
 
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(spec.Replicas), fldPath.Child("replicas"))...)
-	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetMinReadySeconds) {
-		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(spec.MinReadySeconds), fldPath.Child("minReadySeconds"))...)
+	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(spec.MinReadySeconds), fldPath.Child("minReadySeconds"))...)
+	if spec.Ordinals != nil {
+		replicaStartOrdinal := spec.Ordinals.Start
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(replicaStartOrdinal), fldPath.Child("ordinals.start"))...)
 	}
+
+	if !setOpts.AllowInvalidServiceName && len(spec.ServiceName) > 0 {
+		allErrs = append(allErrs, apivalidation.ValidateDNS1123Label(spec.ServiceName, fldPath.Child("serviceName"))...)
+	}
+
 	if spec.Selector == nil {
-		allErrs = append(allErrs, field.Required(fldPath.Child("selector"), ""))
+		allErrs = append(allErrs, field.Required(fldPath.Child("selector"), "").MarkCoveredByDeclarative())
 	} else {
-		allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, fldPath.Child("selector"))...)
+		// validate selector strictly, spec.selector was always required to pass LabelSelectorAsSelector below
+		allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, unversionedvalidation.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: false}, fldPath.Child("selector"))...)
 		if len(spec.Selector.MatchLabels)+len(spec.Selector.MatchExpressions) == 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("selector"), spec.Selector, "empty selector is invalid for statefulset"))
 		}
@@ -145,7 +200,28 @@ func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path, op
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("selector"), spec.Selector, ""))
 	} else {
-		allErrs = append(allErrs, ValidatePodTemplateSpecForStatefulSet(&spec.Template, selector, fldPath.Child("template"), opts)...)
+		templateToValidate := &spec.Template
+		if len(spec.Template.Spec.Subdomain) > 0 || len(spec.Template.Spec.Hostname) > 0 || len(spec.VolumeClaimTemplates) > 0 {
+			templateToValidate = templateToValidate.DeepCopy()
+			// overwritten by controller to spec.ServiceName in initIdentity, don't validate
+			templateToValidate.Spec.Subdomain = ""
+			// overwritten by controller to pod.Name in initIdentity, don't validate
+			templateToValidate.Spec.Hostname = ""
+			if len(spec.VolumeClaimTemplates) > 0 {
+				templateVolumes := volumesToAddForTemplates(spec)
+				newVolumes := make([]api.Volume, 0, len(templateVolumes))
+				for _, v := range templateVolumes {
+					newVolumes = append(newVolumes, v)
+				}
+				for _, v := range templateToValidate.Spec.Volumes {
+					if _, ok := templateVolumes[v.Name]; !ok {
+						newVolumes = append(newVolumes, v)
+					}
+				}
+				templateToValidate.Spec.Volumes = newVolumes
+			}
+		}
+		allErrs = append(allErrs, ValidatePodTemplateSpecForStatefulSet(templateToValidate, selector, fldPath.Child("template"), opts, setOpts)...)
 	}
 
 	if spec.Template.Spec.RestartPolicy != api.RestartPolicyAlways {
@@ -159,36 +235,33 @@ func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path, op
 }
 
 // ValidateStatefulSet validates a StatefulSet.
-func ValidateStatefulSet(statefulSet *apps.StatefulSet, opts apivalidation.PodValidationOptions) field.ErrorList {
+func ValidateStatefulSet(statefulSet *apps.StatefulSet, setOpts StatefulSetValidationOptions, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMeta(&statefulSet.ObjectMeta, true, ValidateStatefulSetName, field.NewPath("metadata"))
-	allErrs = append(allErrs, ValidateStatefulSetSpec(&statefulSet.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, ValidateStatefulSetSpec(&statefulSet.Spec, field.NewPath("spec"), opts, setOpts)...)
 	return allErrs
 }
 
 // ValidateStatefulSetUpdate tests if required fields in the StatefulSet are set.
-func ValidateStatefulSetUpdate(statefulSet, oldStatefulSet *apps.StatefulSet, opts apivalidation.PodValidationOptions) field.ErrorList {
-	// first, validate that the new statefulset is valid
-	allErrs := ValidateStatefulSet(statefulSet, opts)
+func ValidateStatefulSetUpdate(statefulSet, oldStatefulSet *apps.StatefulSet, setOpts StatefulSetValidationOptions, opts apivalidation.PodValidationOptions) field.ErrorList {
+	// First, validate that the new statefulset is valid.  Don't call
+	// ValidateStatefulSet() because we don't want to revalidate the name on
+	// update.  This is important here because we used to allow DNS subdomain
+	// for name, but that can't actually create pods.  The only reasonable
+	// thing to do it delete such an instance, but if there is a finalizer, it
+	// would need to pass update validation.  Name can't change anyway.
+	allErrs := apivalidation.ValidateObjectMetaUpdate(&statefulSet.ObjectMeta, &oldStatefulSet.ObjectMeta, field.NewPath("metadata"))
 
-	allErrs = append(allErrs, apivalidation.ValidateObjectMetaUpdate(&statefulSet.ObjectMeta, &oldStatefulSet.ObjectMeta, field.NewPath("metadata"))...)
+	// In order to tolerate the existing sts, we choose to skip the validation error of old sts podTemplateSpec.
+	if len(ValidateStatefulSetSpec(&oldStatefulSet.Spec, nil, opts, setOpts)) > 0 {
+		setOpts.SkipValidatePodTemplateSpec = true
+	}
+	specPath := field.NewPath("spec")
+	allErrs = append(allErrs, ValidateStatefulSetSpec(&statefulSet.Spec, specPath, opts, setOpts)...)
 
-	// statefulset updates aren't super common and general updates are likely to be touching spec, so we'll do this
-	// deep copy right away.  This avoids mutating our inputs
-	newStatefulSetClone := statefulSet.DeepCopy()
-	newStatefulSetClone.Spec.Replicas = oldStatefulSet.Spec.Replicas             // +k8s:verify-mutation:reason=clone
-	newStatefulSetClone.Spec.Template = oldStatefulSet.Spec.Template             // +k8s:verify-mutation:reason=clone
-	newStatefulSetClone.Spec.UpdateStrategy = oldStatefulSet.Spec.UpdateStrategy // +k8s:verify-mutation:reason=clone
-	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetMinReadySeconds) {
-		newStatefulSetClone.Spec.MinReadySeconds = oldStatefulSet.Spec.MinReadySeconds // +k8s:verify-mutation:reason=clone
-	}
-	newStatefulSetClone.Spec.PersistentVolumeClaimRetentionPolicy = oldStatefulSet.Spec.PersistentVolumeClaimRetentionPolicy // +k8s:verify-mutation:reason=clone
-	if !apiequality.Semantic.DeepEqual(newStatefulSetClone.Spec, oldStatefulSet.Spec) {
-		if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetMinReadySeconds) {
-			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec"), "updates to statefulset spec for fields other than 'replicas', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden"))
-		} else {
-			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec"), "updates to statefulset spec for fields other than 'replicas', 'template', 'updateStrategy' and 'persistentVolumeClaimRetentionPolicy' are forbidden"))
-		}
-	}
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(statefulSet.Spec.Selector, oldStatefulSet.Spec.Selector, specPath.Child("selector")).WithOrigin("immutable").MarkCoveredByDeclarative()...)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(statefulSet.Spec.VolumeClaimTemplates, oldStatefulSet.Spec.VolumeClaimTemplates, specPath.Child("volumeClaimTemplates")).WithOrigin("immutable").MarkCoveredByDeclarative()...)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(statefulSet.Spec.ServiceName, oldStatefulSet.Spec.ServiceName, specPath.Child("serviceName")).WithOrigin("immutable").MarkCoveredByDeclarative()...)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(statefulSet.Spec.PodManagementPolicy, oldStatefulSet.Spec.PodManagementPolicy, specPath.Child("podManagementPolicy")).WithOrigin("immutable").MarkCoveredByDeclarative()...)
 
 	return allErrs
 }
@@ -201,9 +274,7 @@ func ValidateStatefulSetStatus(status *apps.StatefulSetStatus, fieldPath *field.
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.ReadyReplicas), fieldPath.Child("readyReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.CurrentReplicas), fieldPath.Child("currentReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.UpdatedReplicas), fieldPath.Child("updatedReplicas"))...)
-	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetMinReadySeconds) {
-		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.AvailableReplicas), fieldPath.Child("availableReplicas"))...)
-	}
+	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.AvailableReplicas), fieldPath.Child("availableReplicas"))...)
 	if status.ObservedGeneration != nil {
 		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*status.ObservedGeneration), fieldPath.Child("observedGeneration"))...)
 	}
@@ -221,15 +292,12 @@ func ValidateStatefulSetStatus(status *apps.StatefulSetStatus, fieldPath *field.
 	if status.UpdatedReplicas > status.Replicas {
 		allErrs = append(allErrs, field.Invalid(fieldPath.Child("updatedReplicas"), status.UpdatedReplicas, msg))
 	}
-	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetMinReadySeconds) {
-		if status.AvailableReplicas > status.Replicas {
-			allErrs = append(allErrs, field.Invalid(fieldPath.Child("availableReplicas"), status.AvailableReplicas, msg))
-		}
-		if status.AvailableReplicas > status.ReadyReplicas {
-			allErrs = append(allErrs, field.Invalid(fieldPath.Child("availableReplicas"), status.AvailableReplicas, "cannot be greater than readyReplicas"))
-		}
+	if status.AvailableReplicas > status.Replicas {
+		allErrs = append(allErrs, field.Invalid(fieldPath.Child("availableReplicas"), status.AvailableReplicas, msg))
 	}
-
+	if status.AvailableReplicas > status.ReadyReplicas {
+		allErrs = append(allErrs, field.Invalid(fieldPath.Child("availableReplicas"), status.AvailableReplicas, "cannot be greater than status.readyReplicas"))
+	}
 	return allErrs
 }
 
@@ -254,17 +322,31 @@ func ValidateStatefulSetStatusUpdate(statefulSet, oldStatefulSet *apps.StatefulS
 // trailing dashes are allowed.
 var ValidateControllerRevisionName = apimachineryvalidation.NameIsDNSSubdomain
 
-// ValidateControllerRevision collects errors for the fields of state and returns those errors as an ErrorList. If the
+// validateControllerRevision collects errors for the fields of state and returns those errors as an ErrorList. If the
 // returned list is empty, state is valid. Validation is performed to ensure that state is a valid ObjectMeta, its name
 // is valid, and that it doesn't exceed the MaxControllerRevisionSize.
-func ValidateControllerRevision(revision *apps.ControllerRevision) field.ErrorList {
+func validateControllerRevision(revision *apps.ControllerRevision) field.ErrorList {
 	errs := field.ErrorList{}
-
 	errs = append(errs, apivalidation.ValidateObjectMeta(&revision.ObjectMeta, true, ValidateControllerRevisionName, field.NewPath("metadata"))...)
-	if revision.Data == nil {
-		errs = append(errs, field.Required(field.NewPath("data"), "data is mandatory"))
-	}
 	errs = append(errs, apivalidation.ValidateNonnegativeField(revision.Revision, field.NewPath("revision"))...)
+	return errs
+}
+
+func ValidateControllerRevisionCreate(revision *apps.ControllerRevision) field.ErrorList {
+	errs := field.ErrorList{}
+	errs = append(errs, validateControllerRevision(revision)...)
+
+	var v any
+	if revision.Data.Raw == nil {
+		errs = append(errs, field.Required(field.NewPath("data"), "data is mandatory"))
+	} else if err := json.Unmarshal(revision.Data.Raw, &v); err != nil {
+		errs = append(errs, field.Invalid(field.NewPath("data"), "<value omitted>", fmt.Sprintf("error parsing data: %v", err.Error())))
+	} else if v == nil {
+		errs = append(errs, field.Required(field.NewPath("data"), "data is mandatory"))
+	} else if _, isObject := v.(map[string]any); !isObject {
+		errs = append(errs, field.Required(field.NewPath("data"), "data must be a valid JSON object"))
+	}
+
 	return errs
 }
 
@@ -275,7 +357,7 @@ func ValidateControllerRevisionUpdate(newHistory, oldHistory *apps.ControllerRev
 	errs := field.ErrorList{}
 
 	errs = append(errs, apivalidation.ValidateObjectMetaUpdate(&newHistory.ObjectMeta, &oldHistory.ObjectMeta, field.NewPath("metadata"))...)
-	errs = append(errs, ValidateControllerRevision(newHistory)...)
+	errs = append(errs, validateControllerRevision(newHistory)...)
 	errs = append(errs, apivalidation.ValidateImmutableField(newHistory.Data, oldHistory.Data, field.NewPath("data"))...)
 	return errs
 }
@@ -311,6 +393,9 @@ func ValidateDaemonSetSpecUpdate(newSpec, oldSpec *apps.DaemonSetSpec, fldPath *
 	} else if newSpec.TemplateGeneration > oldSpec.TemplateGeneration && !templateUpdated {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("templateGeneration"), newSpec.TemplateGeneration, "must not be incremented without template update"))
 	}
+
+	// Spec.Selector is immutable
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(newSpec.Selector, oldSpec.Selector, field.NewPath("spec").Child("selector"))...)
 
 	return allErrs
 }
@@ -349,8 +434,9 @@ func ValidateDaemonSetStatusUpdate(ds, oldDS *apps.DaemonSet) field.ErrorList {
 // ValidateDaemonSetSpec tests if required fields in the DaemonSetSpec are set.
 func ValidateDaemonSetSpec(spec *apps.DaemonSetSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
+	labelSelectorValidationOpts := unversionedvalidation.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: opts.AllowInvalidLabelValueInSelector}
 
-	allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, fldPath.Child("selector"))...)
+	allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, labelSelectorValidationOpts, fldPath.Child("selector"))...)
 
 	selector, err := metav1.LabelSelectorAsSelector(spec.Selector)
 	if err == nil && !selector.Matches(labels.Set(spec.Template.Labels)) {
@@ -361,8 +447,6 @@ func ValidateDaemonSetSpec(spec *apps.DaemonSetSpec, fldPath *field.Path, opts a
 	}
 
 	allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(&spec.Template, fldPath.Child("template"), opts)...)
-	// Daemons typically run on more than one node, so mark Read-Write persistent disks as invalid.
-	allErrs = append(allErrs, apivalidation.ValidateReadOnlyPersistentDisks(spec.Template.Spec.Volumes, fldPath.Child("template", "spec", "volumes"))...)
 	// RestartPolicy has already been first-order validated as per ValidatePodTemplateSpec().
 	if spec.Template.Spec.RestartPolicy != api.RestartPolicyAlways {
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("template", "spec", "restartPolicy"), spec.Template.Spec.RestartPolicy, []string{string(api.RestartPolicyAlways)}))
@@ -384,34 +468,25 @@ func ValidateDaemonSetSpec(spec *apps.DaemonSetSpec, fldPath *field.Path, opts a
 // ValidateRollingUpdateDaemonSet validates a given RollingUpdateDaemonSet.
 func ValidateRollingUpdateDaemonSet(rollingUpdate *apps.RollingUpdateDaemonSet, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
-	if utilfeature.DefaultFeatureGate.Enabled(features.DaemonSetUpdateSurge) {
-		// Validate both fields are positive ints or have a percentage value
-		allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollingUpdate.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
-		allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollingUpdate.MaxSurge, fldPath.Child("maxSurge"))...)
 
-		// Validate that MaxUnavailable and MaxSurge are not more than 100%.
-		allErrs = append(allErrs, IsNotMoreThan100Percent(rollingUpdate.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
-		allErrs = append(allErrs, IsNotMoreThan100Percent(rollingUpdate.MaxSurge, fldPath.Child("maxSurge"))...)
+	// Validate both fields are positive ints or have a percentage value
+	allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollingUpdate.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
+	allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollingUpdate.MaxSurge, fldPath.Child("maxSurge"))...)
 
-		// Validate exactly one of MaxSurge or MaxUnavailable is non-zero
-		hasUnavailable := getIntOrPercentValue(rollingUpdate.MaxUnavailable) != 0
-		hasSurge := getIntOrPercentValue(rollingUpdate.MaxSurge) != 0
-		switch {
-		case hasUnavailable && hasSurge:
-			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxSurge"), rollingUpdate.MaxSurge, "may not be set when maxUnavailable is non-zero"))
-		case !hasUnavailable && !hasSurge:
-			allErrs = append(allErrs, field.Required(fldPath.Child("maxUnavailable"), "cannot be 0 when maxSurge is 0"))
-		}
+	// Validate that MaxUnavailable and MaxSurge are not more than 100%.
+	allErrs = append(allErrs, IsNotMoreThan100Percent(rollingUpdate.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
+	allErrs = append(allErrs, IsNotMoreThan100Percent(rollingUpdate.MaxSurge, fldPath.Child("maxSurge"))...)
 
-	} else {
-		allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollingUpdate.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
-		if getIntOrPercentValue(rollingUpdate.MaxUnavailable) == 0 {
-			// MaxUnavailable cannot be 0.
-			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxUnavailable"), rollingUpdate.MaxUnavailable, "cannot be 0"))
-		}
-		// Validate that MaxUnavailable is not more than 100%.
-		allErrs = append(allErrs, IsNotMoreThan100Percent(rollingUpdate.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
+	// Validate exactly one of MaxSurge or MaxUnavailable is non-zero
+	hasUnavailable := getIntOrPercentValue(rollingUpdate.MaxUnavailable) != 0
+	hasSurge := getIntOrPercentValue(rollingUpdate.MaxSurge) != 0
+	switch {
+	case hasUnavailable && hasSurge:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("maxSurge"), rollingUpdate.MaxSurge, "may not be set when maxUnavailable is non-zero"))
+	case !hasUnavailable && !hasSurge:
+		allErrs = append(allErrs, field.Required(fldPath.Child("maxUnavailable"), "cannot be 0 when maxSurge is 0"))
 	}
+
 	return allErrs
 }
 
@@ -555,14 +630,15 @@ func ValidateRollback(rollback *apps.RollbackConfig, fldPath *field.Path) field.
 }
 
 // ValidateDeploymentSpec validates given deployment spec.
-func ValidateDeploymentSpec(spec *apps.DeploymentSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
+func ValidateDeploymentSpec(spec, oldSpec *apps.DeploymentSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(spec.Replicas), fldPath.Child("replicas"))...)
 
 	if spec.Selector == nil {
 		allErrs = append(allErrs, field.Required(fldPath.Child("selector"), ""))
 	} else {
-		allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, fldPath.Child("selector"))...)
+		// validate selector strictly, spec.selector was always required to pass LabelSelectorAsSelector below
+		allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, unversionedvalidation.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: false}, fldPath.Child("selector"))...)
 		if len(spec.Selector.MatchLabels)+len(spec.Selector.MatchExpressions) == 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("selector"), spec.Selector, "empty selector is invalid for deployment"))
 		}
@@ -602,6 +678,9 @@ func ValidateDeploymentStatus(status *apps.DeploymentStatus, fldPath *field.Path
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.ReadyReplicas), fldPath.Child("readyReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.AvailableReplicas), fldPath.Child("availableReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.UnavailableReplicas), fldPath.Child("unavailableReplicas"))...)
+	if status.TerminatingReplicas != nil {
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*status.TerminatingReplicas), fldPath.Child("terminatingReplicas"))...)
+	}
 	if status.CollisionCount != nil {
 		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*status.CollisionCount), fldPath.Child("collisionCount"))...)
 	}
@@ -624,7 +703,8 @@ func ValidateDeploymentStatus(status *apps.DeploymentStatus, fldPath *field.Path
 // ValidateDeploymentUpdate tests if an update to a Deployment is valid.
 func ValidateDeploymentUpdate(update, old *apps.Deployment, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMetaUpdate(&update.ObjectMeta, &old.ObjectMeta, field.NewPath("metadata"))
-	allErrs = append(allErrs, ValidateDeploymentSpec(&update.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, ValidateDeploymentSpec(&update.Spec, &old.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(update.Spec.Selector, old.Spec.Selector, field.NewPath("spec").Child("selector"))...)
 	return allErrs
 }
 
@@ -647,7 +727,7 @@ func ValidateDeploymentStatusUpdate(update, old *apps.Deployment) field.ErrorLis
 // ValidateDeployment validates a given Deployment.
 func ValidateDeployment(obj *apps.Deployment, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMeta(&obj.ObjectMeta, true, ValidateDeploymentName, field.NewPath("metadata"))
-	allErrs = append(allErrs, ValidateDeploymentSpec(&obj.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, ValidateDeploymentSpec(&obj.Spec, nil, field.NewPath("spec"), opts)...)
 	return allErrs
 }
 
@@ -655,7 +735,7 @@ func ValidateDeployment(obj *apps.Deployment, opts apivalidation.PodValidationOp
 func ValidateDeploymentRollback(obj *apps.DeploymentRollback) field.ErrorList {
 	allErrs := apivalidation.ValidateAnnotations(obj.UpdatedAnnotations, field.NewPath("updatedAnnotations"))
 	if len(obj.Name) == 0 {
-		allErrs = append(allErrs, field.Required(field.NewPath("name"), "name is required"))
+		allErrs = append(allErrs, field.Required(field.NewPath("name"), ""))
 	}
 	allErrs = append(allErrs, ValidateRollback(&obj.RollbackTo, field.NewPath("rollback"))...)
 	return allErrs
@@ -670,7 +750,7 @@ var ValidateReplicaSetName = apimachineryvalidation.NameIsDNSSubdomain
 // ValidateReplicaSet tests if required fields in the ReplicaSet are set.
 func ValidateReplicaSet(rs *apps.ReplicaSet, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMeta(&rs.ObjectMeta, true, ValidateReplicaSetName, field.NewPath("metadata"))
-	allErrs = append(allErrs, ValidateReplicaSetSpec(&rs.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, ValidateReplicaSetSpec(&rs.Spec, nil, field.NewPath("spec"), opts)...)
 	return allErrs
 }
 
@@ -678,7 +758,8 @@ func ValidateReplicaSet(rs *apps.ReplicaSet, opts apivalidation.PodValidationOpt
 func ValidateReplicaSetUpdate(rs, oldRs *apps.ReplicaSet, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, apivalidation.ValidateObjectMetaUpdate(&rs.ObjectMeta, &oldRs.ObjectMeta, field.NewPath("metadata"))...)
-	allErrs = append(allErrs, ValidateReplicaSetSpec(&rs.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, ValidateReplicaSetSpec(&rs.Spec, &oldRs.Spec, field.NewPath("spec"), opts)...)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(rs.Spec.Selector, oldRs.Spec.Selector, field.NewPath("spec").Child("selector"))...)
 	return allErrs
 }
 
@@ -698,6 +779,9 @@ func ValidateReplicaSetStatus(status apps.ReplicaSetStatus, fldPath *field.Path)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.ReadyReplicas), fldPath.Child("readyReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.AvailableReplicas), fldPath.Child("availableReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.ObservedGeneration), fldPath.Child("observedGeneration"))...)
+	if status.TerminatingReplicas != nil {
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(*status.TerminatingReplicas), fldPath.Child("terminatingReplicas"))...)
+	}
 	msg := "cannot be greater than status.replicas"
 	if status.FullyLabeledReplicas > status.Replicas {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("fullyLabeledReplicas"), status.FullyLabeledReplicas, msg))
@@ -715,7 +799,7 @@ func ValidateReplicaSetStatus(status apps.ReplicaSetStatus, fldPath *field.Path)
 }
 
 // ValidateReplicaSetSpec tests if required fields in the ReplicaSet spec are set.
-func ValidateReplicaSetSpec(spec *apps.ReplicaSetSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
+func ValidateReplicaSetSpec(spec, oldSpec *apps.ReplicaSetSpec, fldPath *field.Path, opts apivalidation.PodValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(spec.Replicas), fldPath.Child("replicas"))...)
@@ -724,7 +808,8 @@ func ValidateReplicaSetSpec(spec *apps.ReplicaSetSpec, fldPath *field.Path, opts
 	if spec.Selector == nil {
 		allErrs = append(allErrs, field.Required(fldPath.Child("selector"), ""))
 	} else {
-		allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, fldPath.Child("selector"))...)
+		// validate selector strictly, spec.selector was always required to pass LabelSelectorAsSelector below
+		allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(spec.Selector, unversionedvalidation.LabelSelectorValidationOptions{AllowInvalidLabelValueInSelector: false}, fldPath.Child("selector"))...)
 		if len(spec.Selector.MatchLabels)+len(spec.Selector.MatchExpressions) == 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("selector"), spec.Selector, "empty selector is invalid for deployment"))
 		}
@@ -753,9 +838,6 @@ func ValidatePodTemplateSpecForReplicaSet(template *api.PodTemplateSpec, selecto
 			}
 		}
 		allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(template, fldPath, opts)...)
-		if replicas > 1 {
-			allErrs = append(allErrs, apivalidation.ValidateReadOnlyPersistentDisks(template.Spec.Volumes, fldPath.Child("spec", "volumes"))...)
-		}
 		// RestartPolicy has already been first-order validated as per ValidatePodTemplateSpec().
 		if template.Spec.RestartPolicy != api.RestartPolicyAlways {
 			allErrs = append(allErrs, field.NotSupported(fldPath.Child("spec", "restartPolicy"), template.Spec.RestartPolicy, []string{string(api.RestartPolicyAlways)}))

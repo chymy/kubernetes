@@ -17,22 +17,29 @@ limitations under the License.
 package defaulttolerationseconds
 
 import (
-	"context"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/apiserver/pkg/admission/initializer"
 	"k8s.io/kubernetes/pkg/apis/core/helper"
 	"k8s.io/kubernetes/pkg/controlplane"
 	"k8s.io/kubernetes/plugin/pkg/admission/defaulttolerationseconds"
 	"k8s.io/kubernetes/test/integration/framework"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 func TestAdmission(t *testing.T) {
-	client, _, tearDownFn := framework.StartTestServer(t, framework.TestServerSetup{
+	tCtx := ktesting.Init(t)
+	handler, err := newHandlerForTest()
+	if err != nil {
+		t.Errorf("unexpected error initializing handler: %v", err)
+	}
+	client, _, tearDownFn := framework.StartTestServer(tCtx, t, framework.TestServerSetup{
 		ModifyServerConfig: func(cfg *controlplane.Config) {
-			cfg.GenericConfig.EnableProfiling = true
-			cfg.GenericConfig.AdmissionControl = defaulttolerationseconds.NewDefaultTolerationSeconds()
+			cfg.ControlPlane.Generic.EnableProfiling = true
+			cfg.ControlPlane.Generic.AdmissionControl = handler
 		},
 	})
 	defer tearDownFn()
@@ -55,7 +62,7 @@ func TestAdmission(t *testing.T) {
 		},
 	}
 
-	updatedPod, err := client.CoreV1().Pods(pod.Namespace).Create(context.TODO(), &pod, metav1.CreateOptions{})
+	updatedPod, err := client.CoreV1().Pods(pod.Namespace).Create(tCtx, &pod, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("error creating pod: %v", err)
 	}
@@ -98,4 +105,12 @@ func TestAdmission(t *testing.T) {
 	if found != 2 {
 		t.Fatalf("unexpected tolerations: %v\n", updatedPod.Spec.Tolerations)
 	}
+}
+
+// newHandlerForTest returns a handler configured for testing.
+func newHandlerForTest() (*defaulttolerationseconds.Plugin, error) {
+	handler := defaulttolerationseconds.NewDefaultTolerationSeconds()
+	pluginInitializer := initializer.New(nil, nil, nil, nil, nil, nil, nil, nil)
+	pluginInitializer.Initialize(handler)
+	return handler, admission.ValidateInitialization(handler)
 }

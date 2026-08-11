@@ -19,6 +19,7 @@ package apps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2ekubectl "k8s.io/kubernetes/test/e2e/framework/kubectl"
 	e2estatefulset "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	e2etestfiles "k8s.io/kubernetes/test/e2e/framework/testfiles"
 	"k8s.io/kubernetes/test/e2e/upgrades"
@@ -68,11 +70,11 @@ func kubectlCreate(ns, file string) {
 		framework.Fail(err.Error())
 	}
 	input := string(data)
-	framework.RunKubectlOrDieInput(ns, input, "create", "-f", "-")
+	e2ekubectl.RunKubectlOrDieInput(ns, input, "create", "-f", "-")
 }
 
 // Setup creates etcd statefulset and then verifies that the etcd is writable.
-func (t *EtcdUpgradeTest) Setup(f *framework.Framework) {
+func (t *EtcdUpgradeTest) Setup(ctx context.Context, f *framework.Framework) {
 	ns := f.Namespace.Name
 	statefulsetPoll := 30 * time.Second
 	statefulsetTimeout := 10 * time.Minute
@@ -81,14 +83,14 @@ func (t *EtcdUpgradeTest) Setup(f *framework.Framework) {
 	kubectlCreate(ns, "pdb.yaml")
 
 	ginkgo.By("Creating an etcd StatefulSet")
-	e2estatefulset.CreateStatefulSet(f.ClientSet, manifestPath, ns)
+	e2estatefulset.CreateStatefulSet(ctx, f.ClientSet, manifestPath, ns)
 
 	ginkgo.By("Creating an etcd--test-server deployment")
 	kubectlCreate(ns, "tester.yaml")
 
 	ginkgo.By("Getting the ingress IPs from the services")
-	err := wait.PollImmediate(statefulsetPoll, statefulsetTimeout, func() (bool, error) {
-		if t.ip = t.getServiceIP(f, ns, "test-server"); t.ip == "" {
+	err := wait.PollUntilContextTimeout(ctx, statefulsetPoll, statefulsetTimeout, true, func(ctx context.Context) (bool, error) {
+		if t.ip = t.getServiceIP(ctx, f, ns, "test-server"); t.ip == "" {
 			return false, nil
 		}
 		if _, err := t.listUsers(); err != nil {
@@ -110,7 +112,7 @@ func (t *EtcdUpgradeTest) Setup(f *framework.Framework) {
 	ginkgo.By("Verifying that the users exist")
 	users, err := t.listUsers()
 	framework.ExpectNoError(err)
-	framework.ExpectEqual(len(users), 2)
+	gomega.Expect(users).To(gomega.HaveLen(2))
 }
 
 func (t *EtcdUpgradeTest) listUsers() ([]string, error) {
@@ -124,7 +126,7 @@ func (t *EtcdUpgradeTest) listUsers() ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf(string(b))
+		return nil, errors.New(string(b))
 	}
 	var names []string
 	if err := json.NewDecoder(r.Body).Decode(&names); err != nil {
@@ -145,13 +147,13 @@ func (t *EtcdUpgradeTest) addUser(name string) error {
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf(string(b))
+		return errors.New(string(b))
 	}
 	return nil
 }
 
-func (t *EtcdUpgradeTest) getServiceIP(f *framework.Framework, ns, svcName string) string {
-	svc, err := f.ClientSet.CoreV1().Services(ns).Get(context.TODO(), svcName, metav1.GetOptions{})
+func (t *EtcdUpgradeTest) getServiceIP(ctx context.Context, f *framework.Framework, ns, svcName string) string {
+	svc, err := f.ClientSet.CoreV1().Services(ns).Get(ctx, svcName, metav1.GetOptions{})
 	framework.ExpectNoError(err)
 	ingress := svc.Status.LoadBalancer.Ingress
 	if len(ingress) == 0 {
@@ -161,7 +163,7 @@ func (t *EtcdUpgradeTest) getServiceIP(f *framework.Framework, ns, svcName strin
 }
 
 // Test waits for upgrade to complete and verifies if etcd is writable.
-func (t *EtcdUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, upgrade upgrades.UpgradeType) {
+func (t *EtcdUpgradeTest) Test(ctx context.Context, f *framework.Framework, done <-chan struct{}, upgrade upgrades.UpgradeType) {
 	ginkgo.By("Continuously polling the database during upgrade.")
 	var (
 		success, failures, writeAttempts, lastUserCount int
@@ -206,7 +208,7 @@ func (t *EtcdUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, upg
 }
 
 // Teardown does one final check of the data's availability.
-func (t *EtcdUpgradeTest) Teardown(f *framework.Framework) {
+func (t *EtcdUpgradeTest) Teardown(ctx context.Context, f *framework.Framework) {
 	users, err := t.listUsers()
 	framework.ExpectNoError(err)
 	gomega.Expect(len(users)).To(gomega.BeNumerically(">=", t.successfulWrites), "len(users) is too small")

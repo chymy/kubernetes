@@ -19,21 +19,25 @@ package phases
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/workflow"
 	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
-	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	etcdphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/etcd"
 	markcontrolplanephase "k8s.io/kubernetes/cmd/kubeadm/app/phases/markcontrolplane"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
 	etcdutil "k8s.io/kubernetes/cmd/kubeadm/app/util/etcd"
 )
 
 var controlPlaneJoinExample = cmdutil.Examples(`
 	# Joins a machine as a control plane instance
 	kubeadm join phase control-plane-join all
+`)
+
+var etcdJoinExample = cmdutil.Examples(`
+	# Joins etcd for a control plane instance
+	kubeadm join phase control-plane-join-etcd all
 `)
 
 func getControlPlaneJoinPhaseFlags(name string) []string {
@@ -47,6 +51,9 @@ func getControlPlaneJoinPhaseFlags(name string) []string {
 	}
 	if name != "mark-control-plane" {
 		flags = append(flags, options.APIServerAdvertiseAddress)
+	}
+	if name != "update-status" {
+		flags = append(flags, options.DryRun)
 	}
 	return flags
 }
@@ -65,32 +72,19 @@ func NewControlPlaneJoinPhase() workflow.Phase {
 				RunAllSiblings: true,
 				ArgsValidator:  cobra.NoArgs,
 			},
-			newEtcdLocalSubphase(),
-			newUpdateStatusSubphase(),
 			newMarkControlPlaneSubphase(),
 		},
 	}
 }
 
-func newEtcdLocalSubphase() workflow.Phase {
+// NewEtcdJoinPhase creates a kubeadm workflow phase that implements joining etcd
+func NewEtcdJoinPhase() workflow.Phase {
 	return workflow.Phase{
-		Name:          "etcd",
-		Short:         "Add a new local etcd member",
+		Name:          "etcd-join",
+		Short:         "Join etcd for control plane nodes",
 		Run:           runEtcdPhase,
+		Example:       etcdJoinExample,
 		InheritFlags:  getControlPlaneJoinPhaseFlags("etcd"),
-		ArgsValidator: cobra.NoArgs,
-	}
-}
-
-func newUpdateStatusSubphase() workflow.Phase {
-	return workflow.Phase{
-		Name: "update-status",
-		Short: fmt.Sprintf(
-			"Register the new control-plane node into the ClusterStatus maintained in the %s ConfigMap (DEPRECATED)",
-			kubeadmconstants.KubeadmConfigConfigMap,
-		),
-		Run:           runUpdateStatusPhase,
-		InheritFlags:  getControlPlaneJoinPhaseFlags("update-status"),
 		ArgsValidator: cobra.NoArgs,
 	}
 }
@@ -124,7 +118,7 @@ func runEtcdPhase(c workflow.RunData) error {
 	if err != nil {
 		return err
 	}
-	// in case of local etcd
+	// in case of external etcd
 	if cfg.Etcd.External != nil {
 		fmt.Println("[control-plane-join] Using external etcd - no local stacked instance added")
 		return nil
@@ -153,19 +147,6 @@ func runEtcdPhase(c workflow.RunData) error {
 		return errors.Wrap(err, "error creating local etcd static pod manifest file")
 	}
 
-	return nil
-}
-
-func runUpdateStatusPhase(c workflow.RunData) error {
-	data, ok := c.(JoinData)
-	if !ok {
-		return errors.New("control-plane-join phase invoked with an invalid data struct")
-	}
-
-	if data.Cfg().ControlPlane != nil {
-		fmt.Println("The 'update-status' phase is deprecated and will be removed in a future release. " +
-			"Currently it performs no operation")
-	}
 	return nil
 }
 

@@ -17,22 +17,20 @@ limitations under the License.
 package dns
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/record"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
-	"k8s.io/kubernetes/pkg/features"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 
@@ -60,9 +58,10 @@ const (
 
 // Configurer is used for setting up DNS resolver configuration when launching pods.
 type Configurer struct {
-	recorder record.EventRecorder
-	nodeRef  *v1.ObjectReference
-	nodeIPs  []net.IP
+	recorder         record.EventRecorderLogger
+	getHostDNSConfig func(klog.Logger, string) (*runtimeapi.DNSConfig, error)
+	nodeRef          *v1.ObjectReference
+	nodeIPs          []net.IP
 
 	// If non-nil, use this for container DNS server.
 	clusterDNS []net.IP
@@ -75,14 +74,15 @@ type Configurer struct {
 }
 
 // NewConfigurer returns a DNS configurer for launching pods.
-func NewConfigurer(recorder record.EventRecorder, nodeRef *v1.ObjectReference, nodeIPs []net.IP, clusterDNS []net.IP, clusterDomain, resolverConfig string) *Configurer {
+func NewConfigurer(recorder record.EventRecorderLogger, nodeRef *v1.ObjectReference, nodeIPs []net.IP, clusterDNS []net.IP, clusterDomain, resolverConfig string) *Configurer {
 	return &Configurer{
-		recorder:       recorder,
-		nodeRef:        nodeRef,
-		nodeIPs:        nodeIPs,
-		clusterDNS:     clusterDNS,
-		ClusterDomain:  clusterDomain,
-		ResolverConfig: resolverConfig,
+		recorder:         recorder,
+		getHostDNSConfig: getHostDNSConfig,
+		nodeRef:          nodeRef,
+		nodeIPs:          nodeIPs,
+		clusterDNS:       clusterDNS,
+		ClusterDomain:    clusterDomain,
+		ResolverConfig:   resolverConfig,
 	}
 }
 
@@ -99,13 +99,10 @@ func omitDuplicates(strs []string) []string {
 	return ret
 }
 
-func (c *Configurer) formDNSSearchFitsLimits(composedSearch []string, pod *v1.Pod) []string {
+func (c *Configurer) formDNSSearchFitsLimits(logger klog.Logger, composedSearch []string, pod *v1.Pod) []string {
 	limitsExceeded := false
 
-	maxDNSSearchPaths, maxDNSSearchListChars := validation.MaxDNSSearchPathsLegacy, validation.MaxDNSSearchListCharsLegacy
-	if utilfeature.DefaultFeatureGate.Enabled(features.ExpandedDNSConfig) {
-		maxDNSSearchPaths, maxDNSSearchListChars = validation.MaxDNSSearchPathsExpanded, validation.MaxDNSSearchListCharsExpanded
-	}
+	maxDNSSearchPaths, maxDNSSearchListChars := validation.MaxDNSSearchPaths, validation.MaxDNSSearchListChars
 
 	if len(composedSearch) > maxDNSSearchPaths {
 		composedSearch = composedSearch[:maxDNSSearchPaths]
@@ -143,25 +140,25 @@ func (c *Configurer) formDNSSearchFitsLimits(composedSearch []string, pod *v1.Po
 
 	if limitsExceeded {
 		err := fmt.Errorf("Search Line limits were exceeded, some search paths have been omitted, the applied search line is: %s", strings.Join(composedSearch, " "))
-		c.recorder.Event(pod, v1.EventTypeWarning, "DNSConfigForming", err.Error())
-		klog.ErrorS(err, "Search Line limits exceeded")
+		c.recorder.WithLogger(logger).Event(pod, v1.EventTypeWarning, "DNSConfigForming", err.Error())
+		logger.Error(err, "Search Line limits exceeded")
 	}
 	return composedSearch
 }
 
-func (c *Configurer) formDNSNameserversFitsLimits(nameservers []string, pod *v1.Pod) []string {
+func (c *Configurer) formDNSNameserversFitsLimits(logger klog.Logger, nameservers []string, pod *v1.Pod) []string {
 	if len(nameservers) > validation.MaxDNSNameservers {
 		nameservers = nameservers[0:validation.MaxDNSNameservers]
 		err := fmt.Errorf("Nameserver limits were exceeded, some nameservers have been omitted, the applied nameserver line is: %s", strings.Join(nameservers, " "))
-		c.recorder.Event(pod, v1.EventTypeWarning, "DNSConfigForming", err.Error())
-		klog.ErrorS(err, "Nameserver limits exceeded")
+		c.recorder.WithLogger(logger).Event(pod, v1.EventTypeWarning, "DNSConfigForming", err.Error())
+		logger.Error(err, "Nameserver limits exceeded")
 	}
 	return nameservers
 }
 
-func (c *Configurer) formDNSConfigFitsLimits(dnsConfig *runtimeapi.DNSConfig, pod *v1.Pod) *runtimeapi.DNSConfig {
-	dnsConfig.Servers = c.formDNSNameserversFitsLimits(dnsConfig.Servers, pod)
-	dnsConfig.Searches = c.formDNSSearchFitsLimits(dnsConfig.Searches, pod)
+func (c *Configurer) formDNSConfigFitsLimits(logger klog.Logger, dnsConfig *runtimeapi.DNSConfig, pod *v1.Pod) *runtimeapi.DNSConfig {
+	dnsConfig.Servers = c.formDNSNameserversFitsLimits(logger, dnsConfig.Servers, pod)
+	dnsConfig.Searches = c.formDNSSearchFitsLimits(logger, dnsConfig.Searches, pod)
 	return dnsConfig
 }
 
@@ -178,26 +175,23 @@ func (c *Configurer) generateSearchesForDNSClusterFirst(hostSearch []string, pod
 }
 
 // CheckLimitsForResolvConf checks limits in resolv.conf.
-func (c *Configurer) CheckLimitsForResolvConf() {
+func (c *Configurer) CheckLimitsForResolvConf(logger klog.Logger) {
 	f, err := os.Open(c.ResolverConfig)
 	if err != nil {
-		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
-		klog.V(4).InfoS("Check limits for resolv.conf failed at file open", "err", err)
+		c.recorder.WithLogger(logger).Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
+		logger.V(4).Info("Check limits for resolv.conf failed at file open", "err", err)
 		return
 	}
 	defer f.Close()
 
 	_, hostSearch, _, err := parseResolvConf(f)
 	if err != nil {
-		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
-		klog.V(4).InfoS("Check limits for resolv.conf failed at parse resolv.conf", "err", err)
+		c.recorder.WithLogger(logger).Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
+		logger.V(4).Info("Check limits for resolv.conf failed at parse resolv.conf", "err", err)
 		return
 	}
 
-	domainCountLimit, maxDNSSearchListChars := validation.MaxDNSSearchPathsLegacy, validation.MaxDNSSearchListCharsLegacy
-	if utilfeature.DefaultFeatureGate.Enabled(features.ExpandedDNSConfig) {
-		domainCountLimit, maxDNSSearchListChars = validation.MaxDNSSearchPathsExpanded, validation.MaxDNSSearchListCharsExpanded
-	}
+	domainCountLimit, maxDNSSearchListChars := validation.MaxDNSSearchPaths, validation.MaxDNSSearchListChars
 
 	if c.ClusterDomain != "" {
 		domainCountLimit -= 3
@@ -205,24 +199,24 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 
 	if len(hostSearch) > domainCountLimit {
 		log := fmt.Sprintf("Resolv.conf file '%s' contains search line consisting of more than %d domains!", c.ResolverConfig, domainCountLimit)
-		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
-		klog.V(4).InfoS("Check limits for resolv.conf failed", "eventlog", log)
+		c.recorder.WithLogger(logger).Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
+		logger.V(4).Info("Check limits for resolv.conf failed", "eventlog", log)
 		return
 	}
 
 	for _, search := range hostSearch {
 		if len(search) > utilvalidation.DNS1123SubdomainMaxLength {
 			log := fmt.Sprintf("Resolv.conf file %q contains a search path which length is more than allowed %d chars!", c.ResolverConfig, utilvalidation.DNS1123SubdomainMaxLength)
-			c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
-			klog.V(4).InfoS("Check limits for resolv.conf failed", "eventlog", log)
+			c.recorder.WithLogger(logger).Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
+			logger.V(4).Info("Check limits for resolv.conf failed", "eventlog", log)
 			return
 		}
 	}
 
 	if len(strings.Join(hostSearch, " ")) > maxDNSSearchListChars {
 		log := fmt.Sprintf("Resolv.conf file '%s' contains search line which length is more than allowed %d chars!", c.ResolverConfig, maxDNSSearchListChars)
-		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
-		klog.V(4).InfoS("Check limits for resolv.conf failed", "eventlog", log)
+		c.recorder.WithLogger(logger).Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
+		logger.V(4).Info("Check limits for resolv.conf failed", "eventlog", log)
 		return
 	}
 }
@@ -268,31 +262,35 @@ func parseResolvConf(reader io.Reader) (nameservers []string, searches []string,
 			searches = []string{}
 			for _, s := range fields[1:] {
 				if s != "." {
-					s = strings.TrimSuffix(s, ".")
+					searches = append(searches, strings.TrimSuffix(s, "."))
 				}
-				searches = append(searches, s)
 			}
 		}
 		if fields[0] == "options" {
-			options = fields[1:]
+			options = appendOptions(options, fields[1:]...)
 		}
 	}
 
 	return nameservers, searches, options, utilerrors.NewAggregate(allErrors)
 }
 
-func (c *Configurer) getHostDNSConfig() (*runtimeapi.DNSConfig, error) {
+// Reads a resolv.conf-like file and returns the DNS config options from it.
+// Returns an empty DNSConfig if the given resolverConfigFile is an empty string.
+func getDNSConfig(logger klog.Logger, resolverConfigFile string) (*runtimeapi.DNSConfig, error) {
 	var hostDNS, hostSearch, hostOptions []string
 	// Get host DNS settings
-	if c.ResolverConfig != "" {
-		f, err := os.Open(c.ResolverConfig)
+	if resolverConfigFile != "" {
+		f, err := os.Open(resolverConfigFile)
 		if err != nil {
+			logger.Error(err, "Could not open resolv conf file.")
 			return nil, err
 		}
 		defer f.Close()
 
 		hostDNS, hostSearch, hostOptions, err = parseResolvConf(f)
 		if err != nil {
+			err := fmt.Errorf("Encountered error while parsing resolv conf file. Error: %w", err)
+			logger.Error(err, "Could not parse resolv conf file.")
 			return nil, err
 		}
 	}
@@ -321,7 +319,7 @@ func getPodDNSType(pod *v1.Pod) (podDNSType, error) {
 	}
 	// This should not happen as kube-apiserver should have rejected
 	// invalid dnsPolicy.
-	return podDNSCluster, fmt.Errorf(fmt.Sprintf("invalid DNSPolicy=%v", dnsPolicy))
+	return podDNSCluster, fmt.Errorf("invalid DNSPolicy=%v", dnsPolicy)
 }
 
 // mergeDNSOptions merges DNS options. If duplicated, entries given by PodDNSConfigOption will
@@ -354,6 +352,26 @@ func mergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.Po
 	return options
 }
 
+// appendOptions appends options to the given list, but does not add duplicates.
+// append option will overwrite the previous one either in new line or in the same line.
+func appendOptions(options []string, newOption ...string) []string {
+	var optionMap = make(map[string]string)
+	for _, option := range options {
+		optName := strings.Split(option, ":")[0]
+		optionMap[optName] = option
+	}
+	for _, option := range newOption {
+		optName := strings.Split(option, ":")[0]
+		optionMap[optName] = option
+	}
+
+	options = []string{}
+	for _, v := range optionMap {
+		options = append(options, v)
+	}
+	return options
+}
+
 // appendDNSConfig appends DNS servers, search paths and options given by
 // PodDNSConfig to the existing DNS config. Duplicated entries will be merged.
 // This assumes existingDNSConfig and dnsConfig are not nil.
@@ -365,15 +383,16 @@ func appendDNSConfig(existingDNSConfig *runtimeapi.DNSConfig, dnsConfig *v1.PodD
 }
 
 // GetPodDNS returns DNS settings for the pod.
-func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
-	dnsConfig, err := c.getHostDNSConfig()
+func (c *Configurer) GetPodDNS(ctx context.Context, pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
+	logger := klog.FromContext(ctx)
+	dnsConfig, err := c.getHostDNSConfig(logger, c.ResolverConfig)
 	if err != nil {
 		return nil, err
 	}
 
 	dnsType, err := getPodDNSType(pod)
 	if err != nil {
-		klog.ErrorS(err, "Failed to get DNS type for pod. Falling back to DNSClusterFirst policy.", "pod", klog.KObj(pod))
+		logger.Error(err, "Failed to get DNS type for pod. Falling back to DNSClusterFirst policy.", "pod", klog.KObj(pod))
 		dnsType = podDNSCluster
 	}
 	switch dnsType {
@@ -397,8 +416,8 @@ func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 		}
 		// clusterDNS is not known. Pod with ClusterDNSFirst Policy cannot be created.
 		nodeErrorMsg := fmt.Sprintf("kubelet does not have ClusterDNS IP configured and cannot create Pod using %q policy. Falling back to %q policy.", v1.DNSClusterFirst, v1.DNSDefault)
-		c.recorder.Eventf(c.nodeRef, v1.EventTypeWarning, "MissingClusterDNS", nodeErrorMsg)
-		c.recorder.Eventf(pod, v1.EventTypeWarning, "MissingClusterDNS", "pod: %q. %s", format.Pod(pod), nodeErrorMsg)
+		c.recorder.WithLogger(logger).Eventf(c.nodeRef, v1.EventTypeWarning, "MissingClusterDNS", "%s", nodeErrorMsg)
+		c.recorder.WithLogger(logger).Eventf(pod, v1.EventTypeWarning, "MissingClusterDNS", "pod: %q. %s", format.Pod(pod), nodeErrorMsg)
 		// Fallback to DNSDefault.
 		fallthrough
 	case podDNSHost:
@@ -427,11 +446,11 @@ func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 	if pod.Spec.DNSConfig != nil {
 		dnsConfig = appendDNSConfig(dnsConfig, pod.Spec.DNSConfig)
 	}
-	return c.formDNSConfigFitsLimits(dnsConfig, pod), nil
+	return c.formDNSConfigFitsLimits(logger, dnsConfig, pod), nil
 }
 
 // SetupDNSinContainerizedMounter replaces the nameserver in containerized-mounter's rootfs/etc/resolv.conf with kubelet.ClusterDNS
-func (c *Configurer) SetupDNSinContainerizedMounter(mounterPath string) {
+func (c *Configurer) SetupDNSinContainerizedMounter(logger klog.Logger, mounterPath string) {
 	resolvePath := filepath.Join(strings.TrimSuffix(mounterPath, "/mounter"), "rootfs", "etc", "resolv.conf")
 	dnsString := ""
 	for _, dns := range c.clusterDNS {
@@ -440,12 +459,12 @@ func (c *Configurer) SetupDNSinContainerizedMounter(mounterPath string) {
 	if c.ResolverConfig != "" {
 		f, err := os.Open(c.ResolverConfig)
 		if err != nil {
-			klog.ErrorS(err, "Could not open resolverConf file")
+			logger.Error(err, "Could not open resolverConf file")
 		} else {
 			defer f.Close()
 			_, hostSearch, _, err := parseResolvConf(f)
 			if err != nil {
-				klog.ErrorS(err, "Error for parsing the resolv.conf file")
+				logger.Error(err, "Error for parsing the resolv.conf file")
 			} else {
 				dnsString = dnsString + "search"
 				for _, search := range hostSearch {
@@ -455,7 +474,7 @@ func (c *Configurer) SetupDNSinContainerizedMounter(mounterPath string) {
 			}
 		}
 	}
-	if err := ioutil.WriteFile(resolvePath, []byte(dnsString), 0600); err != nil {
-		klog.ErrorS(err, "Could not write dns nameserver in the file", "path", resolvePath)
+	if err := os.WriteFile(resolvePath, []byte(dnsString), 0600); err != nil {
+		logger.Error(err, "Could not write dns nameserver in the file", "path", resolvePath)
 	}
 }

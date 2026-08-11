@@ -17,10 +17,12 @@ limitations under the License.
 package podtemplate
 
 import (
+	"context"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	podtest "k8s.io/kubernetes/pkg/api/pod/testing"
 	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
@@ -29,7 +31,7 @@ func TestStrategy(t *testing.T) {
 	if !Strategy.NamespaceScoped() {
 		t.Errorf("must be namespace scoped")
 	}
-	if Strategy.AllowCreateOnUpdate() {
+	if Strategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("should not allow create on update")
 	}
 
@@ -40,11 +42,9 @@ func TestStrategy(t *testing.T) {
 			Generation: 999,
 		},
 		Template: api.PodTemplateSpec{
-			Spec: api.PodSpec{
-				RestartPolicy: api.RestartPolicyOnFailure,
-				DNSPolicy:     api.DNSClusterFirst,
-				Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent", TerminationMessagePolicy: api.TerminationMessageReadFile}},
-			},
+			Spec: podtest.MakePod("",
+				podtest.SetRestartPolicy(api.RestartPolicyOnFailure),
+			).Spec,
 		},
 	}
 

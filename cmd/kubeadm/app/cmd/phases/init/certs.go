@@ -18,20 +18,20 @@ package phases
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
-
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmscheme "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/scheme"
-	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
-	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/workflow"
 	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	certsphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
+	filesutil "k8s.io/kubernetes/cmd/kubeadm/app/util/files"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
 )
 
@@ -39,14 +39,15 @@ var (
 	saKeyLongDesc = fmt.Sprintf(cmdutil.LongDesc(`
 		Generate the private key for signing service account tokens along with its public key, and save them into
 		%s and %s files.
+
 		If both files already exist, kubeadm skips the generation step and existing files will be used.
-		`+cmdutil.AlphaDisclaimer), kubeadmconstants.ServiceAccountPrivateKeyName, kubeadmconstants.ServiceAccountPublicKeyName)
+		`), kubeadmconstants.ServiceAccountPrivateKeyName, kubeadmconstants.ServiceAccountPublicKeyName)
 
 	genericLongDesc = cmdutil.LongDesc(`
 		Generate the %[1]s, and save them into %[2]s.crt and %[2]s.key files.%[3]s
 
 		If both files already exist, kubeadm skips the generation step and existing files will be used.
-		` + cmdutil.AlphaDisclaimer)
+		`)
 )
 
 // NewCertsPhase returns the phase for the certs
@@ -56,7 +57,6 @@ func NewCertsPhase() workflow.Phase {
 		Short:  "Certificate generation",
 		Phases: newCertSubPhases(),
 		Run:    runCerts,
-		Long:   cmdutil.MacroCommandLongDescription,
 	}
 }
 
@@ -94,7 +94,7 @@ func newCertSubPhases() []workflow.Phase {
 		Short:        "Generate a private key for signing service account tokens along with its public key",
 		Long:         saKeyLongDesc,
 		Run:          runCertsSa,
-		InheritFlags: []string{options.CertificatesDir},
+		InheritFlags: getCertPhaseFlags("sa"),
 	}
 
 	subPhases = append(subPhases, saPhase)
@@ -123,6 +123,7 @@ func getCertPhaseFlags(name string) []string {
 		options.CertificatesDir,
 		options.CfgPath,
 		options.KubernetesVersion,
+		options.DryRun,
 	}
 	if name == "all" || name == "apiserver" {
 		flags = append(flags,
@@ -137,11 +138,12 @@ func getCertPhaseFlags(name string) []string {
 }
 
 func getSANDescription(certSpec *certsphase.KubeadmCert) string {
-	//Defaulted config we will use to get SAN certs
-	defaultConfig := cmdutil.DefaultInitConfiguration()
-	// GetAPIServerAltNames errors without an AdvertiseAddress; this is as good as any.
-	defaultConfig.LocalAPIEndpoint = kubeadmapiv1.APIEndpoint{
-		AdvertiseAddress: "127.0.0.1",
+	// Defaulted config we will use to get SAN certs
+	defaultConfig := &kubeadmapiv1.InitConfiguration{
+		LocalAPIEndpoint: kubeadmapiv1.APIEndpoint{
+			// GetAPIServerAltNames errors without an AdvertiseAddress; this is as good as any.
+			AdvertiseAddress: "127.0.0.1",
+		},
 	}
 
 	defaultInternalConfig := &kubeadmapi.InitConfiguration{}
@@ -187,7 +189,7 @@ func runCertsSa(c workflow.RunData) error {
 	}
 
 	// create the new service account key (or use existing)
-	return certsphase.CreateServiceAccountKeyAndPublicKeyFiles(data.CertificateWriteDir(), data.Cfg().ClusterConfiguration.PublicKeyAlgorithm())
+	return certsphase.CreateServiceAccountKeyAndPublicKeyFiles(data.CertificateWriteDir(), data.Cfg().ClusterConfiguration.EncryptionAlgorithm)
 }
 
 func runCerts(c workflow.RunData) error {
@@ -215,20 +217,25 @@ func runCAPhase(ca *certsphase.KubeadmCert) func(c workflow.RunData) error {
 
 		if cert, err := pkiutil.TryLoadCertFromDisk(data.CertificateDir(), ca.BaseName); err == nil {
 			certsphase.CheckCertificatePeriodValidity(ca.BaseName, cert)
+			srcCertPath, srcKeyPath := pkiutil.PathsForCertAndKey(data.CertificateDir(), ca.BaseName)
+			dryRunCertPath, dryRunKeyPath := pkiutil.PathsForCertAndKey(data.CertificateWriteDir(), ca.BaseName)
 
 			// If CA Cert existed while dryrun, copy CA Cert to dryrun dir for later use
 			if data.DryRun() {
-				err := phases.CopyFile(filepath.Join(data.CertificateDir(), kubeadmconstants.CACertName), filepath.Join(data.CertificateWriteDir(), kubeadmconstants.CACertName))
+				if err := os.MkdirAll(filepath.Dir(dryRunCertPath), os.FileMode(0700)); err != nil {
+					return errors.Wrapf(err, "failed to create directory %s", filepath.Dir(dryRunCertPath))
+				}
+				err := filesutil.CopyFile(srcCertPath, dryRunCertPath)
 				if err != nil {
-					return errors.Wrapf(err, "could not copy %s to dry run directory %s", kubeadmconstants.CACertName, data.CertificateWriteDir())
+					return errors.Wrapf(err, "could not copy %s to dry run directory %s", fmt.Sprintf("%s.crt", ca.BaseName), data.CertificateWriteDir())
 				}
 			}
 			if _, err := pkiutil.TryLoadKeyFromDisk(data.CertificateDir(), ca.BaseName); err == nil {
 				// If CA Key existed while dryrun, copy CA Key to dryrun dir for later use
 				if data.DryRun() {
-					err := phases.CopyFile(filepath.Join(data.CertificateDir(), kubeadmconstants.CAKeyName), filepath.Join(data.CertificateWriteDir(), kubeadmconstants.CAKeyName))
+					err := filesutil.CopyFile(srcKeyPath, dryRunKeyPath)
 					if err != nil {
-						return errors.Wrapf(err, "could not copy %s to dry run directory %s", kubeadmconstants.CAKeyName, data.CertificateWriteDir())
+						return errors.Wrapf(err, "could not copy %s to dry run directory %s", fmt.Sprintf("%s.key", ca.BaseName), data.CertificateWriteDir())
 					}
 				}
 				fmt.Printf("[certs] Using existing %s certificate authority\n", ca.BaseName)

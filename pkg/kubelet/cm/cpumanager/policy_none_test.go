@@ -19,8 +19,11 @@ package cpumanager
 import (
 	"testing"
 
+	"k8s.io/kubernetes/test/utils/ktesting"
+
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
+	"k8s.io/utils/cpuset"
 )
 
 func TestNonePolicyName(t *testing.T) {
@@ -33,34 +36,36 @@ func TestNonePolicyName(t *testing.T) {
 }
 
 func TestNonePolicyAllocate(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	policy := &nonePolicy{}
 
 	st := &mockState{
 		assignments:   state.ContainerCPUAssignments{},
-		defaultCPUSet: cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7),
+		defaultCPUSet: cpuset.New(1, 2, 3, 4, 5, 6, 7),
 	}
 
 	testPod := makePod("fakePod", "fakeContainer", "1000m", "1000m")
 
 	container := &testPod.Spec.Containers[0]
-	err := policy.Allocate(st, testPod, container)
+	err := policy.Allocate(logger, st, testPod, container, lifecycle.AddOperation)
 	if err != nil {
-		t.Errorf("NonePolicy Allocate() error. expected no error but got: %v", err)
+		t.Errorf("NonePolicy Allocate(Add) error. expected no error but got: %v", err)
 	}
 }
 
 func TestNonePolicyRemove(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	policy := &nonePolicy{}
 
 	st := &mockState{
 		assignments:   state.ContainerCPUAssignments{},
-		defaultCPUSet: cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7),
+		defaultCPUSet: cpuset.New(1, 2, 3, 4, 5, 6, 7),
 	}
 
 	testPod := makePod("fakePod", "fakeContainer", "1000m", "1000m")
 
 	container := &testPod.Spec.Containers[0]
-	err := policy.RemoveContainer(st, string(testPod.UID), container.Name)
+	err := policy.RemoveContainer(logger, st, string(testPod.UID), container.Name)
 	if err != nil {
 		t.Errorf("NonePolicy RemoveContainer() error. expected no error but got %v", err)
 	}
@@ -78,7 +83,7 @@ func TestNonePolicyGetAllocatableCPUs(t *testing.T) {
 
 	st := &mockState{
 		assignments:   state.ContainerCPUAssignments{},
-		defaultCPUSet: cpuset.NewCPUSet(cpuIDs...),
+		defaultCPUSet: cpuset.New(cpuIDs...),
 	}
 
 	cpus := policy.GetAllocatableCPUs(st)

@@ -17,6 +17,8 @@ limitations under the License.
 package codec
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
 	"k8s.io/klog/v2"
@@ -24,11 +26,11 @@ import (
 	// ensure the core apis are installed
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/component-base/codec"
-	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/apis/config/scheme"
 	kubeletconfigv1beta1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1beta1"
@@ -62,26 +64,8 @@ func NewKubeletconfigYAMLEncoder(targetVersion schema.GroupVersion) (runtime.Enc
 	return codecs.EncoderForVersion(info.Serializer, targetVersion), nil
 }
 
-// NewYAMLEncoder generates a new runtime.Encoder that encodes objects to YAML.
-func NewYAMLEncoder(groupName string) (runtime.Encoder, error) {
-	// encode to YAML
-	mediaType := "application/yaml"
-	info, ok := runtime.SerializerInfoForMediaType(legacyscheme.Codecs.SupportedMediaTypes(), mediaType)
-	if !ok {
-		return nil, fmt.Errorf("unsupported media type %q", mediaType)
-	}
-
-	versions := legacyscheme.Scheme.PrioritizedVersionsForGroup(groupName)
-	if len(versions) == 0 {
-		return nil, fmt.Errorf("no enabled versions for group %q", groupName)
-	}
-
-	// the "best" version supposedly comes first in the list returned from legacyscheme.Registry.EnabledVersionsForGroup.
-	return legacyscheme.Codecs.EncoderForVersion(info.Serializer, versions[0]), nil
-}
-
 // DecodeKubeletConfiguration decodes a serialized KubeletConfiguration to the internal type.
-func DecodeKubeletConfiguration(kubeletCodecs *serializer.CodecFactory, data []byte) (*kubeletconfig.KubeletConfiguration, error) {
+func DecodeKubeletConfiguration(ctx context.Context, kubeletCodecs *serializer.CodecFactory, data []byte) (*kubeletconfig.KubeletConfiguration, error) {
 	var (
 		obj runtime.Object
 		gvk *schema.GroupVersionKind
@@ -90,6 +74,7 @@ func DecodeKubeletConfiguration(kubeletCodecs *serializer.CodecFactory, data []b
 	// The UniversalDecoder runs defaulting and returns the internal type by default.
 	obj, gvk, err := kubeletCodecs.UniversalDecoder().Decode(data, nil, nil)
 	if err != nil {
+		logger := klog.FromContext(ctx)
 		// Try strict decoding first. If that fails decode with a lenient
 		// decoder, which has only v1beta1 registered, and log a warning.
 		// The lenient path is to be dropped when support for v1beta1 is dropped.
@@ -114,7 +99,7 @@ func DecodeKubeletConfiguration(kubeletCodecs *serializer.CodecFactory, data []b
 			return nil, fmt.Errorf("failed lenient decoding: %v", err)
 		}
 		// Continue with the v1beta1 object that was decoded leniently, but emit a warning.
-		klog.InfoS("Using lenient decoding as strict decoding failed", "err", err)
+		logger.Info("Using lenient decoding as strict decoding failed", "err", err)
 	}
 
 	internalKC, ok := obj.(*kubeletconfig.KubeletConfiguration)
@@ -123,4 +108,18 @@ func DecodeKubeletConfiguration(kubeletCodecs *serializer.CodecFactory, data []b
 	}
 
 	return internalKC, nil
+}
+
+// DecodeKubeletConfigurationIntoJSON decodes a serialized KubeletConfiguration to the internal type.
+func DecodeKubeletConfigurationIntoJSON(kubeletCodecs *serializer.CodecFactory, data []byte) ([]byte, *schema.GroupVersionKind, error) {
+	// The UniversalDecoder runs defaulting and returns the internal type by default.
+	obj, gvk, err := kubeletCodecs.UniversalDecoder().Decode(data, nil, &unstructured.Unstructured{})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	objT := obj.(*unstructured.Unstructured)
+
+	jsonData, err := json.Marshal(objT.Object)
+	return jsonData, gvk, err
 }

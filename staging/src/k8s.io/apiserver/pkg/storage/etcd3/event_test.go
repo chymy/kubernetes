@@ -17,11 +17,13 @@ limitations under the License.
 package etcd3
 
 import (
+	"testing"
+	"time"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"testing"
 )
 
 func TestParseEvent(t *testing.T) {
@@ -100,9 +102,10 @@ func TestParseEvent(t *testing.T) {
 			actualEvent, err := parseEvent(tc.etcdEvent)
 			if tc.expectedErr != "" {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), tc.expectedErr)
+				assert.ErrorContains(t, err, tc.expectedErr)
 			} else {
 				require.NoError(t, err)
+				actualEvent.recordTime = time.Time{}
 				assert.Equal(t, tc.expectedEvent, actualEvent)
 			}
 		})

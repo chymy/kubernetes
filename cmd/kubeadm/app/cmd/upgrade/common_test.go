@@ -18,50 +18,84 @@ package upgrade
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
+
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
-	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
+	"k8s.io/kubernetes/cmd/kubeadm/app/preflight"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/output"
 )
 
+//go:embed testdata/config-token.yaml
+var testConfigToken string
+
 func TestEnforceRequirements(t *testing.T) {
+	tmpDir := t.TempDir()
+	fullPath := filepath.Join(tmpDir, "test-config-file")
+	f, err := os.Create(fullPath)
+	if err != nil {
+		t.Errorf("Unable to create test file %q: %v", fullPath, err)
+	}
+	defer f.Close()
+	if _, err = f.WriteString(testConfigToken); err != nil {
+		t.Errorf("Unable to write test file %q: %v", fullPath, err)
+	}
 	tcases := []struct {
-		name          string
-		newK8sVersion string
-		dryRun        bool
-		flags         applyPlanFlags
-		expectedErr   bool
+		name               string
+		newK8sVersion      string
+		dryRun             bool
+		flags              applyPlanFlags
+		expectedErr        string
+		expectedErrNonRoot string
 	}{
 		{
-			name:        "Fail pre-flight check",
-			expectedErr: true,
+			name: "Fail pre-flight check",
+			flags: applyPlanFlags{
+				kubeConfigPath: fullPath,
+			},
+			expectedErr:        "preflight checks failed",
+			expectedErrNonRoot: "preflight checks failed",
 		},
 		{
-			name: "Bogus preflight check disabled when also 'all' is specified",
+			name: "Bogus preflight check specify all with individual check",
 			flags: applyPlanFlags{
 				ignorePreflightErrors: []string{"bogusvalue", "all"},
+				kubeConfigPath:        fullPath,
 			},
-			expectedErr: true,
+			expectedErr: "don't specify individual checks if 'all' is used",
 		},
 		{
 			name: "Fail to create client",
 			flags: applyPlanFlags{
 				ignorePreflightErrors: []string{"all"},
 			},
-			expectedErr: true,
+			expectedErr: "couldn't create a Kubernetes client from file",
 		},
 	}
 	for _, tt := range tcases {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, err := enforceRequirements(&tt.flags, nil, tt.dryRun, false, &output.TextPrinter{})
-
-			if err == nil && tt.expectedErr {
+			_, _, _, _, err := enforceRequirements(&pflag.FlagSet{}, &tt.flags, nil, tt.dryRun, false, &output.TextPrinter{})
+			if err == nil && len(tt.expectedErr) != 0 {
 				t.Error("Expected error, but got success")
 			}
-			if err != nil && !tt.expectedErr {
-				t.Errorf("Unexpected error: %+v", err)
+
+			expErr := tt.expectedErr
+			// pre-flight check expects the user to be root, so the root and non-root should hit different errors
+			isPrivileged := preflight.IsPrivilegedUserCheck{}
+			// this will return an array of errors if we're not running as a privileged user.
+			_, errors := isPrivileged.Check()
+			if len(errors) != 0 && len(tt.expectedErrNonRoot) != 0 {
+				expErr = tt.expectedErrNonRoot
+			}
+			if err != nil && !strings.Contains(err.Error(), expErr) {
+				t.Fatalf("enforceRequirements returned unexpected error, expected: %s, got %v", expErr, err)
 			}
 		})
 	}
@@ -100,6 +134,7 @@ func TestPrintConfiguration(t *testing.T) {
 	kind: ClusterConfiguration
 	kubernetesVersion: v1.7.1
 	networking: {}
+	proxy: {}
 	scheduler: {}
 `, kubeadmapiv1.SchemeGroupVersion.String())),
 		},
@@ -132,6 +167,7 @@ func TestPrintConfiguration(t *testing.T) {
 	kubernetesVersion: v1.7.1
 	networking:
 	  serviceSubnet: 10.96.0.1/12
+	proxy: {}
 	scheduler: {}
 `),
 		},

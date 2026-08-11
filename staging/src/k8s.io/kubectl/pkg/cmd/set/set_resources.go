@@ -18,19 +18,22 @@ package set
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
-	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
+	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
-	generateversioned "k8s.io/kubectl/pkg/generate/versioned"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util/i18n"
@@ -86,14 +89,13 @@ type SetResourcesOptions struct {
 
 	UpdatePodSpecForObject polymorphichelpers.UpdatePodSpecForObjectFunc
 	Resources              []string
-	DryRunVerifier         *resource.QueryParamVerifier
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 // NewResourcesOptions returns a ResourcesOptions indicating all containers in the selected
 // pod templates are selected by default.
-func NewResourcesOptions(streams genericclioptions.IOStreams) *SetResourcesOptions {
+func NewResourcesOptions(streams genericiooptions.IOStreams) *SetResourcesOptions {
 	return &SetResourcesOptions{
 		PrintFlags:  genericclioptions.NewPrintFlags("resource requirements updated").WithTypeSetter(scheme.Scheme),
 		RecordFlags: genericclioptions.NewRecordFlags(),
@@ -107,7 +109,7 @@ func NewResourcesOptions(streams genericclioptions.IOStreams) *SetResourcesOptio
 }
 
 // NewCmdResources returns initialized Command instance for the 'set resources' sub command
-func NewCmdResources(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdResources(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewResourcesOptions(streams)
 
 	cmd := &cobra.Command{
@@ -157,11 +159,6 @@ func (o *SetResourcesOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, ar
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.DryRunVerifier = resource.NewQueryParamVerifier(dynamicClient, f.OpenAPIGetter(), resource.QueryParamDryRun)
 
 	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.DryRunStrategy)
 	printer, err := o.PrintFlags.ToPrinter()
@@ -171,7 +168,7 @@ func (o *SetResourcesOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, ar
 	o.PrintObj = printer.PrintObj
 
 	cmdNamespace, enforceNamespace, err := f.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
+	if err != nil && !(o.Local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 
@@ -199,10 +196,7 @@ func (o *SetResourcesOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, ar
 	}
 
 	o.Infos, err = builder.Do().Infos()
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // Validate makes sure that provided values in ResourcesOptions are valid
@@ -218,10 +212,17 @@ func (o *SetResourcesOptions) Validate() error {
 		return fmt.Errorf("you must specify an update to requests or limits (in the form of --requests/--limits)")
 	}
 
-	o.ResourceRequirements, err = generateversioned.HandleResourceRequirementsV1(map[string]string{"limits": o.Limits, "requests": o.Requests})
+	o.ResourceRequirements = v1.ResourceRequirements{}
+	limits, err := parseResourceList(o.Limits)
 	if err != nil {
 		return err
 	}
+	o.ResourceRequirements.Limits = limits
+	requests, err := parseResourceList(o.Requests)
+	if err != nil {
+		return err
+	}
+	o.ResourceRequirements.Requests = requests
 
 	return nil
 }
@@ -291,13 +292,6 @@ func (o *SetResourcesOptions) Run() error {
 			continue
 		}
 
-		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
-				allErrs = append(allErrs, fmt.Errorf("failed to patch resources update to pod template %v", err))
-				continue
-			}
-		}
-
 		actual, err := resource.
 			NewHelper(info.Client, info.Mapping).
 			DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
@@ -313,4 +307,25 @@ func (o *SetResourcesOptions) Run() error {
 		}
 	}
 	return utilerrors.NewAggregate(allErrs)
+}
+
+func parseResourceList(spec string) (v1.ResourceList, error) {
+	if spec == "" {
+		return nil, nil
+	}
+
+	result := v1.ResourceList{}
+	for resourceStatement := range strings.SplitSeq(spec, ",") {
+		parts := strings.Split(resourceStatement, "=")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid argument syntax %v, expected <resource>=<value>", resourceStatement)
+		}
+		resourceName := v1.ResourceName(parts[0])
+		resourceQuantity, err := apiresource.ParseQuantity(parts[1])
+		if err != nil {
+			return nil, err
+		}
+		result[resourceName] = resourceQuantity
+	}
+	return result, nil
 }

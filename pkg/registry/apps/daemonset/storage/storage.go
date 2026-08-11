@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/apps/daemonset"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // REST implements a RESTStorage for DaemonSets
@@ -40,9 +40,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against DaemonSets.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &apps.DaemonSet{} },
-		NewListFunc:              func() runtime.Object { return &apps.DaemonSetList{} },
-		DefaultQualifiedResource: apps.Resource("daemonsets"),
+		NewFunc:                   func() runtime.Object { return &apps.DaemonSet{} },
+		NewListFunc:               func() runtime.Object { return &apps.DaemonSetList{} },
+		DefaultQualifiedResource:  apps.Resource("daemonsets"),
+		SingularQualifiedResource: apps.Resource("daemonset"),
 
 		CreateStrategy:      daemonset.Strategy,
 		UpdateStrategy:      daemonset.Strategy,

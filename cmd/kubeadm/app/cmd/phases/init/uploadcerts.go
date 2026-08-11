@@ -19,13 +19,11 @@ package phases
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
-
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/workflow"
-	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/copycerts"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
 )
 
 // NewUploadCertsPhase returns the uploadCerts phase
@@ -33,7 +31,7 @@ func NewUploadCertsPhase() workflow.Phase {
 	return workflow.Phase{
 		Name:  "upload-certs",
 		Short: fmt.Sprintf("Upload certificates to %s", kubeadmconstants.KubeadmCertsSecret),
-		Long:  cmdutil.MacroCommandLongDescription,
+		Long:  fmt.Sprintf("Upload control plane certificates to the %s Secret", kubeadmconstants.KubeadmCertsSecret),
 		Run:   runUploadCerts,
 		InheritFlags: []string{
 			options.CfgPath,
@@ -41,6 +39,7 @@ func NewUploadCertsPhase() workflow.Phase {
 			options.UploadCerts,
 			options.CertificateKey,
 			options.SkipCertificateKeyPrint,
+			options.DryRun,
 		},
 	}
 }

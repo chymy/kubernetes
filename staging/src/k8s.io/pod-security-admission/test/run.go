@@ -36,6 +36,11 @@ import (
 	"k8s.io/pod-security-admission/policy"
 )
 
+const (
+	newestMinorVersionToTest            = 37
+	podOSBasedRestrictionEnabledVersion = 29
+)
+
 // Options hold configuration for running integration tests against an existing server.
 type Options struct {
 	// ClientConfig is a client configuration with sufficient permission to create, update, and delete
@@ -47,6 +52,10 @@ type Options struct {
 	// This is used to skip failure cases for negative tests of data in alpha/beta fields.
 	// If unset, all testcases are run.
 	Features featuregate.FeatureGate
+
+	// EmulationVersion optionally indicates a different minor version is being emulated.
+	// This can lower the effective "latest" version.
+	EmulationVersion *api.Version
 
 	// CreateNamespace is an optional stub for creating a namespace with the given name and labels.
 	// Returning an error fails the test.
@@ -115,13 +124,28 @@ func computeVersionsToTest(t *testing.T, checks []policy.Check) []api.Version {
 		}
 	}
 
+	for _, versionsForLevel := range minimalValidLinuxPods {
+		for version := range versionsForLevel {
+			if version.Major() != 1 {
+				t.Fatalf("expected major version 1, got %d", version.Major())
+			}
+			seenVersions[version] = true
+		}
+	}
+
+	for _, versionsForLevel := range minimalValidWindowsPods {
+		for version := range versionsForLevel {
+			if version.Major() != 1 {
+				t.Fatalf("expected major version 1, got %d", version.Major())
+			}
+			seenVersions[version] = true
+		}
+	}
+
 	alwaysIncludeVersions := []api.Version{
 		// include the oldest version by default
 		api.MajorMinorVersion(1, 0),
-		// include the release under development (1.23 at time of writing).
-		// this can be incremented to the current version whenever is convenient.
-		// TODO: find a way to use api.LatestVersion() here
-		api.MajorMinorVersion(1, 23),
+		api.MajorMinorVersion(1, newestMinorVersionToTest),
 	}
 	for _, version := range alwaysIncludeVersions {
 		seenVersions[version] = true
@@ -174,7 +198,7 @@ func Run(t *testing.T, opts Options) {
 	if len(opts.Checks) == 0 {
 		opts.Checks = policy.DefaultChecks()
 	}
-	_, err = policy.NewEvaluator(opts.Checks)
+	_, err = policy.NewEvaluator(opts.Checks, opts.EmulationVersion)
 	if err != nil {
 		t.Fatalf("invalid checks: %v", err)
 	}
@@ -246,8 +270,9 @@ func Run(t *testing.T, opts Options) {
 			}
 
 			// create controller
-			createController := func(t *testing.T, i int, pod *corev1.Pod, expectSuccess bool, expectErrorSubstring string) {
+			createController := func(t *testing.T, i int, pod *corev1.Pod, expectSuccess bool, expectError bool, expectErrorSubstring string) {
 				t.Helper()
+
 				// avoid mutating original pod fixture
 				pod = pod.DeepCopy()
 				if pod.Labels == nil {
@@ -268,41 +293,79 @@ func Run(t *testing.T, opts Options) {
 					},
 				}
 				_, err := client.AppsV1().Deployments(ns).Create(context.Background(), deployment, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
-				if err != nil {
-					t.Errorf("%d: unexpected error creating controller with %s: %v", i, toJSON(pod), err)
+
+				failureText := ""
+				switch {
+				case expectSuccess && expectError:
+					t.Error("invalid test combination, cannot expectSuccess and expectError")
 					return
+				case expectError:
+					if err == nil {
+						t.Errorf("%d: expected error creating controller with %s, got none", i, toJSON(pod))
+						return
+					}
+					failureText = err.Error()
+				default:
+					if err != nil {
+						t.Errorf("%d: unexpected error creating controller with %s: %v", i, toJSON(pod), err)
+						return
+					}
+					failureText = strings.Join(warningHandler.FlushWarnings(), "; ")
 				}
-				warningText := strings.Join(warningHandler.FlushWarnings(), "; ")
+
 				if !expectSuccess {
-					if len(warningText) == 0 {
+					if len(failureText) == 0 {
 						t.Errorf("%d: expected warnings creating %s, got none", i, toJSON(pod))
 						return
 					}
-					if strings.Contains(warningText, policy.UnknownForbiddenReason) {
-						t.Errorf("%d: unexpected unknown forbidden reason creating %s: %v", i, toJSON(pod), warningText)
+					if strings.Contains(failureText, policy.UnknownForbiddenReason) {
+						t.Errorf("%d: unexpected unknown forbidden reason creating %s: %v", i, toJSON(pod), failureText)
 						return
 					}
-					if !strings.Contains(warningText, expectErrorSubstring) {
-						t.Errorf("%d: expected warning with substring %q, got %v", i, expectErrorSubstring, warningText)
+					if !strings.Contains(failureText, expectErrorSubstring) {
+						t.Errorf("%d: expected warning with substring %q, got %v", i, expectErrorSubstring, failureText)
 						return
 					}
 				}
 
-				if expectSuccess && len(warningText) > 0 {
-					if (len(expectErrorSubstring) > 0 && strings.Contains(warningText, expectErrorSubstring)) ||
-						strings.Contains(warningText, policy.UnknownForbiddenReason) {
-						t.Errorf("%d: unexpected warning creating %s: %v", i, toJSON(pod), warningText)
+				if expectSuccess && len(failureText) > 0 {
+					if (len(expectErrorSubstring) > 0 && strings.Contains(failureText, expectErrorSubstring)) ||
+						strings.Contains(failureText, policy.UnknownForbiddenReason) {
+						t.Errorf("%d: unexpected warning creating %s: %v", i, toJSON(pod), failureText)
 					}
 				}
 			}
 
-			minimalValidPod, err := GetMinimalValidPod(level, version)
+			minimalValidOSNeutralPod, err := GetMinimalValidPod(level, version)
 			if err != nil {
 				t.Fatal(err)
 			}
+			var minimalValidLinuxPod, minimalValidWindowsPod *corev1.Pod
+			if level == api.LevelRestricted && version.Minor() >= podOSBasedRestrictionEnabledVersion {
+				minimalValidLinuxPod, err = GetMinimalValidLinuxPod(level, version)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				minimalValidWindowsPod, err = GetMinimalValidWindowsPod(level, version)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			t.Run(ns+"_pass_base", func(t *testing.T) {
-				createPod(t, 0, minimalValidPod.DeepCopy(), true, "")
-				createController(t, 0, minimalValidPod.DeepCopy(), true, "")
+				createPod(t, 0, minimalValidOSNeutralPod.DeepCopy(), true, "")
+				createController(t, 0, minimalValidOSNeutralPod.DeepCopy(), true, false, "")
+				if minimalValidLinuxPod != nil && minimalValidWindowsPod != nil {
+					// Linux specific pods
+					createPod(t, 0, minimalValidLinuxPod.DeepCopy(), true, "")
+					createController(t, 0, minimalValidLinuxPod.DeepCopy(), true, false, "")
+
+					// Windows specific pods
+					createPod(t, 0, minimalValidWindowsPod.DeepCopy(), true, "")
+					createController(t, 0, minimalValidWindowsPod.DeepCopy(), true, false, "")
+				}
+
 			})
 
 			checkIDs, err := checksForLevelAndVersion(opts.Checks, level, version)
@@ -321,7 +384,7 @@ func Run(t *testing.T, opts Options) {
 				t.Run(ns+"_pass_"+string(checkID), func(t *testing.T) {
 					for i, pod := range checkData.pass {
 						createPod(t, i, pod, true, "")
-						createController(t, i, pod, true, "")
+						createController(t, i, pod, true, false, "")
 					}
 				})
 
@@ -338,7 +401,7 @@ func Run(t *testing.T, opts Options) {
 					}
 					for i, pod := range checkData.fail {
 						createPod(t, i, pod, false, checkData.expectErrorSubstring)
-						createController(t, i, pod, false, checkData.expectErrorSubstring)
+						createController(t, i, pod, false, checkData.failRequiresError, checkData.expectErrorSubstring)
 					}
 				})
 			}

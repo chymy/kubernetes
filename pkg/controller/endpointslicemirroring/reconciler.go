@@ -28,10 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
+	endpointsliceutil "k8s.io/endpointslice/util"
 	"k8s.io/klog/v2"
+	endpointsv1 "k8s.io/kubernetes/pkg/api/v1/endpoints"
 	"k8s.io/kubernetes/pkg/controller/endpointslicemirroring/metrics"
-	endpointutil "k8s.io/kubernetes/pkg/controller/util/endpoint"
-	endpointsliceutil "k8s.io/kubernetes/pkg/controller/util/endpointslice"
 )
 
 // reconciler is responsible for transforming current EndpointSlice state into
@@ -61,14 +61,17 @@ type reconciler struct {
 // reconcile takes an Endpoints resource and ensures that corresponding
 // EndpointSlices exist. It creates, updates, or deletes EndpointSlices to
 // ensure the desired set of addresses are represented by EndpointSlices.
-func (r *reconciler) reconcile(endpoints *corev1.Endpoints, existingSlices []*discovery.EndpointSlice) error {
+func (r *reconciler) reconcile(ctx context.Context, endpoints *corev1.Endpoints, existingSlices []*discovery.EndpointSlice) error {
+	logger := klog.FromContext(ctx)
 	// Calculate desired state.
 	d := newDesiredCalc()
 
 	numInvalidAddresses := 0
 	addressesSkipped := 0
 
-	for _, subset := range endpoints.Subsets {
+	// canonicalize the Endpoints subsets before processing them
+	subsets := endpointsv1.RepackSubsets(endpoints.Subsets)
+	for _, subset := range subsets {
 		multiKey := d.initPorts(subset.Ports)
 
 		totalAddresses := len(subset.Addresses) + len(subset.NotReadyAddresses)
@@ -85,7 +88,7 @@ func (r *reconciler) reconcile(endpoints *corev1.Endpoints, existingSlices []*di
 				totalAddressesAdded++
 			} else {
 				numInvalidAddresses++
-				klog.Warningf("Address in %s/%s Endpoints is not a valid IP, it will not be mirrored to an EndpointSlice: %s", endpoints.Namespace, endpoints.Name, address.IP)
+				logger.Info("Address in Endpoints is not a valid IP, it will not be mirrored to an EndpointSlice", "endpoints", klog.KObj(endpoints), "IP", address.IP)
 			}
 		}
 
@@ -100,7 +103,7 @@ func (r *reconciler) reconcile(endpoints *corev1.Endpoints, existingSlices []*di
 				totalAddressesAdded++
 			} else {
 				numInvalidAddresses++
-				klog.Warningf("Address in %s/%s Endpoints is not a valid IP, it will not be mirrored to an EndpointSlice: %s", endpoints.Namespace, endpoints.Name, address.IP)
+				logger.Info("Address in Endpoints is not a valid IP, it will not be mirrored to an EndpointSlice", "endpoints", klog.KObj(endpoints), "IP", address.IP)
 			}
 		}
 
@@ -121,7 +124,7 @@ func (r *reconciler) reconcile(endpoints *corev1.Endpoints, existingSlices []*di
 	// Record a separate event if we skipped mirroring due to the number of
 	// addresses exceeding MaxEndpointsPerSubset.
 	if addressesSkipped > numInvalidAddresses {
-		klog.Warningf("%d addresses in %s/%s Endpoints were skipped due to exceeding MaxEndpointsPerSubset", addressesSkipped, endpoints.Namespace, endpoints.Name)
+		logger.Info("Addresses in Endpoints were skipped due to exceeding MaxEndpointsPerSubset", "skippedAddresses", addressesSkipped, "endpoints", klog.KObj(endpoints))
 		r.eventRecorder.Eventf(endpoints, corev1.EventTypeWarning, TooManyAddressesToMirror,
 			"A max of %d addresses can be mirrored to EndpointSlices per Endpoints subset. %d addresses were skipped", r.maxEndpointsPerSubset, addressesSkipped)
 	}
@@ -142,7 +145,7 @@ func (r *reconciler) reconcile(endpoints *corev1.Endpoints, existingSlices []*di
 		slices.append(pmSlices)
 		totals.add(pmTotals)
 
-		epMetrics.Set(endpointutil.PortMapKey(portKey), metrics.EfficiencyInfo{
+		epMetrics.Set(endpointsliceutil.PortMapKey(portKey), metrics.EfficiencyInfo{
 			Endpoints: numEndpoints,
 			Slices:    len(existingSlicesByKey[portKey]) + len(pmSlices.toCreate) - len(pmSlices.toDelete),
 		})
@@ -165,7 +168,7 @@ func (r *reconciler) reconcile(endpoints *corev1.Endpoints, existingSlices []*di
 	endpointsNN := types.NamespacedName{Name: endpoints.Name, Namespace: endpoints.Namespace}
 	r.metricsCache.UpdateEndpointPortCache(endpointsNN, epMetrics)
 
-	return r.finalize(endpoints, slices)
+	return r.finalize(ctx, endpoints, slices)
 }
 
 // reconcileByPortMapping compares the endpoints found in existing slices with
@@ -205,7 +208,11 @@ func (r *reconciler) reconcileByPortMapping(
 		totals = totalChanges(existingSlices[0], desiredSet)
 		if totals.added == 0 && totals.updated == 0 && totals.removed == 0 &&
 			apiequality.Semantic.DeepEqual(endpoints.Labels, compareLabels) &&
-			apiequality.Semantic.DeepEqual(compareAnnotations, existingSlices[0].Annotations) {
+			apiequality.Semantic.DeepEqual(compareAnnotations, existingSlices[0].Annotations) &&
+			!needRebuildExistingSlices(endpoints, existingSlices[0]) {
+			if !r.endpointSliceTracker.Has(existingSlices[0]) {
+				r.endpointSliceTracker.Update(existingSlices[0]) // Always ensure each EndpointSlice is being tracked.
+			}
 			return slices, totals
 		}
 	}
@@ -231,7 +238,7 @@ func (r *reconciler) reconcileByPortMapping(
 }
 
 // finalize creates, updates, and deletes slices as specified
-func (r *reconciler) finalize(endpoints *corev1.Endpoints, slices slicesByAction) error {
+func (r *reconciler) finalize(ctx context.Context, endpoints *corev1.Endpoints, slices slicesByAction) error {
 	// If there are slices to create and delete, recycle the slices marked for
 	// deletion by replacing creates with updates of slices that would otherwise
 	// be deleted.
@@ -243,7 +250,7 @@ func (r *reconciler) finalize(endpoints *corev1.Endpoints, slices slicesByAction
 	// being deleted.
 	if endpoints.DeletionTimestamp == nil {
 		for _, endpointSlice := range slices.toCreate {
-			createdSlice, err := epsClient.Create(context.TODO(), endpointSlice, metav1.CreateOptions{})
+			createdSlice, err := epsClient.Create(ctx, endpointSlice, metav1.CreateOptions{})
 			if err != nil {
 				// If the namespace is terminating, creates will continue to fail. Simply drop the item.
 				if errors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
@@ -257,7 +264,7 @@ func (r *reconciler) finalize(endpoints *corev1.Endpoints, slices slicesByAction
 	}
 
 	for _, endpointSlice := range slices.toUpdate {
-		updatedSlice, err := epsClient.Update(context.TODO(), endpointSlice, metav1.UpdateOptions{})
+		updatedSlice, err := epsClient.Update(ctx, endpointSlice, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to update %s EndpointSlice for Endpoints %s/%s: %v", endpointSlice.Name, endpoints.Namespace, endpoints.Name, err)
 		}
@@ -266,7 +273,7 @@ func (r *reconciler) finalize(endpoints *corev1.Endpoints, slices slicesByAction
 	}
 
 	for _, endpointSlice := range slices.toDelete {
-		err := epsClient.Delete(context.TODO(), endpointSlice.Name, metav1.DeleteOptions{})
+		err := epsClient.Delete(ctx, endpointSlice.Name, metav1.DeleteOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to delete %s EndpointSlice for Endpoints %s/%s: %v", endpointSlice.Name, endpoints.Namespace, endpoints.Name, err)
 		}
@@ -279,11 +286,11 @@ func (r *reconciler) finalize(endpoints *corev1.Endpoints, slices slicesByAction
 
 // deleteEndpoints deletes any associated EndpointSlices and cleans up any
 // Endpoints references from the metricsCache.
-func (r *reconciler) deleteEndpoints(namespace, name string, endpointSlices []*discovery.EndpointSlice) error {
+func (r *reconciler) deleteEndpoints(ctx context.Context, namespace, name string, endpointSlices []*discovery.EndpointSlice) error {
 	r.metricsCache.DeleteEndpoints(types.NamespacedName{Namespace: namespace, Name: name})
 	var errs []error
 	for _, endpointSlice := range endpointSlices {
-		err := r.client.DiscoveryV1().EndpointSlices(namespace).Delete(context.TODO(), endpointSlice.Name, metav1.DeleteOptions{})
+		err := r.client.DiscoveryV1().EndpointSlices(namespace).Delete(ctx, endpointSlice.Name, metav1.DeleteOptions{})
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -321,7 +328,7 @@ func totalChanges(existingSlice *discovery.EndpointSlice, desiredSet endpointsli
 
 			// If existing version of endpoint doesn't match desired version
 			// increment number of endpoints to be updated.
-			if !endpointutil.EndpointsEqualBeyondHash(got, &endpoint) {
+			if !endpointsliceutil.EndpointsEqualBeyondHash(got, &endpoint) {
 				totals.updated++
 			}
 		}
@@ -331,4 +338,14 @@ func totalChanges(existingSlice *discovery.EndpointSlice, desiredSet endpointsli
 	// be added.
 	totals.added = desiredSet.Len() - existingMatches
 	return totals
+}
+
+func needRebuildExistingSlices(endpoints *corev1.Endpoints, existingSlice *discovery.EndpointSlice) bool {
+	for index := range existingSlice.OwnerReferences {
+		owner := existingSlice.OwnerReferences[index]
+		if owner.Kind == "Endpoints" && owner.Name == endpoints.Name && owner.UID != endpoints.UID {
+			return true
+		}
+	}
+	return false
 }

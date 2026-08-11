@@ -20,13 +20,12 @@ import (
 	"context"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
+	fwk "k8s.io/kube-scheduler/framework"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 )
 
@@ -39,18 +38,18 @@ func SetupPluginWithInformers(
 	tb testing.TB,
 	pf frameworkruntime.PluginFactory,
 	config runtime.Object,
-	sharedLister framework.SharedLister,
+	sharedLister fwk.SharedLister,
 	objs []runtime.Object,
-) framework.Plugin {
+) fwk.Plugin {
 	objs = append([]runtime.Object{&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ""}}}, objs...)
-	informerFactory := informers.NewSharedInformerFactory(fake.NewSimpleClientset(objs...), 0)
-	fh, err := frameworkruntime.NewFramework(nil, nil, wait.NeverStop,
+	informerFactory := informers.NewSharedInformerFactory(fake.NewClientset(objs...), 0)
+	fh, err := frameworkruntime.NewFramework(ctx, nil, nil,
 		frameworkruntime.WithSnapshotSharedLister(sharedLister),
 		frameworkruntime.WithInformerFactory(informerFactory))
 	if err != nil {
 		tb.Fatalf("Failed creating framework runtime: %v", err)
 	}
-	p, err := pf(config, fh)
+	p, err := pf(ctx, config, fh)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -62,17 +61,18 @@ func SetupPluginWithInformers(
 // SetupPlugin creates a plugin using a framework handle that includes
 // the provided sharedLister.
 func SetupPlugin(
+	ctx context.Context,
 	tb testing.TB,
 	pf frameworkruntime.PluginFactory,
 	config runtime.Object,
-	sharedLister framework.SharedLister,
-) framework.Plugin {
-	fh, err := frameworkruntime.NewFramework(nil, nil, wait.NeverStop,
+	sharedLister fwk.SharedLister,
+) fwk.Plugin {
+	fh, err := frameworkruntime.NewFramework(ctx, nil, nil,
 		frameworkruntime.WithSnapshotSharedLister(sharedLister))
 	if err != nil {
 		tb.Fatalf("Failed creating framework runtime: %v", err)
 	}
-	p, err := pf(config, fh)
+	p, err := pf(ctx, config, fh)
 	if err != nil {
 		tb.Fatal(err)
 	}

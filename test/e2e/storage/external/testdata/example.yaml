@@ -1,5 +1,10 @@
 StorageClass:
   FromExistingClassName: example
+VolumeAttributesClass:
+  FromExistingClassName: example-vac
+GroupSnapshotClass:
+  FromExistingClassName: example-gsc
+
 DriverInfo:
   Name: example
   RequiredAccessModes:
@@ -10,6 +15,7 @@ DriverInfo:
     exec: true
     block: true
     fsGroup: true
+    groupSnapshot: true
     topology: true
     controllerExpansion: true
     nodeExpansion: true

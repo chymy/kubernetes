@@ -1,5 +1,4 @@
 //go:build !linux
-// +build !linux
 
 /*
 Copyright 2018 The Kubernetes Authors.
@@ -22,6 +21,7 @@ package fsquota
 import (
 	"errors"
 
+	"k8s.io/kubernetes/pkg/volume/util/fsquota/common"
 	"k8s.io/mount-utils"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -33,13 +33,17 @@ import (
 
 var errNotImplemented = errors.New("not implemented")
 
+func GetQuotaOnDir(_ mount.Interface, _ string) (common.QuotaID, error) {
+	return common.BadQuotaID, errNotImplemented
+}
+
 // SupportsQuotas -- dummy implementation
-func SupportsQuotas(_ mount.Interface, _ string) (bool, error) {
+func SupportsQuotas(_ mount.Interface, _ string, _ bool) (bool, error) {
 	return false, errNotImplemented
 }
 
 // AssignQuota -- dummy implementation
-func AssignQuota(_ mount.Interface, _ string, _ types.UID, _ *resource.Quantity) error {
+func AssignQuota(_ mount.Interface, _ string, _ types.UID, _ *resource.Quantity, _ bool) error {
 	return errNotImplemented
 }
 
@@ -54,6 +58,6 @@ func GetInodes(_ string) (*resource.Quantity, error) {
 }
 
 // ClearQuota -- dummy implementation
-func ClearQuota(_ mount.Interface, _ string) error {
+func ClearQuota(_ mount.Interface, _ string, _ bool) error {
 	return errNotImplemented
 }

@@ -84,7 +84,7 @@ type GroupResource struct {
 
 // KubeControllerManagerConfiguration contains elements describing kube-controller manager.
 type KubeControllerManagerConfiguration struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 
 	// Generic holds configuration for a generic controller-manager
 	Generic cmconfigv1alpha1.GenericControllerManagerConfiguration
@@ -104,6 +104,9 @@ type KubeControllerManagerConfiguration struct {
 	// DeploymentControllerConfiguration holds configuration for
 	// DeploymentController related features.
 	DeploymentController DeploymentControllerConfiguration
+	// DisruptionControllerConfiguration holds configuration for
+	// DisruptionController related features.
+	DisruptionController DisruptionControllerConfiguration
 	// StatefulSetControllerConfiguration holds configuration for
 	// StatefulSetController related features.
 	StatefulSetController StatefulSetControllerConfiguration
@@ -131,8 +134,8 @@ type KubeControllerManagerConfiguration struct {
 	JobController JobControllerConfiguration
 	// CronJobControllerConfiguration holds configuration for CronJobController related features.
 	CronJobController CronJobControllerConfiguration
-	// NamespaceControllerConfiguration holds configuration for NamespaceController
-	// related features.
+	// LegacySATokenCleanerConfiguration holds configuration for LegacySATokenCleaner related features.
+	LegacySATokenCleaner LegacySATokenCleanerConfiguration
 	// NamespaceControllerConfiguration holds configuration for NamespaceController
 	// related features.
 	NamespaceController NamespaceControllerConfiguration
@@ -165,6 +168,13 @@ type KubeControllerManagerConfiguration struct {
 	// TTLAfterFinishedControllerConfiguration holds configuration for
 	// TTLAfterFinishedController related features.
 	TTLAfterFinishedController TTLAfterFinishedControllerConfiguration
+	// ValidatingAdmissionPolicyStatusControllerConfiguration holds configuration for
+	// ValidatingAdmissionPolicyStatusController related features.
+	ValidatingAdmissionPolicyStatusController ValidatingAdmissionPolicyStatusControllerConfiguration
+	// DeviceTaintEvictionControllerConfiguration contains elements configuring the device taint eviction controller.
+	DeviceTaintEvictionController DeviceTaintEvictionControllerConfiguration
+	// ResourceClaimControllerConfiguration contains elements configuring the resource claim controller.
+	ResourceClaimController ResourceClaimControllerConfiguration
 }
 
 // AttachDetachControllerConfiguration contains elements describing AttachDetachController.
@@ -174,8 +184,12 @@ type AttachDetachControllerConfiguration struct {
 	// This flag enables or disables reconcile.  Is false by default, and thus enabled.
 	DisableAttachDetachReconcilerSync bool
 	// ReconcilerSyncLoopPeriod is the amount of time the reconciler sync states loop
-	// wait between successive executions. Is set to 5 sec by default.
+	// wait between successive executions. Is set to 60 sec by default.
 	ReconcilerSyncLoopPeriod metav1.Duration
+	// DisableForceDetachOnTimeout disables force detach when the maximum unmount
+	// time is exceeded. Is false by default, and thus force detach on unmount is
+	// enabled.
+	DisableForceDetachOnTimeout bool `json:"disableForceDetachOnTimeout"`
 }
 
 // CSRSigningControllerConfiguration contains elements describing CSRSigningController.
@@ -225,6 +239,14 @@ type DeploymentControllerConfiguration struct {
 	// allowed to sync concurrently. Larger number = more responsive deployments,
 	// but more CPU (and network) load.
 	ConcurrentDeploymentSyncs int32
+}
+
+// DisruptionControllerConfiguration contains elements describing DisruptionController.
+type DisruptionControllerConfiguration struct {
+	// concurrentDisruptionSyncs is the number of PodDisruptionBudget objects that
+	// are allowed to sync concurrently. Larger number = more responsive PDB
+	// updates, but more CPU (and network) load.
+	ConcurrentDisruptionSyncs int32
 }
 
 // StatefulSetControllerConfiguration contains elements describing StatefulSetController.
@@ -315,16 +337,15 @@ type GarbageCollectorControllerConfiguration struct {
 
 // HPAControllerConfiguration contains elements describing HPAController.
 type HPAControllerConfiguration struct {
+	// ConcurrentHorizontalPodAutoscalerSyncs is the number of HPA objects that are allowed to sync concurrently.
+	// Larger number = more responsive HPA processing, but more CPU (and network) load.
+	ConcurrentHorizontalPodAutoscalerSyncs int32
 	// HorizontalPodAutoscalerSyncPeriod is the period for syncing the number of
 	// pods in horizontal pod autoscaler.
 	HorizontalPodAutoscalerSyncPeriod metav1.Duration
-	// HorizontalPodAutoscalerUpscaleForbiddenWindow is a period after which next upscale allowed.
-	HorizontalPodAutoscalerUpscaleForbiddenWindow metav1.Duration
 	// HorizontalPodAutoscalerDowncaleStabilizationWindow is a period for which autoscaler will look
 	// backwards and not scale down below any recommendation it made during that period.
 	HorizontalPodAutoscalerDownscaleStabilizationWindow metav1.Duration
-	// HorizontalPodAutoscalerDownscaleForbiddenWindow is a period after which next downscale allowed.
-	HorizontalPodAutoscalerDownscaleForbiddenWindow metav1.Duration
 	// HorizontalPodAutoscalerTolerance is the tolerance for when
 	// resource usage suggests upscaling/downscaling
 	HorizontalPodAutoscalerTolerance float64
@@ -354,6 +375,13 @@ type CronJobControllerConfiguration struct {
 	ConcurrentCronJobSyncs int32
 }
 
+// LegacySATokenCleanerConfiguration contains elements describing LegacySATokenCleaner
+type LegacySATokenCleanerConfiguration struct {
+	// CleanUpPeriod is the period of time since the last usage of an
+	// auto-generated service account token before it can be deleted.
+	CleanUpPeriod metav1.Duration
+}
+
 // NamespaceControllerConfiguration contains elements describing NamespaceController.
 type NamespaceControllerConfiguration struct {
 	// namespaceSyncPeriod is the period for syncing namespace life-cycle
@@ -380,9 +408,6 @@ type NodeIPAMControllerConfiguration struct {
 
 // NodeLifecycleControllerConfiguration contains elements describing NodeLifecycleController.
 type NodeLifecycleControllerConfiguration struct {
-	// If set to true enables NoExecute Taints and will evict all not-tolerating
-	// Pod running on Nodes tainted with this kind of Taints.
-	EnableTaintManager *bool
 	// nodeEvictionRate is the number of nodes per second on which pods are deleted in case of node failure when a zone is healthy
 	NodeEvictionRate float32
 	// secondaryNodeEvictionRate is the number of nodes per second on which pods are deleted in case of node failure when a zone is unhealthy
@@ -393,7 +418,8 @@ type NodeLifecycleControllerConfiguration struct {
 	// nodeMontiorGracePeriod is the amount of time which we allow a running node to be
 	// unresponsive before marking it unhealthy. Must be N times more than kubelet's
 	// nodeStatusUpdateFrequency, where N means number of retries allowed for kubelet
-	// to post node status.
+	// to post node status. This value should also be greater than the sum of
+	// HTTP2_PING_TIMEOUT_SECONDS and HTTP2_READ_IDLE_TIMEOUT_SECONDS.
 	NodeMonitorGracePeriod metav1.Duration
 	// podEvictionTimeout is the grace period for deleting pods on failed nodes.
 	PodEvictionTimeout metav1.Duration
@@ -402,6 +428,8 @@ type NodeLifecycleControllerConfiguration struct {
 	// Zone is treated as unhealthy in nodeEvictionRate and secondaryNodeEvictionRate when at least
 	// unhealthyZoneThreshold (no less than 3) of Nodes in the zone are NotReady
 	UnhealthyZoneThreshold float32
+	// NodeMonitorPeriod is the period for syncing NodeStatus in NodeLifecycleController.
+	NodeMonitorPeriod metav1.Duration
 }
 
 // PersistentVolumeBinderControllerConfiguration contains elements describing
@@ -412,12 +440,6 @@ type PersistentVolumeBinderControllerConfiguration struct {
 	PVClaimBinderSyncPeriod metav1.Duration
 	// volumeConfiguration holds configuration for volume related features.
 	VolumeConfiguration VolumeConfiguration
-	// VolumeHostCIDRDenylist is a list of CIDRs that should not be reachable by the
-	// controller from plugins.
-	VolumeHostCIDRDenylist []string
-	// VolumeHostAllowLocalLoopback indicates if local loopback hosts (127.0.0.1, etc)
-	// should be allowed from plugins.
-	VolumeHostAllowLocalLoopback *bool
 }
 
 // PodGCControllerConfiguration contains elements describing PodGCController.
@@ -473,4 +495,31 @@ type TTLAfterFinishedControllerConfiguration struct {
 	// concurrentTTLSyncs is the number of TTL-after-finished collector workers that are
 	// allowed to sync concurrently.
 	ConcurrentTTLSyncs int32
+}
+
+// ValidatingAdmissionPolicyStatusControllerConfiguration contains elements describing ValidatingAdmissionPolicyStatusController.
+type ValidatingAdmissionPolicyStatusControllerConfiguration struct {
+	// ConcurrentPolicySyncs is the number of policy objects that are
+	// allowed to sync concurrently. Larger number = quicker type checking,
+	// but more CPU (and network) load.
+	// The default value is 5.
+	ConcurrentPolicySyncs int32
+}
+
+// DeviceTaintEvictionControllerConfiguration contains elements configuring the device taint eviction controller.
+type DeviceTaintEvictionControllerConfiguration struct {
+	// ConcurrentSyncs is the number of operations (deleting a pod, updating a ResourcClaim status, etc.)
+	// that will be done concurrently. Larger number = processing, but more CPU (and network) load.
+	//
+	// The default is 10.
+	ConcurrentSyncs int32
+}
+
+// ResourceClaimControllerConfiguration contains elements configuring the resource claim controller.
+type ResourceClaimControllerConfiguration struct {
+	// ConcurrentSyncs is the number of operations (deleting a pod, updating a ResourcClaim status, etc.)
+	// that will be done concurrently. Larger number = processing, but more CPU (and network) load.
+	//
+	// The default is 50.
+	ConcurrentSyncs int32
 }

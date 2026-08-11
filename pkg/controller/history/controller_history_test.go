@@ -26,7 +26,7 @@ import (
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	clientscheme "k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/utils/ptr"
 )
 
 func TestRealHistory_ListControllerRevisions(t *testing.T) {
@@ -59,13 +60,16 @@ func TestRealHistory_ListControllerRevisions(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 		for i := range test.revisions {
 			informer.Informer().GetIndexer().Add(test.revisions[i])
 		}
 
-		history := NewHistory(client, informer.Lister())
-		revisions, err := history.ListControllerRevisions(test.parent, test.selector)
+		history := NewHistory(client, informer.Lister(), informer.Informer().GetIndexer())
+		revisions, err := history.ListControllerRevisions(test.parent, parentKind, test.selector)
 		if err != nil {
 			t.Errorf("%s: %s", test.name, err)
 		}
@@ -156,13 +160,16 @@ func TestFakeHistory_ListControllerRevisions(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 		for i := range test.revisions {
 			informer.Informer().GetIndexer().Add(test.revisions[i])
 		}
 
 		history := NewFakeHistory(informer)
-		revisions, err := history.ListControllerRevisions(test.parent, test.selector)
+		revisions, err := history.ListControllerRevisions(test.parent, parentKind, test.selector)
 		if err != nil {
 			t.Errorf("%s: %s", test.name, err)
 		}
@@ -255,8 +262,11 @@ func TestRealHistory_CreateControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
-		history := NewHistory(client, informer.Lister())
+		history := NewHistory(client, informer.Lister(), informer.Informer().GetIndexer())
 
 		var collisionCount int32
 		for _, item := range test.existing {
@@ -387,6 +397,9 @@ func TestFakeHistory_CreateControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 		history := NewFakeHistory(informer)
 
@@ -537,8 +550,11 @@ func TestRealHistory_UpdateControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
-		history := NewHistory(client, informer.Lister())
+		history := NewHistory(client, informer.Lister(), informer.Informer().GetIndexer())
 		var collisionCount int32
 		for i := range test.existing {
 			_, err := history.CreateControllerRevision(test.existing[i].parent, test.existing[i].revision, &collisionCount)
@@ -664,6 +680,9 @@ func TestFakeHistory_UpdateControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 		history := NewFakeHistory(informer)
 		var collisionCount int32
@@ -752,8 +771,11 @@ func TestRealHistory_DeleteControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
-		history := NewHistory(client, informer.Lister())
+		history := NewHistory(client, informer.Lister(), informer.Informer().GetIndexer())
 		var collisionCount int32
 		for i := range test.existing {
 			_, err := history.CreateControllerRevision(test.existing[i].parent, test.existing[i].revision, &collisionCount)
@@ -855,6 +877,9 @@ func TestFakeHistory_DeleteControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 		history := NewFakeHistory(informer)
 		var collisionCount int32
@@ -992,9 +1017,12 @@ func TestRealHistory_AdoptControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 
-		history := NewHistory(client, informer.Lister())
+		history := NewHistory(client, informer.Lister(), informer.Informer().GetIndexer())
 		var collisionCount int32
 		for i := range test.existing {
 			_, err := history.CreateControllerRevision(test.existing[i].parent, test.existing[i].revision, &collisionCount)
@@ -1098,6 +1126,9 @@ func TestFakeHistory_AdoptControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 
 		history := NewFakeHistory(informer)
@@ -1243,9 +1274,12 @@ func TestRealHistory_ReleaseControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 
-		history := NewHistory(client, informer.Lister())
+		history := NewHistory(client, informer.Lister(), informer.Informer().GetIndexer())
 		var collisionCount int32
 		for i := range test.existing {
 			_, err := history.CreateControllerRevision(test.existing[i].parent, test.existing[i].revision, &collisionCount)
@@ -1365,6 +1399,9 @@ func TestFakeHistory_ReleaseControllerRevision(t *testing.T) {
 		defer close(stop)
 		informerFactory.Start(stop)
 		informer := informerFactory.Apps().V1().ControllerRevisions()
+		if err := AddControllerRevisionControllerIndexer(informer.Informer()); err != nil {
+			t.Fatalf("failed to add indexer: %v", err)
+		}
 		informerFactory.WaitForCacheSync(stop)
 		history := NewFakeHistory(informer)
 		var collisionCount int32
@@ -1649,7 +1686,7 @@ func newStatefulSet(replicas int, name string, uid types.UID, labels map[string]
 				MatchLabels:      nil,
 				MatchExpressions: testMatchExpressions,
 			},
-			Replicas: func() *int32 { i := int32(replicas); return &i }(),
+			Replicas: ptr.To[int32](int32(replicas)),
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -1678,7 +1715,7 @@ func newStatefulSet(replicas int, name string, uid types.UID, labels map[string]
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "datadir"},
 					Spec: v1.PersistentVolumeClaimSpec{
-						Resources: v1.ResourceRequirements{
+						Resources: v1.VolumeResourceRequirements{
 							Requests: v1.ResourceList{
 								v1.ResourceStorage: *resource.NewQuantity(1, resource.BinarySI),
 							},

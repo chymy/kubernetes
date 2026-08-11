@@ -17,6 +17,7 @@ limitations under the License.
 package service
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	"sync/atomic"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"k8s.io/kubernetes/test/e2e/storage/drivers/csi-test/mock/cache"
 
@@ -51,16 +51,18 @@ var Manifest = map[string]string{
 }
 
 type Config struct {
-	DisableAttach              bool
-	DriverName                 string
-	AttachLimit                int64
-	NodeExpansionRequired      bool
-	VolumeMountGroupRequired   bool
-	DisableControllerExpansion bool
-	DisableOnlineExpansion     bool
-	PermissiveTargetPath       bool
-	EnableTopology             bool
-	IO                         DirIO
+	DisableAttach               bool
+	DriverName                  string
+	AttachLimit                 int64
+	NodeExpansionRequired       bool
+	NodeVolumeConditionRequired bool
+	NodeStorageHealthRequired   bool
+	VolumeMountGroupRequired    bool
+	DisableControllerExpansion  bool
+	DisableOnlineExpansion      bool
+	PermissiveTargetPath        bool
+	EnableTopology              bool
+	IO                          DirIO
 }
 
 // DirIO is an abstraction over direct os calls.
@@ -71,6 +73,9 @@ type DirIO interface {
 	Mkdir(path string) error
 	// RemoveAll removes the path and everything contained inside it. It's not an error if the path does not exist.
 	RemoveAll(path string) error
+	// Rename changes the name of a file or directory. The parent directory
+	// of newPath must exist.
+	Rename(oldPath, newPath string) error
 }
 
 type OSDirIO struct{}
@@ -97,6 +102,10 @@ func (o OSDirIO) RemoveAll(path string) error {
 	return os.RemoveAll(path)
 }
 
+func (o OSDirIO) Rename(oldPath, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+
 // Service is the CSI Mock service provider.
 type Service interface {
 	csi.ControllerServer
@@ -105,18 +114,21 @@ type Service interface {
 }
 
 type service struct {
+	csi.UnimplementedControllerServer
+	csi.UnimplementedIdentityServer
+	csi.UnimplementedNodeServer
 	sync.Mutex
 	nodeID       string
-	vols         []csi.Volume
+	vols         []*csi.Volume
 	volsRWL      sync.RWMutex
-	volsNID      uint64
+	volsNID      atomic.Uint64
 	snapshots    cache.SnapshotCache
-	snapshotsNID uint64
+	snapshotsNID atomic.Uint64
 	config       Config
 }
 
 type Volume struct {
-	VolumeCSI             csi.Volume
+	VolumeCSI             *csi.Volume
 	NodeID                string
 	ISStaged              bool
 	ISPublished           bool
@@ -138,7 +150,7 @@ func New(config Config) Service {
 		s.config.IO = OSDirIO{}
 	}
 	s.snapshots = cache.NewSnapshotCache()
-	s.vols = []csi.Volume{
+	s.vols = []*csi.Volume{
 		s.newVolume("Mock Volume 1", gib100),
 		s.newVolume("Mock Volume 2", gib100),
 		s.newVolume("Mock Volume 3", gib100),
@@ -160,17 +172,17 @@ const (
 	tib    int64 = gib * 1024
 )
 
-func (s *service) newVolume(name string, capcity int64) csi.Volume {
-	vol := csi.Volume{
-		VolumeId:      fmt.Sprintf("%d", atomic.AddUint64(&s.volsNID, 1)),
+func (s *service) newVolume(name string, capcity int64) *csi.Volume {
+	vol := &csi.Volume{
+		VolumeId:      fmt.Sprintf("%d", s.volsNID.Add(1)),
 		VolumeContext: map[string]string{"name": name},
 		CapacityBytes: capcity,
 	}
-	s.setTopology(&vol)
+	s.setTopology(vol)
 	return vol
 }
 
-func (s *service) newVolumeFromSnapshot(name string, capacity int64, snapshotID int) csi.Volume {
+func (s *service) newVolumeFromSnapshot(name string, capacity int64, snapshotID int) *csi.Volume {
 	vol := s.newVolume(name, capacity)
 	vol.ContentSource = &csi.VolumeContentSource{
 		Type: &csi.VolumeContentSource_Snapshot{
@@ -179,11 +191,11 @@ func (s *service) newVolumeFromSnapshot(name string, capacity int64, snapshotID 
 			},
 		},
 	}
-	s.setTopology(&vol)
+	s.setTopology(vol)
 	return vol
 }
 
-func (s *service) newVolumeFromVolume(name string, capacity int64, volumeID int) csi.Volume {
+func (s *service) newVolumeFromVolume(name string, capacity int64, volumeID int) *csi.Volume {
 	vol := s.newVolume(name, capacity)
 	vol.ContentSource = &csi.VolumeContentSource{
 		Type: &csi.VolumeContentSource_Volume{
@@ -192,7 +204,7 @@ func (s *service) newVolumeFromVolume(name string, capacity int64, volumeID int)
 			},
 		},
 	}
-	s.setTopology(&vol)
+	s.setTopology(vol)
 	return vol
 }
 
@@ -208,13 +220,13 @@ func (s *service) setTopology(vol *csi.Volume) {
 	}
 }
 
-func (s *service) findVol(k, v string) (volIdx int, volInfo csi.Volume) {
+func (s *service) findVol(k, v string) (volIdx int, volInfo *csi.Volume) {
 	s.volsRWL.RLock()
 	defer s.volsRWL.RUnlock()
 	return s.findVolNoLock(k, v)
 }
 
-func (s *service) findVolNoLock(k, v string) (volIdx int, volInfo csi.Volume) {
+func (s *service) findVolNoLock(k, v string) (volIdx int, volInfo *csi.Volume) {
 	volIdx = -1
 
 	for i, vi := range s.vols {
@@ -234,27 +246,27 @@ func (s *service) findVolNoLock(k, v string) (volIdx int, volInfo csi.Volume) {
 }
 
 func (s *service) findVolByName(
-	ctx context.Context, name string) (int, csi.Volume) {
+	ctx context.Context, name string) (int, *csi.Volume) {
 
 	return s.findVol("name", name)
 }
 
 func (s *service) findVolByID(
-	ctx context.Context, id string) (int, csi.Volume) {
+	ctx context.Context, id string) (int, *csi.Volume) {
 
 	return s.findVol("id", id)
 }
 
-func (s *service) newSnapshot(name, sourceVolumeId string, parameters map[string]string) cache.Snapshot {
+func (s *service) newSnapshot(name, sourceVolumeID string, parameters map[string]string) *cache.Snapshot {
 
 	ptime := timestamppb.Now()
-	return cache.Snapshot{
+	return &cache.Snapshot{
 		Name:       name,
 		Parameters: parameters,
-		SnapshotCSI: csi.Snapshot{
-			SnapshotId:     fmt.Sprintf("%d", atomic.AddUint64(&s.snapshotsNID, 1)),
+		SnapshotCSI: &csi.Snapshot{
+			SnapshotId:     fmt.Sprintf("%d", s.snapshotsNID.Add(1)),
 			CreationTime:   ptime,
-			SourceVolumeId: sourceVolumeId,
+			SourceVolumeId: sourceVolumeID,
 			ReadyToUse:     true,
 		},
 	}
@@ -264,7 +276,7 @@ func (s *service) newSnapshot(name, sourceVolumeId string, parameters map[string
 func (s *service) getAttachCount(devPathKey string) int64 {
 	var count int64
 	for _, v := range s.vols {
-		if device := v.VolumeContext[devPathKey]; device != "" {
+		if device := v.GetVolumeContext()[devPathKey]; device != "" {
 			count++
 		}
 	}

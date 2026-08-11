@@ -25,98 +25,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	resourcehelper "k8s.io/component-helpers/resource"
 	"k8s.io/kubernetes/pkg/features"
 )
-
-// PodRequestsAndLimits returns a dictionary of all defined resources summed up for all
-// containers of the pod. If PodOverhead feature is enabled, pod overhead is added to the
-// total container resource requests and to the total container limits which have a
-// non-zero quantity.
-func PodRequestsAndLimits(pod *v1.Pod) (reqs, limits v1.ResourceList) {
-	return PodRequestsAndLimitsReuse(pod, nil, nil)
-}
-
-// PodRequestsAndLimitsWithoutOverhead will create a dictionary of all defined resources summed up for all
-// containers of the pod.
-func PodRequestsAndLimitsWithoutOverhead(pod *v1.Pod) (reqs, limits v1.ResourceList) {
-	reqs = make(v1.ResourceList, 4)
-	limits = make(v1.ResourceList, 4)
-	podRequestsAndLimitsWithoutOverhead(pod, reqs, limits)
-
-	return reqs, limits
-}
-
-func podRequestsAndLimitsWithoutOverhead(pod *v1.Pod, reqs, limits v1.ResourceList) {
-	for _, container := range pod.Spec.Containers {
-		addResourceList(reqs, container.Resources.Requests)
-		addResourceList(limits, container.Resources.Limits)
-	}
-	// init containers define the minimum of any resource
-	for _, container := range pod.Spec.InitContainers {
-		maxResourceList(reqs, container.Resources.Requests)
-		maxResourceList(limits, container.Resources.Limits)
-	}
-}
-
-// PodRequestsAndLimitsReuse returns a dictionary of all defined resources summed up for all
-// containers of the pod. If PodOverhead feature is enabled, pod overhead is added to the
-// total container resource requests and to the total container limits which have a
-// non-zero quantity. The caller may avoid allocations of resource lists by passing
-// a requests and limits list to the function, which will be cleared before use.
-func PodRequestsAndLimitsReuse(pod *v1.Pod, reuseReqs, reuseLimits v1.ResourceList) (reqs, limits v1.ResourceList) {
-	// attempt to reuse the maps if passed, or allocate otherwise
-	reqs, limits = reuseOrClearResourceList(reuseReqs), reuseOrClearResourceList(reuseLimits)
-
-	podRequestsAndLimitsWithoutOverhead(pod, reqs, limits)
-
-	// if PodOverhead feature is supported, add overhead for running a pod
-	// to the sum of requests and to non-zero limits:
-	if pod.Spec.Overhead != nil {
-		addResourceList(reqs, pod.Spec.Overhead)
-
-		for name, quantity := range pod.Spec.Overhead {
-			if value, ok := limits[name]; ok && !value.IsZero() {
-				value.Add(quantity)
-				limits[name] = value
-			}
-		}
-	}
-
-	return
-}
-
-// reuseOrClearResourceList is a helper for avoiding excessive allocations of
-// resource lists within the inner loop of resource calculations.
-func reuseOrClearResourceList(reuse v1.ResourceList) v1.ResourceList {
-	if reuse == nil {
-		return make(v1.ResourceList, 4)
-	}
-	for k := range reuse {
-		delete(reuse, k)
-	}
-	return reuse
-}
-
-// addResourceList adds the resources in newList to list.
-func addResourceList(list, newList v1.ResourceList) {
-	for name, quantity := range newList {
-		if value, ok := list[name]; !ok {
-			list[name] = quantity.DeepCopy()
-		} else {
-			value.Add(quantity)
-			list[name] = value
-		}
-	}
-}
-
-// maxResourceList sets list to the greater of list/newList for every resource in newList
-func maxResourceList(list, newList v1.ResourceList) {
-	for name, quantity := range newList {
-		if value, ok := list[name]; !ok || quantity.Cmp(value) > 0 {
-			list[name] = quantity.DeepCopy()
-		}
-	}
-}
 
 // GetResourceRequestQuantity finds and returns the request quantity for a specific resource.
 func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resource.Quantity {
@@ -131,26 +42,15 @@ func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resou
 		requestQuantity = resource.Quantity{Format: resource.DecimalSI}
 	}
 
-	if resourceName == v1.ResourceEphemeralStorage && !utilfeature.DefaultFeatureGate.Enabled(features.LocalStorageCapacityIsolation) {
-		// if the local storage capacity isolation feature gate is disabled, pods request 0 disk
-		return requestQuantity
+	// Supported pod level resources will be used instead of container level ones when available
+	hasPodLevelResources := utilfeature.DefaultFeatureGate.Enabled(features.PodLevelResources) && resourcehelper.IsPodLevelResourcesSet(pod)
+
+	// TODO(pravk03): considering DRA Node Allocatable resources for eviction ranking.
+	if rQuantity, ok := resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{SkipContainerLevelResources: hasPodLevelResources, ExcludeOverhead: true})[resourceName]; ok {
+		requestQuantity.Add(rQuantity)
 	}
 
-	for _, container := range pod.Spec.Containers {
-		if rQuantity, ok := container.Resources.Requests[resourceName]; ok {
-			requestQuantity.Add(rQuantity)
-		}
-	}
-
-	for _, container := range pod.Spec.InitContainers {
-		if rQuantity, ok := container.Resources.Requests[resourceName]; ok {
-			if requestQuantity.Cmp(rQuantity) < 0 {
-				requestQuantity = rQuantity.DeepCopy()
-			}
-		}
-	}
-
-	// if PodOverhead feature is supported, add overhead for running a pod
+	// Add overhead for running a pod
 	// to the total requests if the resource total is non-zero
 	if pod.Spec.Overhead != nil {
 		if podOverhead, ok := pod.Spec.Overhead[resourceName]; ok && !requestQuantity.IsZero() {

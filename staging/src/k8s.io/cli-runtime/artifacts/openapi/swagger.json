@@ -1342,7 +1342,7 @@
         },
         "persistentVolumeClaimRetentionPolicy": {
           "$ref": "#/definitions/io.k8s.api.apps.v1.StatefulSetPersistentVolumeClaimRetentionPolicy",
-          "description": "persistentVolumeClaimRetentionPolicy describes the lifecycle of persistent volume claims created from volumeClaimTemplates. By default, all persistent volume claims are created as needed and retained until manually deleted. This policy allows the lifecycle to be altered, for example by deleting persistent volume claims when their stateful set is deleted, or when their pod is scaled down. This requires the StatefulSetAutoDeletePVC feature gate to be enabled, which is alpha.  +optional"
+          "description": "persistentVolumeClaimRetentionPolicy describes the lifecycle of persistent volume claims created from volumeClaimTemplates. By default, all persistent volume claims are created as needed and retained until manually deleted. This policy allows the lifecycle to be altered, for example by deleting persistent volume claims when their stateful set is deleted, or when their pod is scaled down. This requires the StatefulSetAutoDeletePVC feature gate to be enabled.  +optional"
         },
         "podManagementPolicy": {
           "description": "podManagementPolicy controls how pods are created during initial scale up, when replacing pods on nodes, or when scaling down. The default policy is `OrderedReady`, where pods are created in increasing order (pod-0, then pod-1, etc) and the controller will wait until each pod is ready before continuing. When scaling down, the pods are removed in the opposite order. The alternative policy is `Parallel` which will create pods in parallel to match the desired scale without waiting, and on scale down will delete all pods at once.\n\nPossible enum values:\n - `\"OrderedReady\"` will create pods in strictly increasing order on scale up and strictly decreasing order on scale down, progressing only when the previous pod is ready or terminated. At most one pod will be changed at any time.\n - `\"Parallel\"` will create and delete pods as soon as the stateful set replica count is changed, and will not wait for pods to be ready or complete termination.",
@@ -2068,7 +2068,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Name of the referent; More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+          "description": "Name of the referent; More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
           "type": "string"
         }
       },
@@ -2263,7 +2263,7 @@
           "type": "integer"
         },
         "selector": {
-          "description": "label query over pods that should match the replicas count. This is same as the label selector but in the string format to avoid introspection by clients. The string will be in the same format as the query-param syntax. More info about label selectors: http://kubernetes.io/docs/user-guide/labels#label-selectors",
+          "description": "label query over pods that should match the replicas count. This is same as the label selector but in the string format to avoid introspection by clients. The string will be in the same format as the query-param syntax. More info about label selectors: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels#label-selectors",
           "type": "string"
         }
       },
@@ -2330,7 +2330,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Name of the referent; More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+          "description": "Name of the referent; More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
           "type": "string"
         }
       },
@@ -2934,7 +2934,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Name of the referent; More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+          "description": "Name of the referent; More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
           "type": "string"
         }
       },
@@ -3442,7 +3442,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Name of the referent; More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+          "description": "Name of the referent; More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
           "type": "string"
         }
       },
@@ -5884,7 +5884,7 @@
         },
         "sizeLimit": {
           "$ref": "#/definitions/io.k8s.apimachinery.pkg.api.resource.Quantity",
-          "description": "sizeLimit is the total amount of local storage required for this EmptyDir volume. The size limit is also applicable for memory medium. The maximum usage on memory medium EmptyDir would be the minimum value between the SizeLimit specified here and the sum of memory limits of all containers in a pod. The default is nil which means that the limit is undefined. More info: http://kubernetes.io/docs/user-guide/volumes#emptydir"
+          "description": "sizeLimit is the total amount of local storage required for this EmptyDir volume. The size limit is also applicable for memory medium. The maximum usage on memory medium EmptyDir would be the minimum value between the SizeLimit specified here and the sum of memory limits of all containers in a pod. The default is nil which means that the limit is undefined. More info: https://kubernetes.io/docs/concepts/storage/volumes#emptydir"
         }
       },
       "type": "object"
@@ -6103,7 +6103,7 @@
       "type": "object"
     },
     "io.k8s.api.core.v1.EphemeralContainer": {
-      "description": "An EphemeralContainer is a temporary container that you may add to an existing Pod for user-initiated activities such as debugging. Ephemeral containers have no resource or scheduling guarantees, and they will not be restarted when they exit or when a Pod is removed or restarted. The kubelet may evict a Pod if an ephemeral container causes the Pod to exceed its resource allocation.\n\nTo add an ephemeral container, use the ephemeralcontainers subresource of an existing Pod. Ephemeral containers may not be removed or restarted.\n\nThis is a beta feature available on clusters that haven't disabled the EphemeralContainers feature gate.",
+      "description": "An EphemeralContainer is a temporary container that you may add to an existing Pod for user-initiated activities such as debugging. Ephemeral containers have no resource or scheduling guarantees, and they will not be restarted when they exit or when a Pod is removed or restarted. The kubelet may evict a Pod if an ephemeral container causes the Pod to exceed its resource allocation.\n\nTo add an ephemeral container, use the ephemeralcontainers subresource of an existing Pod. Ephemeral containers may not be removed or restarted.",
       "properties": {
         "args": {
           "description": "Arguments to the entrypoint. The image's CMD is used if this is not provided. Variable references $(VAR_NAME) are expanded using the container's environment. If a variable cannot be resolved, the reference in the input string will be unchanged. Double $$ are reduced to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e. \"$$(VAR_NAME)\" will produce the string literal \"$(VAR_NAME)\". Escaped references will never be expanded, regardless of whether the variable exists or not. Cannot be updated. More info: https://kubernetes.io/docs/tasks/inject-data-application/define-command-argument-container/#running-a-command-in-a-shell",
@@ -8592,7 +8592,7 @@
           "type": "boolean"
         },
         "ephemeralContainers": {
-          "description": "List of ephemeral containers run in this pod. Ephemeral containers may be run in an existing pod to perform user-initiated actions such as debugging. This list cannot be specified when creating a pod, and it cannot be modified by updating the pod spec. In order to add an ephemeral container to an existing pod, use the pod's ephemeralcontainers subresource. This field is beta-level and available on clusters that haven't disabled the EphemeralContainers feature gate.",
+          "description": "List of ephemeral containers run in this pod. Ephemeral containers may be run in an existing pod to perform user-initiated actions such as debugging. This list cannot be specified when creating a pod, and it cannot be modified by updating the pod spec. In order to add an ephemeral container to an existing pod, use the pod's ephemeralcontainers subresource.",
           "items": {
             "$ref": "#/definitions/io.k8s.api.core.v1.EphemeralContainer"
           },
@@ -8635,7 +8635,7 @@
           "x-kubernetes-patch-strategy": "merge"
         },
         "initContainers": {
-          "description": "List of initialization containers belonging to the pod. Init containers are executed in order prior to containers being started. If any init container fails, the pod is considered to have failed and is handled according to its restartPolicy. The name for an init container or normal container must be unique among all containers. Init containers may not have Lifecycle actions, Readiness probes, Liveness probes, or Startup probes. The resourceRequirements of an init container are taken into account during scheduling by finding the highest request/limit for each resource type, and then using the max of of that value or the sum of the normal containers. Limits are applied to init containers in a similar fashion. Init containers cannot currently be added or removed. Cannot be updated. More info: https://kubernetes.io/docs/concepts/workloads/pods/init-containers/",
+          "description": "List of initialization containers belonging to the pod. Init containers are executed in order prior to containers being started. If any init container fails, the pod is considered to have failed and is handled according to its restartPolicy. The name for an init container or normal container must be unique among all containers. Init containers may not have Lifecycle actions, Readiness probes, Liveness probes, or Startup probes. The resourceRequirements of an init container are taken into account during scheduling by finding the highest request/limit for each resource type, and then using the max of that value or the sum of the normal containers. Limits are applied to init containers in a similar fashion. Init containers cannot currently be added or removed. Cannot be updated. More info: https://kubernetes.io/docs/concepts/workloads/pods/init-containers/",
           "items": {
             "$ref": "#/definitions/io.k8s.api.core.v1.Container"
           },
@@ -8708,7 +8708,7 @@
           "description": "SecurityContext holds pod-level security attributes and common container settings. Optional: Defaults to empty.  See type description for default values of each field."
         },
         "serviceAccount": {
-          "description": "DeprecatedServiceAccount is a depreciated alias for ServiceAccountName. Deprecated: Use serviceAccountName instead.",
+          "description": "DeprecatedServiceAccount is a deprecated alias for ServiceAccountName. Deprecated: Use serviceAccountName instead.",
           "type": "string"
         },
         "serviceAccountName": {
@@ -8788,7 +8788,7 @@
           "type": "array"
         },
         "ephemeralContainerStatuses": {
-          "description": "Status for any ephemeral containers that have run in this pod. This field is beta-level and available on clusters that haven't disabled the EphemeralContainers feature gate.",
+          "description": "Status for any ephemeral containers that have run in this pod.",
           "items": {
             "$ref": "#/definitions/io.k8s.api.core.v1.ContainerStatus"
           },
@@ -8838,7 +8838,7 @@
           "x-kubernetes-patch-strategy": "merge"
         },
         "qosClass": {
-          "description": "The Quality of Service (QOS) classification assigned to the pod based on resource requirements See PodQOSClass type for available QOS classes More info: https://git.k8s.io/community/contributors/design-proposals/node/resource-qos.md\n\nPossible enum values:\n - `\"BestEffort\"` is the BestEffort qos class.\n - `\"Burstable\"` is the Burstable qos class.\n - `\"Guaranteed\"` is the Guaranteed qos class.",
+          "description": "The Quality of Service (QOS) classification assigned to the pod based on resource requirements See PodQOSClass type for available QOS classes More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/#quality-of-service-classes\n\nPossible enum values:\n - `\"BestEffort\"` is the BestEffort qos class.\n - `\"Burstable\"` is the Burstable qos class.\n - `\"Guaranteed\"` is the Guaranteed qos class.",
           "enum": [
             "BestEffort",
             "Burstable",
@@ -9016,7 +9016,7 @@
         },
         "grpc": {
           "$ref": "#/definitions/io.k8s.api.core.v1.GRPCAction",
-          "description": "GRPC specifies an action involving a GRPC port. This is an alpha field and requires enabling GRPCContainerProbe feature gate."
+          "description": "GRPC specifies an action involving a GRPC port."
         },
         "httpGet": {
           "$ref": "#/definitions/io.k8s.api.core.v1.HTTPGetAction",
@@ -10019,7 +10019,7 @@
           "description": "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
         },
         "secrets": {
-          "description": "Secrets is a list of the secrets in the same namespace that pods running using this ServiceAccount are allowed to use. Pods are only limited to this list if this service account has a \"kubernetes.io/enforce-mountable-secrets\" annotation set to \"true\". This field should not be used to find auto-generated service account token secrets for use outside of pods. Instead, tokens can be requested directly using the TokenRequest API, or service account token secrets can be manually created. More info: https://kubernetes.io/docs/concepts/configuration/secret",
+          "description": "Secrets is a list of the secrets in the same namespace that pods running using this ServiceAccount are allowed to use. Pods are only limited to this list if this service account has a \"kubernetes.io/enforce-mountable-secrets\" annotation set to \"true\". The \"kubernetes.io/enforce-mountable-secrets\" annotation is deprecated since v1.32. Prefer separate namespaces to isolate access to mounted secrets. This field should not be used to find auto-generated service account token secrets for use outside of pods. Instead, tokens can be requested directly using the TokenRequest API, or service account token secrets can be manually created. More info: https://kubernetes.io/docs/concepts/configuration/secret",
           "items": {
             "$ref": "#/definitions/io.k8s.api.core.v1.ObjectReference"
           },
@@ -10938,7 +10938,7 @@
           "type": "string"
         },
         "name": {
-          "description": "The name of this port. All ports in an EndpointSlice must have a unique name. If the EndpointSlice is dervied from a Kubernetes service, this corresponds to the Service.ports[].name. Name must either be an empty string or pass DNS_LABEL validation: * must be no more than 63 characters long. * must consist of lower case alphanumeric characters or '-'. * must start and end with an alphanumeric character. Default is empty string.",
+          "description": "The name of this port. All ports in an EndpointSlice must have a unique name. If the EndpointSlice is derived from a Kubernetes service, this corresponds to the Service.ports[].name. Name must either be an empty string or pass DNS_LABEL validation: * must be no more than 63 characters long. * must consist of lower case alphanumeric characters or '-'. * must start and end with an alphanumeric character. Default is empty string.",
           "type": "string"
         },
         "port": {
@@ -11140,7 +11140,7 @@
           "type": "string"
         },
         "name": {
-          "description": "The name of this port. All ports in an EndpointSlice must have a unique name. If the EndpointSlice is dervied from a Kubernetes service, this corresponds to the Service.ports[].name. Name must either be an empty string or pass DNS_LABEL validation: * must be no more than 63 characters long. * must consist of lower case alphanumeric characters or '-'. * must start and end with an alphanumeric character. Default is empty string.",
+          "description": "The name of this port. All ports in an EndpointSlice must have a unique name. If the EndpointSlice is derived from a Kubernetes service, this corresponds to the Service.ports[].name. Name must either be an empty string or pass DNS_LABEL validation: * must be no more than 63 characters long. * must consist of lower case alphanumeric characters or '-'. * must start and end with an alphanumeric character. Default is empty string.",
           "type": "string"
         },
         "port": {
@@ -11726,7 +11726,7 @@
       "description": "LimitedPriorityLevelConfiguration specifies how to handle requests that are subject to limits. It addresses two issues:\n * How are requests for this priority level limited?\n * What should be done with requests that exceed the limit?",
       "properties": {
         "assuredConcurrencyShares": {
-          "description": "`assuredConcurrencyShares` (ACS) configures the execution limit, which is a limit on the number of requests of this priority level that may be exeucting at a given time.  ACS must be a positive number. The server's concurrency limit (SCL) is divided among the concurrency-controlled priority levels in proportion to their assured concurrency shares. This produces the assured concurrency value (ACV) --- the number of requests that may be executing at a time --- for each such priority level:\n\n            ACV(l) = ceil( SCL * ACS(l) / ( sum[priority levels k] ACS(k) ) )\n\nbigger numbers of ACS mean more reserved concurrent requests (at the expense of every other PL). This field has a default value of 30.",
+          "description": "`assuredConcurrencyShares` (ACS) configures the execution limit, which is a limit on the number of requests of this priority level that may be executing at a given time.  ACS must be a positive number. The server's concurrency limit (SCL) is divided among the concurrency-controlled priority levels in proportion to their assured concurrency shares. This produces the assured concurrency value (ACV) --- the number of requests that may be executing at a time --- for each such priority level:\n\n            ACV(l) = ceil( SCL * ACS(l) / ( sum[priority levels k] ACS(k) ) )\n\nbigger numbers of ACS mean more reserved concurrent requests (at the expense of every other PL). This field has a default value of 30.",
           "format": "int32",
           "type": "integer"
         },
@@ -12275,7 +12275,7 @@
       "description": "LimitedPriorityLevelConfiguration specifies how to handle requests that are subject to limits. It addresses two issues:\n * How are requests for this priority level limited?\n * What should be done with requests that exceed the limit?",
       "properties": {
         "assuredConcurrencyShares": {
-          "description": "`assuredConcurrencyShares` (ACS) configures the execution limit, which is a limit on the number of requests of this priority level that may be exeucting at a given time.  ACS must be a positive number. The server's concurrency limit (SCL) is divided among the concurrency-controlled priority levels in proportion to their assured concurrency shares. This produces the assured concurrency value (ACV) --- the number of requests that may be executing at a time --- for each such priority level:\n\n            ACV(l) = ceil( SCL * ACS(l) / ( sum[priority levels k] ACS(k) ) )\n\nbigger numbers of ACS mean more reserved concurrent requests (at the expense of every other PL). This field has a default value of 30.",
+          "description": "`assuredConcurrencyShares` (ACS) configures the execution limit, which is a limit on the number of requests of this priority level that may be executing at a given time.  ACS must be a positive number. The server's concurrency limit (SCL) is divided among the concurrency-controlled priority levels in proportion to their assured concurrency shares. This produces the assured concurrency value (ACV) --- the number of requests that may be executing at a time --- for each such priority level:\n\n            ACV(l) = ceil( SCL * ACS(l) / ( sum[priority levels k] ACS(k) ) )\n\nbigger numbers of ACS mean more reserved concurrent requests (at the expense of every other PL). This field has a default value of 30.",
           "format": "int32",
           "type": "integer"
         },
@@ -12668,14 +12668,14 @@
       "type": "object"
     },
     "io.k8s.api.networking.v1.IPBlock": {
-      "description": "IPBlock describes a particular CIDR (Ex. \"192.168.1.1/24\",\"2001:db9::/64\") that is allowed to the pods matched by a NetworkPolicySpec's podSelector. The except entry describes CIDRs that should not be included within this rule.",
+      "description": "IPBlock describes a particular CIDR (Ex. \"192.168.1.0/24\",\"2001:db8::/64\") that is allowed to the pods matched by a NetworkPolicySpec's podSelector. The except entry describes CIDRs that should not be included within this rule.",
       "properties": {
         "cidr": {
-          "description": "CIDR is a string representing the IP Block Valid examples are \"192.168.1.1/24\" or \"2001:db9::/64\"",
+          "description": "CIDR is a string representing the IP Block Valid examples are \"192.168.1.0/24\" or \"2001:db8::/64\"",
           "type": "string"
         },
         "except": {
-          "description": "Except is a slice of CIDRs that should not be included within an IP Block Valid examples are \"192.168.1.1/24\" or \"2001:db9::/64\" Except values will be rejected if they are outside the CIDR range",
+          "description": "Except is a slice of CIDRs that should not be included within an IP Block Valid examples are \"192.168.1.0/24\" or \"2001:db8::/64\" Except values will be rejected if they are outside the CIDR range",
           "items": {
             "type": "string"
           },
@@ -13548,83 +13548,6 @@
       ],
       "type": "object"
     },
-    "io.k8s.api.policy.v1beta1.AllowedCSIDriver": {
-      "description": "AllowedCSIDriver represents a single inline CSI Driver that is allowed to be used.",
-      "properties": {
-        "name": {
-          "description": "Name is the registered name of the CSI driver",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.AllowedFlexVolume": {
-      "description": "AllowedFlexVolume represents a single Flexvolume that is allowed to be used.",
-      "properties": {
-        "driver": {
-          "description": "driver is the name of the Flexvolume driver.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "driver"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.AllowedHostPath": {
-      "description": "AllowedHostPath defines the host volume conditions that will be enabled by a policy for pods to use. It requires the path prefix to be defined.",
-      "properties": {
-        "pathPrefix": {
-          "description": "pathPrefix is the path prefix that the host volume must match. It does not support `*`. Trailing slashes are trimmed when validating the path prefix with a host path.\n\nExamples: `/foo` would allow `/foo`, `/foo/` and `/foo/bar` `/foo` would not allow `/food` or `/etc/foo`",
-          "type": "string"
-        },
-        "readOnly": {
-          "description": "when set to true, will allow host volumes matching the pathPrefix only if all volume mounts are readOnly.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.FSGroupStrategyOptions": {
-      "description": "FSGroupStrategyOptions defines the strategy type and options used to create the strategy.",
-      "properties": {
-        "ranges": {
-          "description": "ranges are the allowed ranges of fs groups.  If you would like to force a single fs group then supply a single range with the same start and end. Required for MustRunAs.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.IDRange"
-          },
-          "type": "array"
-        },
-        "rule": {
-          "description": "rule is the strategy that will dictate what FSGroup is used in the SecurityContext.",
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.HostPortRange": {
-      "description": "HostPortRange defines a range of host ports that will be enabled by a policy for pods to use.  It requires both the start and end to be defined.",
-      "properties": {
-        "max": {
-          "description": "max is the end of the range, inclusive.",
-          "format": "int32",
-          "type": "integer"
-        },
-        "min": {
-          "description": "min is the start of the range, inclusive.",
-          "format": "int32",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "min",
-        "max"
-      ],
-      "type": "object"
-    },
     "io.k8s.api.policy.v1beta1.IDRange": {
       "description": "IDRange provides a min/max of an allowed range of IDs.",
       "properties": {
@@ -13786,305 +13709,6 @@
         "desiredHealthy",
         "expectedPods"
       ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.PodSecurityPolicy": {
-      "description": "PodSecurityPolicy governs the ability to make requests that affect the Security Context that will be applied to a pod and container. Deprecated in 1.21.",
-      "properties": {
-        "apiVersion": {
-          "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-          "type": "string"
-        },
-        "kind": {
-          "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-          "type": "string"
-        },
-        "metadata": {
-          "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta",
-          "description": "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
-        },
-        "spec": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicySpec",
-          "description": "spec defines the policy enforced."
-        }
-      },
-      "type": "object",
-      "x-kubernetes-group-version-kind": [
-        {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      ]
-    },
-    "io.k8s.api.policy.v1beta1.PodSecurityPolicyList": {
-      "description": "PodSecurityPolicyList is a list of PodSecurityPolicy objects.",
-      "properties": {
-        "apiVersion": {
-          "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-          "type": "string"
-        },
-        "items": {
-          "description": "items is a list of schema objects.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-          },
-          "type": "array"
-        },
-        "kind": {
-          "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-          "type": "string"
-        },
-        "metadata": {
-          "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta",
-          "description": "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object",
-      "x-kubernetes-group-version-kind": [
-        {
-          "group": "policy",
-          "kind": "PodSecurityPolicyList",
-          "version": "v1beta1"
-        }
-      ]
-    },
-    "io.k8s.api.policy.v1beta1.PodSecurityPolicySpec": {
-      "description": "PodSecurityPolicySpec defines the policy enforced.",
-      "properties": {
-        "allowPrivilegeEscalation": {
-          "description": "allowPrivilegeEscalation determines if a pod can request to allow privilege escalation. If unspecified, defaults to true.",
-          "type": "boolean"
-        },
-        "allowedCSIDrivers": {
-          "description": "AllowedCSIDrivers is an allowlist of inline CSI drivers that must be explicitly set to be embedded within a pod spec. An empty value indicates that any CSI driver can be used for inline ephemeral volumes. This is a beta field, and is only honored if the API server enables the CSIInlineVolume feature gate.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.AllowedCSIDriver"
-          },
-          "type": "array"
-        },
-        "allowedCapabilities": {
-          "description": "allowedCapabilities is a list of capabilities that can be requested to add to the container. Capabilities in this field may be added at the pod author's discretion. You must not list a capability in both allowedCapabilities and requiredDropCapabilities.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "allowedFlexVolumes": {
-          "description": "allowedFlexVolumes is an allowlist of Flexvolumes.  Empty or nil indicates that all Flexvolumes may be used.  This parameter is effective only when the usage of the Flexvolumes is allowed in the \"volumes\" field.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.AllowedFlexVolume"
-          },
-          "type": "array"
-        },
-        "allowedHostPaths": {
-          "description": "allowedHostPaths is an allowlist of host paths. Empty indicates that all host paths may be used.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.AllowedHostPath"
-          },
-          "type": "array"
-        },
-        "allowedProcMountTypes": {
-          "description": "AllowedProcMountTypes is an allowlist of allowed ProcMountTypes. Empty or nil indicates that only the DefaultProcMountType may be used. This requires the ProcMountType feature flag to be enabled.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "allowedUnsafeSysctls": {
-          "description": "allowedUnsafeSysctls is a list of explicitly allowed unsafe sysctls, defaults to none. Each entry is either a plain sysctl name or ends in \"*\" in which case it is considered as a prefix of allowed sysctls. Single * means all unsafe sysctls are allowed. Kubelet has to allowlist all allowed unsafe sysctls explicitly to avoid rejection.\n\nExamples: e.g. \"foo/*\" allows \"foo/bar\", \"foo/baz\", etc. e.g. \"foo.*\" allows \"foo.bar\", \"foo.baz\", etc.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "defaultAddCapabilities": {
-          "description": "defaultAddCapabilities is the default set of capabilities that will be added to the container unless the pod spec specifically drops the capability.  You may not list a capability in both defaultAddCapabilities and requiredDropCapabilities. Capabilities added here are implicitly allowed, and need not be included in the allowedCapabilities list.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "defaultAllowPrivilegeEscalation": {
-          "description": "defaultAllowPrivilegeEscalation controls the default setting for whether a process can gain more privileges than its parent process.",
-          "type": "boolean"
-        },
-        "forbiddenSysctls": {
-          "description": "forbiddenSysctls is a list of explicitly forbidden sysctls, defaults to none. Each entry is either a plain sysctl name or ends in \"*\" in which case it is considered as a prefix of forbidden sysctls. Single * means all sysctls are forbidden.\n\nExamples: e.g. \"foo/*\" forbids \"foo/bar\", \"foo/baz\", etc. e.g. \"foo.*\" forbids \"foo.bar\", \"foo.baz\", etc.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "fsGroup": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.FSGroupStrategyOptions",
-          "description": "fsGroup is the strategy that will dictate what fs group is used by the SecurityContext."
-        },
-        "hostIPC": {
-          "description": "hostIPC determines if the policy allows the use of HostIPC in the pod spec.",
-          "type": "boolean"
-        },
-        "hostNetwork": {
-          "description": "hostNetwork determines if the policy allows the use of HostNetwork in the pod spec.",
-          "type": "boolean"
-        },
-        "hostPID": {
-          "description": "hostPID determines if the policy allows the use of HostPID in the pod spec.",
-          "type": "boolean"
-        },
-        "hostPorts": {
-          "description": "hostPorts determines which host port ranges are allowed to be exposed.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.HostPortRange"
-          },
-          "type": "array"
-        },
-        "privileged": {
-          "description": "privileged determines if a pod can request to be run as privileged.",
-          "type": "boolean"
-        },
-        "readOnlyRootFilesystem": {
-          "description": "readOnlyRootFilesystem when set to true will force containers to run with a read only root file system.  If the container specifically requests to run with a non-read only root file system the PSP should deny the pod. If set to false the container may run with a read only root file system if it wishes but it will not be forced to.",
-          "type": "boolean"
-        },
-        "requiredDropCapabilities": {
-          "description": "requiredDropCapabilities are the capabilities that will be dropped from the container.  These are required to be dropped and cannot be added.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "runAsGroup": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.RunAsGroupStrategyOptions",
-          "description": "RunAsGroup is the strategy that will dictate the allowable RunAsGroup values that may be set. If this field is omitted, the pod's RunAsGroup can take any value. This field requires the RunAsGroup feature gate to be enabled."
-        },
-        "runAsUser": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.RunAsUserStrategyOptions",
-          "description": "runAsUser is the strategy that will dictate the allowable RunAsUser values that may be set."
-        },
-        "runtimeClass": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.RuntimeClassStrategyOptions",
-          "description": "runtimeClass is the strategy that will dictate the allowable RuntimeClasses for a pod. If this field is omitted, the pod's runtimeClassName field is unrestricted. Enforcement of this field depends on the RuntimeClass feature gate being enabled."
-        },
-        "seLinux": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.SELinuxStrategyOptions",
-          "description": "seLinux is the strategy that will dictate the allowable labels that may be set."
-        },
-        "supplementalGroups": {
-          "$ref": "#/definitions/io.k8s.api.policy.v1beta1.SupplementalGroupsStrategyOptions",
-          "description": "supplementalGroups is the strategy that will dictate what supplemental groups are used by the SecurityContext."
-        },
-        "volumes": {
-          "description": "volumes is an allowlist of volume plugins. Empty indicates that no volumes may be used. To allow all volumes you may use '*'.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "seLinux",
-        "runAsUser",
-        "supplementalGroups",
-        "fsGroup"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.RunAsGroupStrategyOptions": {
-      "description": "RunAsGroupStrategyOptions defines the strategy type and any options used to create the strategy.",
-      "properties": {
-        "ranges": {
-          "description": "ranges are the allowed ranges of gids that may be used. If you would like to force a single gid then supply a single range with the same start and end. Required for MustRunAs.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.IDRange"
-          },
-          "type": "array"
-        },
-        "rule": {
-          "description": "rule is the strategy that will dictate the allowable RunAsGroup values that may be set.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "rule"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.RunAsUserStrategyOptions": {
-      "description": "RunAsUserStrategyOptions defines the strategy type and any options used to create the strategy.",
-      "properties": {
-        "ranges": {
-          "description": "ranges are the allowed ranges of uids that may be used. If you would like to force a single uid then supply a single range with the same start and end. Required for MustRunAs.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.IDRange"
-          },
-          "type": "array"
-        },
-        "rule": {
-          "description": "rule is the strategy that will dictate the allowable RunAsUser values that may be set.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "rule"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.RuntimeClassStrategyOptions": {
-      "description": "RuntimeClassStrategyOptions define the strategy that will dictate the allowable RuntimeClasses for a pod.",
-      "properties": {
-        "allowedRuntimeClassNames": {
-          "description": "allowedRuntimeClassNames is an allowlist of RuntimeClass names that may be specified on a pod. A value of \"*\" means that any RuntimeClass name is allowed, and must be the only item in the list. An empty list requires the RuntimeClassName field to be unset.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "defaultRuntimeClassName": {
-          "description": "defaultRuntimeClassName is the default RuntimeClassName to set on the pod. The default MUST be allowed by the allowedRuntimeClassNames list. A value of nil does not mutate the Pod.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "allowedRuntimeClassNames"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.SELinuxStrategyOptions": {
-      "description": "SELinuxStrategyOptions defines the strategy type and any options used to create the strategy.",
-      "properties": {
-        "rule": {
-          "description": "rule is the strategy that will dictate the allowable labels that may be set.",
-          "type": "string"
-        },
-        "seLinuxOptions": {
-          "$ref": "#/definitions/io.k8s.api.core.v1.SELinuxOptions",
-          "description": "seLinuxOptions required to run as; required for MustRunAs More info: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/"
-        }
-      },
-      "required": [
-        "rule"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.policy.v1beta1.SupplementalGroupsStrategyOptions": {
-      "description": "SupplementalGroupsStrategyOptions defines the strategy type and options used to create the strategy.",
-      "properties": {
-        "ranges": {
-          "description": "ranges are the allowed ranges of supplemental groups.  If you would like to force a single supplemental group then supply a single range with the same start and end. Required for MustRunAs.",
-          "items": {
-            "$ref": "#/definitions/io.k8s.api.policy.v1beta1.IDRange"
-          },
-          "type": "array"
-        },
-        "rule": {
-          "description": "rule is the strategy that will dictate what supplemental groups is used in the SecurityContext.",
-          "type": "string"
-        }
-      },
       "type": "object"
     },
     "io.k8s.api.rbac.v1.AggregationRule": {
@@ -14632,7 +14256,7 @@
       "description": "CSIDriverSpec is the specification of a CSIDriver.",
       "properties": {
         "attachRequired": {
-          "description": "attachRequired indicates this CSI volume driver requires an attach operation (because it implements the CSI ControllerPublishVolume() method), and that the Kubernetes attach detach controller should call the attach volume interface which checks the volumeattachment status and waits until the volume is attached before proceeding to mounting. The CSI external-attacher coordinates with CSI volume driver and updates the volumeattachment status when the attach operation is complete. If the CSIDriverRegistry feature gate is enabled and the value is specified to false, the attach operation will be skipped. Otherwise the attach operation will be called.\n\nThis field is immutable.",
+          "description": "attachRequired indicates this CSI volume driver requires an attach operation (because it implements the CSI ControllerPublishVolume() method), and that the Kubernetes attach detach controller should call the attach volume interface which checks the volumeattachment status and waits until the volume is attached before proceeding to mounting. The CSI external-attacher coordinates with CSI volume driver and updates the volumeattachment status when the attach operation is complete. If the value is specified to false, the attach operation will be skipped. Otherwise the attach operation will be called.\n\nThis field is immutable.",
           "type": "boolean"
         },
         "fsGroupPolicy": {
@@ -14640,7 +14264,7 @@
           "type": "string"
         },
         "podInfoOnMount": {
-          "description": "If set to true, podInfoOnMount indicates this CSI volume driver requires additional pod information (like podName, podUID, etc.) during mount operations. If set to false, pod information will not be passed on mount. Default is false. The CSI driver specifies podInfoOnMount as part of driver deployment. If true, Kubelet will pass pod information as VolumeContext in the CSI NodePublishVolume() calls. The CSI driver is responsible for parsing and validating the information passed in as VolumeContext. The following VolumeConext will be passed if podInfoOnMount is set to true. This list might grow, but the prefix will be used. \"csi.storage.k8s.io/pod.name\": pod.Name \"csi.storage.k8s.io/pod.namespace\": pod.Namespace \"csi.storage.k8s.io/pod.uid\": string(pod.UID) \"csi.storage.k8s.io/ephemeral\": \"true\" if the volume is an ephemeral inline volume\n                                defined by a CSIVolumeSource, otherwise \"false\"\n\n\"csi.storage.k8s.io/ephemeral\" is a new feature in Kubernetes 1.16. It is only required for drivers which support both the \"Persistent\" and \"Ephemeral\" VolumeLifecycleMode. Other drivers can leave pod info disabled and/or ignore this field. As Kubernetes 1.15 doesn't support this field, drivers can only support one mode when deployed on such a cluster and the deployment determines which mode that is, for example via a command line parameter of the driver.\n\nThis field is immutable.",
+          "description": "If set to true, podInfoOnMount indicates this CSI volume driver requires additional pod information (like podName, podUID, etc.) during mount operations. If set to false, pod information will not be passed on mount. Default is false. The CSI driver specifies podInfoOnMount as part of driver deployment. If true, Kubelet will pass pod information as VolumeContext in the CSI NodePublishVolume() calls. The CSI driver is responsible for parsing and validating the information passed in as VolumeContext. The following VolumeContext will be passed if podInfoOnMount is set to true. This list might grow, but the prefix will be used. \"csi.storage.k8s.io/pod.name\": pod.Name \"csi.storage.k8s.io/pod.namespace\": pod.Namespace \"csi.storage.k8s.io/pod.uid\": string(pod.UID) \"csi.storage.k8s.io/ephemeral\": \"true\" if the volume is an ephemeral inline volume\n                                defined by a CSIVolumeSource, otherwise \"false\"\n\n\"csi.storage.k8s.io/ephemeral\" is a new feature in Kubernetes 1.16. It is only required for drivers which support both the \"Persistent\" and \"Ephemeral\" VolumeLifecycleMode. Other drivers can leave pod info disabled and/or ignore this field. As Kubernetes 1.15 doesn't support this field, drivers can only support one mode when deployed on such a cluster and the deployment determines which mode that is, for example via a command line parameter of the driver.\n\nThis field is immutable.",
           "type": "boolean"
         },
         "requiresRepublish": {
@@ -16585,7 +16209,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Annotations is an unstructured key value map stored with a resource that may be set by external tools to store and retrieve arbitrary metadata. They are not queryable and should be preserved when modifying objects. More info: http://kubernetes.io/docs/user-guide/annotations",
+          "description": "Annotations is an unstructured key value map stored with a resource that may be set by external tools to store and retrieve arbitrary metadata. They are not queryable and should be preserved when modifying objects. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations",
           "type": "object"
         },
         "clusterName": {
@@ -16626,7 +16250,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Map of string keys and values that can be used to organize and categorize (scope and select) objects. May match selectors of replication controllers and services. More info: http://kubernetes.io/docs/user-guide/labels",
+          "description": "Map of string keys and values that can be used to organize and categorize (scope and select) objects. May match selectors of replication controllers and services. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels",
           "type": "object"
         },
         "managedFields": {
@@ -16637,11 +16261,11 @@
           "type": "array"
         },
         "name": {
-          "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+          "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
           "type": "string"
         },
         "namespace": {
-          "description": "Namespace defines the space within which each name must be unique. An empty namespace is equivalent to the \"default\" namespace, but \"default\" is the canonical representation. Not all objects are required to be scoped to a namespace - the value of this field for those objects will be empty.\n\nMust be a DNS_LABEL. Cannot be updated. More info: http://kubernetes.io/docs/user-guide/namespaces",
+          "description": "Namespace defines the space within which each name must be unique. An empty namespace is equivalent to the \"default\" namespace, but \"default\" is the canonical representation. Not all objects are required to be scoped to a namespace - the value of this field for those objects will be empty.\n\nMust be a DNS_LABEL. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces",
           "type": "string"
         },
         "ownerReferences": {
@@ -16662,7 +16286,7 @@
           "type": "string"
         },
         "uid": {
-          "description": "UID is the unique in time and space value for this object. It is typically generated by the server on successful creation of a resource and is not allowed to change on PUT operations.\n\nPopulated by the system. Read-only. More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+          "description": "UID is the unique in time and space value for this object. It is typically generated by the server on successful creation of a resource and is not allowed to change on PUT operations.\n\nPopulated by the system. Read-only. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
           "type": "string"
         }
       },
@@ -16688,11 +16312,11 @@
           "type": "string"
         },
         "name": {
-          "description": "Name of the referent. More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+          "description": "Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
           "type": "string"
         },
         "uid": {
-          "description": "UID of the referent. More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+          "description": "UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
           "type": "string"
         }
       },
@@ -16833,7 +16457,7 @@
           "type": "integer"
         },
         "uid": {
-          "description": "UID of the resource. (when there is a single resource which can be described). More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+          "description": "UID of the resource. (when there is a single resource which can be described). More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
           "type": "string"
         }
       },
@@ -17288,7 +16912,7 @@
           "type": "string"
         },
         "groupPriorityMinimum": {
-          "description": "GroupPriorityMininum is the priority this group should have at least. Higher priority means that the group is preferred by clients over lower priority ones. Note that other versions of this group might specify even higher GroupPriorityMininum values such that the whole group gets a higher priority. The primary sort is based on GroupPriorityMinimum, ordered highest number to lowest (20 before 10). The secondary sort is based on the alphabetical comparison of the name of the object.  (v1.bar before v1.foo) We'd recommend something like: *.k8s.io (except extensions) at 18000 and PaaSes (OpenShift, Deis) are recommended to be in the 2000s",
+          "description": "GroupPriorityMinimum is the priority this group should have at least. Higher priority means that the group is preferred by clients over lower priority ones. Note that other versions of this group might specify even higher GroupPriorityMinimum values such that the whole group gets a higher priority. The primary sort is based on GroupPriorityMinimum, ordered highest number to lowest (20 before 10). The secondary sort is based on the alphabetical comparison of the name of the object.  (v1.bar before v1.foo) We'd recommend something like: *.k8s.io (except extensions) at 18000 and PaaSes (OpenShift, Deis) are recommended to be in the 2000s",
           "format": "int32",
           "type": "integer"
         },
@@ -78198,604 +77822,6 @@
         }
       ]
     },
-    "/apis/policy/v1beta1/podsecuritypolicies": {
-      "delete": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "delete collection of PodSecurityPolicy",
-        "operationId": "deletePolicyV1beta1CollectionPodSecurityPolicy",
-        "parameters": [
-          {
-            "in": "body",
-            "name": "body",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions"
-            }
-          },
-          {
-            "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
-            "in": "query",
-            "name": "continue",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "A selector to restrict the list of returned objects by their fields. Defaults to everything.",
-            "in": "query",
-            "name": "fieldSelector",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "The duration in seconds before the object should be deleted. Value must be non-negative integer. The value zero indicates delete immediately. If this value is nil, the default grace period for the specified type will be used. Defaults to a per object value if not specified. zero means delete immediately.",
-            "in": "query",
-            "name": "gracePeriodSeconds",
-            "type": "integer",
-            "uniqueItems": true
-          },
-          {
-            "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
-            "in": "query",
-            "name": "labelSelector",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
-            "in": "query",
-            "name": "limit",
-            "type": "integer",
-            "uniqueItems": true
-          },
-          {
-            "description": "Deprecated: please use the PropagationPolicy, this field will be deprecated in 1.7. Should the dependent objects be orphaned. If true/false, the \"orphan\" finalizer will be added to/removed from the object's finalizers list. Either this field or PropagationPolicy may be set, but not both.",
-            "in": "query",
-            "name": "orphanDependents",
-            "type": "boolean",
-            "uniqueItems": true
-          },
-          {
-            "description": "Whether and how garbage collection will be performed. Either this field or OrphanDependents may be set, but not both. The default policy is decided by the existing finalizer set in the metadata.finalizers and the resource-specific default policy. Acceptable values are: 'Orphan' - orphan the dependents; 'Background' - allow the garbage collector to delete the dependents in the background; 'Foreground' - a cascading policy that deletes all dependents in the foreground.",
-            "in": "query",
-            "name": "propagationPolicy",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "resourceVersion sets a constraint on what resource versions a request may be served from. See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-            "in": "query",
-            "name": "resourceVersion",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-            "in": "query",
-            "name": "resourceVersionMatch",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
-            "in": "query",
-            "name": "timeoutSeconds",
-            "type": "integer",
-            "uniqueItems": true
-          }
-        ],
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "deletecollection",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "get": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "list or watch objects of kind PodSecurityPolicy",
-        "operationId": "listPolicyV1beta1PodSecurityPolicy",
-        "parameters": [
-          {
-            "description": "allowWatchBookmarks requests watch events with type \"BOOKMARK\". Servers that do not implement bookmarks may ignore this flag and bookmarks are sent at the server's discretion. Clients should not assume bookmarks are returned at any specific interval, nor may they assume the server will send any BOOKMARK event during a session. If this is not a watch, this field is ignored.",
-            "in": "query",
-            "name": "allowWatchBookmarks",
-            "type": "boolean",
-            "uniqueItems": true
-          },
-          {
-            "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
-            "in": "query",
-            "name": "continue",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "A selector to restrict the list of returned objects by their fields. Defaults to everything.",
-            "in": "query",
-            "name": "fieldSelector",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
-            "in": "query",
-            "name": "labelSelector",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
-            "in": "query",
-            "name": "limit",
-            "type": "integer",
-            "uniqueItems": true
-          },
-          {
-            "description": "resourceVersion sets a constraint on what resource versions a request may be served from. See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-            "in": "query",
-            "name": "resourceVersion",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-            "in": "query",
-            "name": "resourceVersionMatch",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
-            "in": "query",
-            "name": "timeoutSeconds",
-            "type": "integer",
-            "uniqueItems": true
-          },
-          {
-            "description": "Watch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.",
-            "in": "query",
-            "name": "watch",
-            "type": "boolean",
-            "uniqueItems": true
-          }
-        ],
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf",
-          "application/json;stream=watch",
-          "application/vnd.kubernetes.protobuf;stream=watch"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicyList"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "list",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "parameters": [
-        {
-          "description": "If 'true', then the output is pretty printed.",
-          "in": "query",
-          "name": "pretty",
-          "type": "string",
-          "uniqueItems": true
-        }
-      ],
-      "post": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "create a PodSecurityPolicy",
-        "operationId": "createPolicyV1beta1PodSecurityPolicy",
-        "parameters": [
-          {
-            "in": "body",
-            "name": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "fieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint.",
-            "in": "query",
-            "name": "fieldManager",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
-            "in": "query",
-            "name": "fieldValidation",
-            "type": "string",
-            "uniqueItems": true
-          }
-        ],
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "201": {
-            "description": "Created",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "202": {
-            "description": "Accepted",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "post",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      }
-    },
-    "/apis/policy/v1beta1/podsecuritypolicies/{name}": {
-      "delete": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "delete a PodSecurityPolicy",
-        "operationId": "deletePolicyV1beta1PodSecurityPolicy",
-        "parameters": [
-          {
-            "in": "body",
-            "name": "body",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions"
-            }
-          },
-          {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "The duration in seconds before the object should be deleted. Value must be non-negative integer. The value zero indicates delete immediately. If this value is nil, the default grace period for the specified type will be used. Defaults to a per object value if not specified. zero means delete immediately.",
-            "in": "query",
-            "name": "gracePeriodSeconds",
-            "type": "integer",
-            "uniqueItems": true
-          },
-          {
-            "description": "Deprecated: please use the PropagationPolicy, this field will be deprecated in 1.7. Should the dependent objects be orphaned. If true/false, the \"orphan\" finalizer will be added to/removed from the object's finalizers list. Either this field or PropagationPolicy may be set, but not both.",
-            "in": "query",
-            "name": "orphanDependents",
-            "type": "boolean",
-            "uniqueItems": true
-          },
-          {
-            "description": "Whether and how garbage collection will be performed. Either this field or OrphanDependents may be set, but not both. The default policy is decided by the existing finalizer set in the metadata.finalizers and the resource-specific default policy. Acceptable values are: 'Orphan' - orphan the dependents; 'Background' - allow the garbage collector to delete the dependents in the background; 'Foreground' - a cascading policy that deletes all dependents in the foreground.",
-            "in": "query",
-            "name": "propagationPolicy",
-            "type": "string",
-            "uniqueItems": true
-          }
-        ],
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "202": {
-            "description": "Accepted",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "delete",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "get": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "read the specified PodSecurityPolicy",
-        "operationId": "readPolicyV1beta1PodSecurityPolicy",
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "get",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "parameters": [
-        {
-          "description": "name of the PodSecurityPolicy",
-          "in": "path",
-          "name": "name",
-          "required": true,
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "If 'true', then the output is pretty printed.",
-          "in": "query",
-          "name": "pretty",
-          "type": "string",
-          "uniqueItems": true
-        }
-      ],
-      "patch": {
-        "consumes": [
-          "application/json-patch+json",
-          "application/merge-patch+json",
-          "application/strategic-merge-patch+json",
-          "application/apply-patch+yaml"
-        ],
-        "description": "partially update the specified PodSecurityPolicy",
-        "operationId": "patchPolicyV1beta1PodSecurityPolicy",
-        "parameters": [
-          {
-            "in": "body",
-            "name": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
-            }
-          },
-          {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "fieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint. This field is required for apply requests (application/apply-patch) but optional for non-apply patch types (JsonPatch, MergePatch, StrategicMergePatch).",
-            "in": "query",
-            "name": "fieldManager",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
-            "in": "query",
-            "name": "fieldValidation",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "Force is going to \"force\" Apply requests. It means user will re-acquire conflicting fields owned by other people. Force flag must be unset for non-apply patch requests.",
-            "in": "query",
-            "name": "force",
-            "type": "boolean",
-            "uniqueItems": true
-          }
-        ],
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "201": {
-            "description": "Created",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "patch",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "put": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "replace the specified PodSecurityPolicy",
-        "operationId": "replacePolicyV1beta1PodSecurityPolicy",
-        "parameters": [
-          {
-            "in": "body",
-            "name": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "fieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint.",
-            "in": "query",
-            "name": "fieldManager",
-            "type": "string",
-            "uniqueItems": true
-          },
-          {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
-            "in": "query",
-            "name": "fieldValidation",
-            "type": "string",
-            "uniqueItems": true
-          }
-        ],
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "201": {
-            "description": "Created",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.api.policy.v1beta1.PodSecurityPolicy"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "put",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      }
-    },
     "/apis/policy/v1beta1/watch/namespaces/{namespace}/poddisruptionbudgets": {
       "get": {
         "consumes": [
@@ -79114,236 +78140,6 @@
           "in": "query",
           "name": "limit",
           "type": "integer",
-          "uniqueItems": true
-        },
-        {
-          "description": "If 'true', then the output is pretty printed.",
-          "in": "query",
-          "name": "pretty",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "resourceVersion sets a constraint on what resource versions a request may be served from. See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-          "in": "query",
-          "name": "resourceVersion",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-          "in": "query",
-          "name": "resourceVersionMatch",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
-          "in": "query",
-          "name": "timeoutSeconds",
-          "type": "integer",
-          "uniqueItems": true
-        },
-        {
-          "description": "Watch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.",
-          "in": "query",
-          "name": "watch",
-          "type": "boolean",
-          "uniqueItems": true
-        }
-      ]
-    },
-    "/apis/policy/v1beta1/watch/podsecuritypolicies": {
-      "get": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "watch individual changes to a list of PodSecurityPolicy. deprecated: use the 'watch' parameter with a list operation instead.",
-        "operationId": "watchPolicyV1beta1PodSecurityPolicyList",
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf",
-          "application/json;stream=watch",
-          "application/vnd.kubernetes.protobuf;stream=watch"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "watchlist",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "parameters": [
-        {
-          "description": "allowWatchBookmarks requests watch events with type \"BOOKMARK\". Servers that do not implement bookmarks may ignore this flag and bookmarks are sent at the server's discretion. Clients should not assume bookmarks are returned at any specific interval, nor may they assume the server will send any BOOKMARK event during a session. If this is not a watch, this field is ignored.",
-          "in": "query",
-          "name": "allowWatchBookmarks",
-          "type": "boolean",
-          "uniqueItems": true
-        },
-        {
-          "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
-          "in": "query",
-          "name": "continue",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "A selector to restrict the list of returned objects by their fields. Defaults to everything.",
-          "in": "query",
-          "name": "fieldSelector",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
-          "in": "query",
-          "name": "labelSelector",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
-          "in": "query",
-          "name": "limit",
-          "type": "integer",
-          "uniqueItems": true
-        },
-        {
-          "description": "If 'true', then the output is pretty printed.",
-          "in": "query",
-          "name": "pretty",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "resourceVersion sets a constraint on what resource versions a request may be served from. See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-          "in": "query",
-          "name": "resourceVersion",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "resourceVersionMatch determines how resourceVersion is applied to list calls. It is highly recommended that resourceVersionMatch be set for list calls where resourceVersion is set See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
-          "in": "query",
-          "name": "resourceVersionMatch",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
-          "in": "query",
-          "name": "timeoutSeconds",
-          "type": "integer",
-          "uniqueItems": true
-        },
-        {
-          "description": "Watch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.",
-          "in": "query",
-          "name": "watch",
-          "type": "boolean",
-          "uniqueItems": true
-        }
-      ]
-    },
-    "/apis/policy/v1beta1/watch/podsecuritypolicies/{name}": {
-      "get": {
-        "consumes": [
-          "*/*"
-        ],
-        "description": "watch changes to an object of kind PodSecurityPolicy. deprecated: use the 'watch' parameter with a list operation instead, filtered to a single item with the 'fieldSelector' parameter.",
-        "operationId": "watchPolicyV1beta1PodSecurityPolicy",
-        "produces": [
-          "application/json",
-          "application/yaml",
-          "application/vnd.kubernetes.protobuf",
-          "application/json;stream=watch",
-          "application/vnd.kubernetes.protobuf;stream=watch"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "schema": {
-              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        },
-        "schemes": [
-          "https"
-        ],
-        "tags": [
-          "policy_v1beta1"
-        ],
-        "x-kubernetes-action": "watch",
-        "x-kubernetes-group-version-kind": {
-          "group": "policy",
-          "kind": "PodSecurityPolicy",
-          "version": "v1beta1"
-        }
-      },
-      "parameters": [
-        {
-          "description": "allowWatchBookmarks requests watch events with type \"BOOKMARK\". Servers that do not implement bookmarks may ignore this flag and bookmarks are sent at the server's discretion. Clients should not assume bookmarks are returned at any specific interval, nor may they assume the server will send any BOOKMARK event during a session. If this is not a watch, this field is ignored.",
-          "in": "query",
-          "name": "allowWatchBookmarks",
-          "type": "boolean",
-          "uniqueItems": true
-        },
-        {
-          "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
-          "in": "query",
-          "name": "continue",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "A selector to restrict the list of returned objects by their fields. Defaults to everything.",
-          "in": "query",
-          "name": "fieldSelector",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
-          "in": "query",
-          "name": "labelSelector",
-          "type": "string",
-          "uniqueItems": true
-        },
-        {
-          "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
-          "in": "query",
-          "name": "limit",
-          "type": "integer",
-          "uniqueItems": true
-        },
-        {
-          "description": "name of the PodSecurityPolicy",
-          "in": "path",
-          "name": "name",
-          "required": true,
-          "type": "string",
           "uniqueItems": true
         },
         {

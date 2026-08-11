@@ -19,6 +19,7 @@ package watch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestUntilMultipleConditionsFail(t *testing.T) {
 	defer cancel()
 
 	lastEvent, err := UntilWithoutRetry(ctx, fw, conditions...)
-	if err != wait.ErrWaitTimeout {
+	if !wait.Interrupted(err) {
 		t.Fatalf("expected ErrWaitTimeout error, got %#v", err)
 	}
 	if lastEvent == nil {
@@ -188,7 +189,7 @@ func TestUntilWithSync(t *testing.T) {
 	// FIXME: test preconditions
 	tt := []struct {
 		name             string
-		lw               *cache.ListWatch
+		lw               cache.ListerWatcher
 		preconditionFunc PreconditionFunc
 		conditionFunc    ConditionFunc
 		expectedErr      error
@@ -196,53 +197,53 @@ func TestUntilWithSync(t *testing.T) {
 	}{
 		{
 			name: "doesn't wait for sync with no precondition",
-			lw: &cache.ListWatch{
+			lw: toListWatcherWithUnSupportedWatchListSemantics(&cache.ListWatch{
 				ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 					select {}
 				},
 				WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 					select {}
 				},
-			},
+			}),
 			preconditionFunc: nil,
 			conditionFunc: func(e watch.Event) (bool, error) {
 				return true, nil
 			},
-			expectedErr:   errors.New("timed out waiting for the condition"),
+			expectedErr:   wait.ErrorInterrupted(nil),
 			expectedEvent: nil,
 		},
 		{
 			name: "waits indefinitely with precondition if it can't sync",
-			lw: &cache.ListWatch{
+			lw: toListWatcherWithUnSupportedWatchListSemantics(&cache.ListWatch{
 				ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 					select {}
 				},
 				WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 					select {}
 				},
-			},
+			}),
 			preconditionFunc: func(store cache.Store) (bool, error) {
 				return true, nil
 			},
 			conditionFunc: func(e watch.Event) (bool, error) {
 				return true, nil
 			},
-			expectedErr:   errors.New("UntilWithSync: unable to sync caches: context deadline exceeded"),
+			expectedErr:   fmt.Errorf("UntilWithSync: unable to sync caches: %w", context.DeadlineExceeded),
 			expectedEvent: nil,
 		},
 		{
 			name: "precondition can stop the loop",
-			lw: func() *cache.ListWatch {
+			lw: func() cache.ListerWatcher {
 				fakeclient := fakeclient.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "first"}})
 
-				return &cache.ListWatch{
+				return toListWatcherWithUnSupportedWatchListSemantics(&cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 						return fakeclient.CoreV1().Secrets("").List(context.TODO(), options)
 					},
 					WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 						return fakeclient.CoreV1().Secrets("").Watch(context.TODO(), options)
 					},
-				}
+				})
 			}(),
 			preconditionFunc: func(store cache.Store) (bool, error) {
 				_, exists, err := store.Get(&metav1.ObjectMeta{Namespace: "", Name: "first"})
@@ -262,17 +263,17 @@ func TestUntilWithSync(t *testing.T) {
 		},
 		{
 			name: "precondition lets it proceed to regular condition",
-			lw: func() *cache.ListWatch {
+			lw: func() cache.ListerWatcher {
 				fakeclient := fakeclient.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "first"}})
 
-				return &cache.ListWatch{
+				return toListWatcherWithUnSupportedWatchListSemantics(&cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 						return fakeclient.CoreV1().Secrets("").List(context.TODO(), options)
 					},
 					WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 						return fakeclient.CoreV1().Secrets("").Watch(context.TODO(), options)
 					},
-				}
+				})
 			}(),
 			preconditionFunc: func(store cache.Store) (bool, error) {
 				return false, nil

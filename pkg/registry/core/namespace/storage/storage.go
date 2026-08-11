@@ -37,7 +37,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/core/namespace"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // rest implements a RESTStorage for namespaces
@@ -59,10 +59,11 @@ type FinalizeREST struct {
 // NewREST returns a RESTStorage object that will work against namespaces.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, *FinalizeREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &api.Namespace{} },
-		NewListFunc:              func() runtime.Object { return &api.NamespaceList{} },
-		PredicateFunc:            namespace.MatchNamespace,
-		DefaultQualifiedResource: api.Resource("namespaces"),
+		NewFunc:                   func() runtime.Object { return &api.Namespace{} },
+		NewListFunc:               func() runtime.Object { return &api.NamespaceList{} },
+		PredicateFunc:             namespace.MatchNamespace,
+		DefaultQualifiedResource:  api.Resource("namespaces"),
+		SingularQualifiedResource: api.Resource("namespace"),
 
 		CreateStrategy:      namespace.Strategy,
 		UpdateStrategy:      namespace.Strategy,
@@ -92,6 +93,12 @@ func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, *Finaliz
 
 func (r *REST) NamespaceScoped() bool {
 	return r.store.NamespaceScoped()
+}
+
+var _ rest.SingularNameProvider = &REST{}
+
+func (r *REST) GetSingularName() string {
+	return r.store.GetSingularName()
 }
 
 func (r *REST) New() runtime.Object {

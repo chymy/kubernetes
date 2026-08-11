@@ -22,6 +22,8 @@ import (
 
 	"k8s.io/api/core/v1"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 type policyMergeTestCase struct {
@@ -748,6 +750,11 @@ func (p *bestEffortPolicy) mergeTestCases(numaNodes []int) []policyMergeTestCase
 				Preferred:        false,
 			},
 		},
+	}
+}
+
+func (p *bestEffortPolicy) mergeTestCasesNoPolicies(numaNodes []int) []policyMergeTestCase {
+	return []policyMergeTestCase{
 		{
 			name: "bestNonPreferredAffinityCount (5)",
 			hp: []HintProvider{
@@ -827,6 +834,167 @@ func (p *bestEffortPolicy) mergeTestCases(numaNodes []int) []policyMergeTestCase
 			},
 			expected: TopologyHint{
 				NUMANodeAffinity: NewTestBitMask(1, 2),
+				Preferred:        false,
+			},
+		},
+	}
+}
+
+func (p *bestEffortPolicy) mergeTestCasesClosestNUMA(numaNodes []int) []policyMergeTestCase {
+	return []policyMergeTestCase{
+		{
+			name: "Two providers, 2 hints each, same mask (some with different bits), same preferred",
+			hp: []HintProvider{
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource1": {
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 4),
+								Preferred:        true,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 2),
+								Preferred:        true,
+							},
+						},
+					},
+				},
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource2": {
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 4),
+								Preferred:        true,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 2),
+								Preferred:        true,
+							},
+						},
+					},
+				},
+			},
+			expected: TopologyHint{
+				NUMANodeAffinity: NewTestBitMask(0, 2),
+				Preferred:        true,
+			},
+		},
+		{
+			name: "Two providers, 2 hints each, different mask",
+			hp: []HintProvider{
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource1": {
+							{
+								NUMANodeAffinity: NewTestBitMask(4),
+								Preferred:        true,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 2),
+								Preferred:        true,
+							},
+						},
+					},
+				},
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource2": {
+							{
+								NUMANodeAffinity: NewTestBitMask(4),
+								Preferred:        true,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 2),
+								Preferred:        true,
+							},
+						},
+					},
+				},
+			},
+			expected: TopologyHint{
+				NUMANodeAffinity: NewTestBitMask(4),
+				Preferred:        true,
+			},
+		},
+		{
+			name: "bestNonPreferredAffinityCount (5)",
+			hp: []HintProvider{
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource1": {
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 1, 2, 3),
+								Preferred:        false,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 1),
+								Preferred:        false,
+							},
+						},
+					},
+				},
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource2": {
+							{
+								NUMANodeAffinity: NewTestBitMask(1, 2),
+								Preferred:        false,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(2, 3),
+								Preferred:        false,
+							},
+						},
+					},
+				},
+			},
+			expected: TopologyHint{
+				NUMANodeAffinity: NewTestBitMask(2, 3),
+				Preferred:        false,
+			},
+		},
+		{
+			name: "bestNonPreferredAffinityCount (6)",
+			hp: []HintProvider{
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource1": {
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 1, 2, 3),
+								Preferred:        false,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(0, 1),
+								Preferred:        false,
+							},
+						},
+					},
+				},
+				&mockHintProvider{
+					map[string][]TopologyHint{
+						"resource2": {
+							{
+								NUMANodeAffinity: NewTestBitMask(1, 2, 3),
+								Preferred:        false,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(1, 2),
+								Preferred:        false,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(1, 3),
+								Preferred:        false,
+							},
+							{
+								NUMANodeAffinity: NewTestBitMask(2, 3),
+								Preferred:        false,
+							},
+						},
+					},
+				},
+			},
+			expected: TopologyHint{
+				NUMANodeAffinity: NewTestBitMask(2, 3),
 				Preferred:        false,
 			},
 		},
@@ -1107,14 +1275,16 @@ func (p *singleNumaNodePolicy) mergeTestCases(numaNodes []int) []policyMergeTest
 }
 
 func testPolicyMerge(policy Policy, tcases []policyMergeTestCase, t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+
 	for _, tc := range tcases {
 		var providersHints []map[string][]TopologyHint
 		for _, provider := range tc.hp {
-			hints := provider.GetTopologyHints(&v1.Pod{}, &v1.Container{})
+			hints := provider.GetTopologyHints(logger, &v1.Pod{}, &v1.Container{}, lifecycle.AddOperation)
 			providersHints = append(providersHints, hints)
 		}
 
-		actual, _ := policy.Merge(providersHints)
+		actual, _ := policy.Merge(logger, providersHints)
 		if !reflect.DeepEqual(actual, tc.expected) {
 			t.Errorf("%v: Expected Topology Hint to be %v, got %v:", tc.name, tc.expected, actual)
 		}
@@ -1200,7 +1370,7 @@ func TestMaxOfMinAffinityCounts(t *testing.T) {
 	}
 }
 
-func TestCompareHints(t *testing.T) {
+func TestCompareHintsNarrowest(t *testing.T) {
 	tcases := []struct {
 		description                   string
 		bestNonPreferredAffinityCount int
@@ -1387,7 +1557,11 @@ func TestCompareHints(t *testing.T) {
 
 	for _, tc := range tcases {
 		t.Run(tc.description, func(t *testing.T) {
-			result := compareHints(tc.bestNonPreferredAffinityCount, tc.current, tc.candidate)
+			numaInfo := &NUMAInfo{}
+			merger := NewHintMerger(numaInfo, [][]TopologyHint{}, PolicyBestEffort, PolicyOptions{})
+			merger.BestNonPreferredAffinityCount = tc.bestNonPreferredAffinityCount
+
+			result := merger.compare(tc.current, tc.candidate)
 			if result != tc.current && result != tc.candidate {
 				t.Errorf("Expected result to be either 'current' or 'candidate' hint")
 			}
@@ -1398,5 +1572,43 @@ func TestCompareHints(t *testing.T) {
 				t.Errorf("Expected result to be %v, got %v", tc.candidate, result)
 			}
 		})
+	}
+}
+
+func commonNUMAInfoTwoNodes() *NUMAInfo {
+	return &NUMAInfo{
+		Nodes: []int{0, 1},
+		NUMADistances: NUMADistances{
+			0: {10, 11},
+			1: {11, 10},
+		},
+	}
+}
+
+func commonNUMAInfoFourNodes() *NUMAInfo {
+	return &NUMAInfo{
+		Nodes: []int{0, 1, 2, 3},
+		NUMADistances: NUMADistances{
+			0: {10, 11, 12, 12},
+			1: {11, 10, 12, 12},
+			2: {12, 12, 10, 11},
+			3: {12, 12, 11, 10},
+		},
+	}
+}
+
+func commonNUMAInfoEightNodes() *NUMAInfo {
+	return &NUMAInfo{
+		Nodes: []int{0, 1, 2, 3, 4, 5, 6, 7},
+		NUMADistances: NUMADistances{
+			0: {10, 11, 12, 12, 30, 30, 30, 30},
+			1: {11, 10, 12, 12, 30, 30, 30, 30},
+			2: {12, 12, 10, 11, 30, 30, 30, 30},
+			3: {12, 12, 11, 10, 30, 30, 30, 30},
+			4: {30, 30, 30, 30, 10, 11, 12, 12},
+			5: {30, 30, 30, 30, 11, 10, 12, 12},
+			6: {30, 30, 30, 30, 12, 12, 10, 11},
+			7: {30, 30, 30, 30, 12, 12, 13, 10},
+		},
 	}
 }

@@ -21,20 +21,23 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage/names"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/coordination"
 	"k8s.io/kubernetes/pkg/apis/coordination/validation"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 // leaseStrategy implements verification logic for Leases.
 type leaseStrategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Strategy is the default logic that applies when creating and updating Lease objects.
-var Strategy = leaseStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = leaseStrategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 // NamespaceScoped returns true because all Lease' need to be within a namespace.
 func (leaseStrategy) NamespaceScoped() bool {
@@ -43,10 +46,26 @@ func (leaseStrategy) NamespaceScoped() bool {
 
 // PrepareForCreate prepares Lease for creation.
 func (leaseStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
+	lease := obj.(*coordination.Lease)
+	if !utilfeature.DefaultFeatureGate.Enabled(features.CoordinatedLeaderElection) {
+		lease.Spec.Strategy = nil
+		lease.Spec.PreferredHolder = nil
+	}
+
 }
 
 // PrepareForUpdate clears fields that are not allowed to be set by end users on update.
 func (leaseStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
+	oldLease := old.(*coordination.Lease)
+	newLease := obj.(*coordination.Lease)
+	if !utilfeature.DefaultFeatureGate.Enabled(features.CoordinatedLeaderElection) {
+		if oldLease == nil || oldLease.Spec.Strategy == nil {
+			newLease.Spec.Strategy = nil
+		}
+		if oldLease == nil || oldLease.Spec.PreferredHolder == nil {
+			newLease.Spec.PreferredHolder = nil
+		}
+	}
 }
 
 // Validate validates a new Lease.
@@ -63,7 +82,7 @@ func (leaseStrategy) Canonicalize(obj runtime.Object) {
 }
 
 // AllowCreateOnUpdate is true for Lease; this means you may create one with a PUT request.
-func (leaseStrategy) AllowCreateOnUpdate() bool {
+func (leaseStrategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return true
 }
 
@@ -78,6 +97,6 @@ func (leaseStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Obje
 }
 
 // AllowUnconditionalUpdate is the default update policy for Lease objects.
-func (leaseStrategy) AllowUnconditionalUpdate() bool {
+func (leaseStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return false
 }

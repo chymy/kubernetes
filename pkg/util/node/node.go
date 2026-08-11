@@ -17,19 +17,10 @@ limitations under the License.
 package node
 
 import (
-	"context"
 	"fmt"
 	"net"
-	"os"
-	"strings"
-	"time"
-
-	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	clientset "k8s.io/client-go/kubernetes"
 	netutils "k8s.io/utils/net"
 )
 
@@ -41,26 +32,6 @@ const (
 	// on the node it is (was) running.
 	NodeUnreachablePodMessage = "Node %v which was running pod %v is unresponsive"
 )
-
-// GetHostname returns OS's hostname if 'hostnameOverride' is empty; otherwise, return 'hostnameOverride'.
-func GetHostname(hostnameOverride string) (string, error) {
-	hostName := hostnameOverride
-	if len(hostName) == 0 {
-		nodeName, err := os.Hostname()
-		if err != nil {
-			return "", fmt.Errorf("couldn't determine hostname: %v", err)
-		}
-		hostName = nodeName
-	}
-
-	// Trim whitespaces first to avoid getting an empty hostname
-	// For linux, the hostname is read from file /proc/sys/kernel/hostname directly
-	hostName = strings.TrimSpace(hostName)
-	if len(hostName) == 0 {
-		return "", fmt.Errorf("empty hostname is invalid")
-	}
-	return strings.ToLower(hostName), nil
-}
 
 // NoMatchError is a typed implementation of the error interface. It indicates a failure to get a matching Node.
 type NoMatchError struct {
@@ -123,46 +94,6 @@ func GetNodeHostIPs(node *v1.Node) ([]net.IP, error) {
 	}
 
 	return nodeIPs, nil
-}
-
-// GetNodeHostIP returns the provided node's "primary" IP; see GetNodeHostIPs for more details
-func GetNodeHostIP(node *v1.Node) (net.IP, error) {
-	ips, err := GetNodeHostIPs(node)
-	if err != nil {
-		return nil, err
-	}
-	// GetNodeHostIPs always returns at least one IP if it didn't return an error
-	return ips[0], nil
-}
-
-// GetNodeIP returns an IP (as with GetNodeHostIP) for the node with the provided name.
-// If required, it will wait for the node to be created.
-func GetNodeIP(client clientset.Interface, name string) net.IP {
-	var nodeIP net.IP
-	backoff := wait.Backoff{
-		Steps:    6,
-		Duration: 1 * time.Second,
-		Factor:   2.0,
-		Jitter:   0.2,
-	}
-
-	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		node, err := client.CoreV1().Nodes().Get(context.TODO(), name, metav1.GetOptions{})
-		if err != nil {
-			klog.Errorf("Failed to retrieve node info: %v", err)
-			return false, nil
-		}
-		nodeIP, err = GetNodeHostIP(node)
-		if err != nil {
-			klog.Errorf("Failed to retrieve node IP: %v", err)
-			return false, err
-		}
-		return true, nil
-	})
-	if err == nil {
-		klog.Infof("Successfully retrieved node IP: %v", nodeIP)
-	}
-	return nodeIP
 }
 
 // IsNodeReady returns true if a node is ready; false otherwise.

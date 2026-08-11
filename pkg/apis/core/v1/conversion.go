@@ -21,7 +21,6 @@ import (
 	"reflect"
 
 	v1 "k8s.io/api/core/v1"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,6 +40,7 @@ func addConversionFuncs(scheme *runtime.Scheme) error {
 				"spec.restartPolicy",
 				"spec.schedulerName",
 				"spec.serviceAccountName",
+				"spec.hostNetwork",
 				"status.phase",
 				"status.podIP",
 				"status.podIPs",
@@ -93,6 +93,9 @@ func addConversionFuncs(scheme *runtime.Scheme) error {
 		return err
 	}
 	if err := AddFieldLabelConversionsForSecret(scheme); err != nil {
+		return err
+	}
+	if err := AddFieldLabelConversionsForService(scheme); err != nil {
 		return err
 	}
 	return nil
@@ -193,121 +196,6 @@ func Convert_apps_ReplicaSetStatus_To_v1_ReplicationControllerStatus(in *apps.Re
 	return nil
 }
 
-func Convert_core_ReplicationControllerSpec_To_v1_ReplicationControllerSpec(in *core.ReplicationControllerSpec, out *v1.ReplicationControllerSpec, s conversion.Scope) error {
-	out.Replicas = &in.Replicas
-	out.MinReadySeconds = in.MinReadySeconds
-	out.Selector = in.Selector
-	if in.Template != nil {
-		out.Template = new(v1.PodTemplateSpec)
-		if err := Convert_core_PodTemplateSpec_To_v1_PodTemplateSpec(in.Template, out.Template, s); err != nil {
-			return err
-		}
-	} else {
-		out.Template = nil
-	}
-	return nil
-}
-
-func Convert_v1_ReplicationControllerSpec_To_core_ReplicationControllerSpec(in *v1.ReplicationControllerSpec, out *core.ReplicationControllerSpec, s conversion.Scope) error {
-	if in.Replicas != nil {
-		out.Replicas = *in.Replicas
-	}
-	out.MinReadySeconds = in.MinReadySeconds
-	out.Selector = in.Selector
-	if in.Template != nil {
-		out.Template = new(core.PodTemplateSpec)
-		if err := Convert_v1_PodTemplateSpec_To_core_PodTemplateSpec(in.Template, out.Template, s); err != nil {
-			return err
-		}
-	} else {
-		out.Template = nil
-	}
-	return nil
-}
-
-func Convert_core_PodTemplateSpec_To_v1_PodTemplateSpec(in *core.PodTemplateSpec, out *v1.PodTemplateSpec, s conversion.Scope) error {
-	if err := autoConvert_core_PodTemplateSpec_To_v1_PodTemplateSpec(in, out, s); err != nil {
-		return err
-	}
-
-	// drop init container annotations so they don't take effect on legacy kubelets.
-	// remove this once the oldest supported kubelet no longer honors the annotations over the field.
-	out.Annotations = dropInitContainerAnnotations(out.Annotations)
-
-	return nil
-}
-
-func Convert_v1_PodTemplateSpec_To_core_PodTemplateSpec(in *v1.PodTemplateSpec, out *core.PodTemplateSpec, s conversion.Scope) error {
-	if err := autoConvert_v1_PodTemplateSpec_To_core_PodTemplateSpec(in, out, s); err != nil {
-		return err
-	}
-
-	// drop init container annotations so they don't show up as differences when receiving requests from old clients
-	out.Annotations = dropInitContainerAnnotations(out.Annotations)
-
-	return nil
-}
-
-func Convert_v1_PodStatus_To_core_PodStatus(in *v1.PodStatus, out *core.PodStatus, s conversion.Scope) error {
-	if err := autoConvert_v1_PodStatus_To_core_PodStatus(in, out, s); err != nil {
-		return err
-	}
-
-	// If both fields (v1.PodIPs and v1.PodIP) are provided and differ, then PodIP is authoritative for compatibility with older kubelets
-	if (len(in.PodIP) > 0 && len(in.PodIPs) > 0) && (in.PodIP != in.PodIPs[0].IP) {
-		out.PodIPs = []core.PodIP{
-			{
-				IP: in.PodIP,
-			},
-		}
-	}
-	// at the this point, autoConvert copied v1.PodIPs -> core.PodIPs
-	// if v1.PodIPs was empty but v1.PodIP is not, then set core.PodIPs[0] with v1.PodIP
-	if len(in.PodIP) > 0 && len(in.PodIPs) == 0 {
-		out.PodIPs = []core.PodIP{
-			{
-				IP: in.PodIP,
-			},
-		}
-	}
-	return nil
-}
-
-func Convert_core_PodStatus_To_v1_PodStatus(in *core.PodStatus, out *v1.PodStatus, s conversion.Scope) error {
-	if err := autoConvert_core_PodStatus_To_v1_PodStatus(in, out, s); err != nil {
-		return err
-	}
-	// at the this point autoConvert copied core.PodIPs -> v1.PodIPs
-	//  v1.PodIP (singular value field, which does not exist in core) needs to
-	// be set with core.PodIPs[0]
-	if len(in.PodIPs) > 0 {
-		out.PodIP = in.PodIPs[0].IP
-	}
-	return nil
-}
-
-// The following two v1.PodSpec conversions are done here to support v1.ServiceAccount
-// as an alias for ServiceAccountName.
-func Convert_core_PodSpec_To_v1_PodSpec(in *core.PodSpec, out *v1.PodSpec, s conversion.Scope) error {
-	if err := autoConvert_core_PodSpec_To_v1_PodSpec(in, out, s); err != nil {
-		return err
-	}
-
-	// DeprecatedServiceAccount is an alias for ServiceAccountName.
-	out.DeprecatedServiceAccount = in.ServiceAccountName
-
-	if in.SecurityContext != nil {
-		// the host namespace fields have to be handled here for backward compatibility
-		// with v1.0.0
-		out.HostPID = in.SecurityContext.HostPID
-		out.HostNetwork = in.SecurityContext.HostNetwork
-		out.HostIPC = in.SecurityContext.HostIPC
-		out.ShareProcessNamespace = in.SecurityContext.ShareProcessNamespace
-	}
-
-	return nil
-}
-
 func Convert_core_NodeSpec_To_v1_NodeSpec(in *core.NodeSpec, out *v1.NodeSpec, s conversion.Scope) error {
 	if err := autoConvert_core_NodeSpec_To_v1_NodeSpec(in, out, s); err != nil {
 		return err
@@ -335,53 +223,6 @@ func Convert_v1_NodeSpec_To_core_NodeSpec(in *v1.NodeSpec, out *core.NodeSpec, s
 	if len(in.PodCIDR) > 0 && len(in.PodCIDRs) == 0 {
 		out.PodCIDRs = []string{in.PodCIDR}
 	}
-	return nil
-}
-
-func Convert_v1_PodSpec_To_core_PodSpec(in *v1.PodSpec, out *core.PodSpec, s conversion.Scope) error {
-	if err := autoConvert_v1_PodSpec_To_core_PodSpec(in, out, s); err != nil {
-		return err
-	}
-
-	// We support DeprecatedServiceAccount as an alias for ServiceAccountName.
-	// If both are specified, ServiceAccountName (the new field) wins.
-	if in.ServiceAccountName == "" {
-		out.ServiceAccountName = in.DeprecatedServiceAccount
-	}
-
-	// the host namespace fields have to be handled specially for backward compatibility
-	// with v1.0.0
-	if out.SecurityContext == nil {
-		out.SecurityContext = new(core.PodSecurityContext)
-	}
-	out.SecurityContext.HostNetwork = in.HostNetwork
-	out.SecurityContext.HostPID = in.HostPID
-	out.SecurityContext.HostIPC = in.HostIPC
-	out.SecurityContext.ShareProcessNamespace = in.ShareProcessNamespace
-
-	return nil
-}
-
-func Convert_v1_Pod_To_core_Pod(in *v1.Pod, out *core.Pod, s conversion.Scope) error {
-	if err := autoConvert_v1_Pod_To_core_Pod(in, out, s); err != nil {
-		return err
-	}
-
-	// drop init container annotations so they don't show up as differences when receiving requests from old clients
-	out.Annotations = dropInitContainerAnnotations(out.Annotations)
-
-	return nil
-}
-
-func Convert_core_Pod_To_v1_Pod(in *core.Pod, out *v1.Pod, s conversion.Scope) error {
-	if err := autoConvert_core_Pod_To_v1_Pod(in, out, s); err != nil {
-		return err
-	}
-
-	// drop init container annotations so they don't take effect on legacy kubelets.
-	// remove this once the oldest supported kubelet no longer honors the annotations over the field.
-	out.Annotations = dropInitContainerAnnotations(out.Annotations)
-
 	return nil
 }
 
@@ -474,69 +315,55 @@ func AddFieldLabelConversionsForSecret(scheme *runtime.Scheme) error {
 		})
 }
 
-var initContainerAnnotations = map[string]bool{
-	"pod.beta.kubernetes.io/init-containers":          true,
-	"pod.alpha.kubernetes.io/init-containers":         true,
-	"pod.beta.kubernetes.io/init-container-statuses":  true,
-	"pod.alpha.kubernetes.io/init-container-statuses": true,
+func AddFieldLabelConversionsForService(scheme *runtime.Scheme) error {
+	return scheme.AddFieldLabelConversionFunc(SchemeGroupVersion.WithKind("Service"),
+		func(label, value string) (string, string, error) {
+			switch label {
+			case "metadata.namespace",
+				"metadata.name",
+				"spec.clusterIP",
+				"spec.type":
+				return label, value, nil
+			default:
+				return "", "", fmt.Errorf("field label not supported: %s", label)
+			}
+		})
 }
 
-// dropInitContainerAnnotations returns a copy of the annotations with init container annotations removed,
-// or the original annotations if no init container annotations were present.
-//
-// this can be removed once no clients prior to 1.8 are supported, and no kubelets prior to 1.8 can be run
-// (we don't support kubelets older than 2 versions skewed from the apiserver, but we don't prevent them, either)
-func dropInitContainerAnnotations(oldAnnotations map[string]string) map[string]string {
-	if len(oldAnnotations) == 0 {
-		return oldAnnotations
-	}
-
-	found := false
-	for k := range initContainerAnnotations {
-		if _, ok := oldAnnotations[k]; ok {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return oldAnnotations
-	}
-
-	newAnnotations := make(map[string]string, len(oldAnnotations))
-	for k, v := range oldAnnotations {
-		if !initContainerAnnotations[k] {
-			newAnnotations[k] = v
-		}
-	}
-	return newAnnotations
+// Convert_core_PodTemplateSpec_To_v1_PodTemplateSpec is defined outside the autogenerated file
+// so that generated conversions in other API packages that embed PodTemplateSpec can find it.
+// +k8s:conversion-fn=copy-only
+func Convert_core_PodTemplateSpec_To_v1_PodTemplateSpec(in *core.PodTemplateSpec, out *v1.PodTemplateSpec, s conversion.Scope) error {
+	return autoConvert_core_PodTemplateSpec_To_v1_PodTemplateSpec(in, out, s)
 }
 
-// Convert_core_LoadBalancerStatus_To_v1_LoadBalancerStatus is defined outside the autogenerated file for use by other API packages
-func Convert_core_LoadBalancerStatus_To_v1_LoadBalancerStatus(in *core.LoadBalancerStatus, out *v1.LoadBalancerStatus, s conversion.Scope) error {
-	return autoConvert_core_LoadBalancerStatus_To_v1_LoadBalancerStatus(in, out, s)
-}
-
-// Convert_v1_LoadBalancerStatus_To_core_LoadBalancerStatus is defined outside the autogenerated file for use by other API packages
-func Convert_v1_LoadBalancerStatus_To_core_LoadBalancerStatus(in *v1.LoadBalancerStatus, out *core.LoadBalancerStatus, s conversion.Scope) error {
-	return autoConvert_v1_LoadBalancerStatus_To_core_LoadBalancerStatus(in, out, s)
-}
-
-// Convert_core_Volume_To_v1_Volume is defined outside the autogenerated file for use by other API packages
-func Convert_core_Volume_To_v1_Volume(in *core.Volume, out *v1.Volume, s conversion.Scope) error {
-	return autoConvert_core_Volume_To_v1_Volume(in, out, s)
-}
-
-// Convert_v1_Volume_To_core_Volume is defined outside the autogenerated file for use by other API packages
-func Convert_v1_Volume_To_core_Volume(in *v1.Volume, out *core.Volume, s conversion.Scope) error {
-	return autoConvert_v1_Volume_To_core_Volume(in, out, s)
+// Convert_v1_PodTemplateSpec_To_core_PodTemplateSpec is defined outside the autogenerated file
+// so that generated conversions in other API packages that embed PodTemplateSpec can find it.
+// +k8s:conversion-fn=copy-only
+func Convert_v1_PodTemplateSpec_To_core_PodTemplateSpec(in *v1.PodTemplateSpec, out *core.PodTemplateSpec, s conversion.Scope) error {
+	return autoConvert_v1_PodTemplateSpec_To_core_PodTemplateSpec(in, out, s)
 }
 
 // Convert_core_PersistentVolumeSpec_To_v1_PersistentVolumeSpec is defined outside the autogenerated file for use by other API packages
+// This is needed because it is referenced from other APIs, but is invisible at code-generation time because of the build tags.
+// +k8s:conversion-fn=copy-only
 func Convert_core_PersistentVolumeSpec_To_v1_PersistentVolumeSpec(in *core.PersistentVolumeSpec, out *v1.PersistentVolumeSpec, s conversion.Scope) error {
 	return autoConvert_core_PersistentVolumeSpec_To_v1_PersistentVolumeSpec(in, out, s)
 }
 
 // Convert_v1_PersistentVolumeSpec_To_core_PersistentVolumeSpec is defined outside the autogenerated file for use by other API packages
+// This is needed because it is referenced from other APIs, but is invisible at code-generation time because of the build tags.
+// +k8s:conversion-fn=copy-only
 func Convert_v1_PersistentVolumeSpec_To_core_PersistentVolumeSpec(in *v1.PersistentVolumeSpec, out *core.PersistentVolumeSpec, s conversion.Scope) error {
 	return autoConvert_v1_PersistentVolumeSpec_To_core_PersistentVolumeSpec(in, out, s)
+}
+
+// Convert_Slice_string_To_Pointer_string is needed because decoding URL parameters requires manual assistance.
+func Convert_Slice_string_To_Pointer_string(in *[]string, out **string, s conversion.Scope) error {
+	if len(*in) == 0 {
+		return nil
+	}
+	temp := (*in)[0]
+	*out = &temp
+	return nil
 }

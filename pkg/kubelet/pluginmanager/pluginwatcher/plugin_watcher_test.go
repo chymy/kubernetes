@@ -19,8 +19,8 @@ package pluginwatcher
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -30,33 +30,32 @@ import (
 	"k8s.io/klog/v2"
 	registerapi "k8s.io/kubelet/pkg/apis/pluginregistration/v1"
 	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 var (
-	socketDir string
-
 	supportedVersions = []string{"v1beta1", "v1beta2"}
 )
 
 func init() {
 	var logLevel string
 
-	klog.InitFlags(flag.CommandLine)
+	flags := &flag.FlagSet{}
+	klog.InitFlags(flags)
 	flag.Set("alsologtostderr", fmt.Sprintf("%t", true))
 	flag.StringVar(&logLevel, "logLevel", "6", "test")
 	flag.Lookup("v").Value.Set(logLevel)
-
-	d, err := ioutil.TempDir("", "plugin_test")
-	if err != nil {
-		panic(fmt.Sprintf("Could not create a temp directory: %s", d))
-	}
-
-	socketDir = d
 }
 
-func cleanup(t *testing.T) {
-	require.NoError(t, os.RemoveAll(socketDir))
-	os.MkdirAll(socketDir, 0755)
+func initTempDir(t *testing.T) string {
+	// Creating a different directory. os.RemoveAll is not atomic enough;
+	// os.MkdirAll can get into an "Access Denied" error on Windows.
+	d, err := os.MkdirTemp("", "plugin_test")
+	if err != nil {
+		t.Fatalf("Could not create a temp directory %s: %v", d, err)
+	}
+
+	return d
 }
 
 func waitForRegistration(
@@ -107,17 +106,19 @@ func retryWithExponentialBackOff(initialDuration time.Duration, fn wait.Conditio
 }
 
 func TestPluginRegistration(t *testing.T) {
-	defer cleanup(t)
+	socketDir := initTempDir(t)
+	defer os.RemoveAll(socketDir)
 
+	tCtx := ktesting.Init(t)
 	dsw := cache.NewDesiredStateOfWorld()
-	newWatcher(t, dsw, wait.NeverStop)
+	newWatcher(t, socketDir, dsw, wait.NeverStop)
 
 	for i := 0; i < 10; i++ {
-		socketPath := fmt.Sprintf("%s/plugin-%d.sock", socketDir, i)
+		socketPath := filepath.Join(socketDir, fmt.Sprintf("plugin-%d.sock", i))
 		pluginName := fmt.Sprintf("example-plugin-%d", i)
 
 		p := NewTestExamplePlugin(pluginName, registerapi.DevicePlugin, socketPath, supportedVersions...)
-		require.NoError(t, p.Serve("v1beta1", "v1beta2"))
+		require.NoError(t, p.Serve(tCtx, "v1beta1", "v1beta2"))
 
 		pluginInfo := GetPluginInfo(p)
 		waitForRegistration(t, pluginInfo.SocketPath, dsw)
@@ -129,7 +130,7 @@ func TestPluginRegistration(t *testing.T) {
 		}
 
 		// Stop the plugin; the plugin should be removed from the desired state of world cache
-		require.NoError(t, p.Stop())
+		require.NoError(t, p.Stop(tCtx))
 		// The following doesn't work when running the unit tests locally: event.Op of plugin watcher won't pick up the delete event
 		waitForUnregistration(t, pluginInfo.SocketPath, dsw)
 		dswPlugins = dsw.GetPluginsToRegister()
@@ -140,18 +141,20 @@ func TestPluginRegistration(t *testing.T) {
 }
 
 func TestPluginRegistrationSameName(t *testing.T) {
-	defer cleanup(t)
+	socketDir := initTempDir(t)
+	defer os.RemoveAll(socketDir)
 
+	tCtx := ktesting.Init(t)
 	dsw := cache.NewDesiredStateOfWorld()
-	newWatcher(t, dsw, wait.NeverStop)
+	newWatcher(t, socketDir, dsw, wait.NeverStop)
 
 	// Make 10 plugins with the same name and same type but different socket path;
 	// all 10 should be in desired state of world cache
 	pluginName := "dep-example-plugin"
 	for i := 0; i < 10; i++ {
-		socketPath := fmt.Sprintf("%s/plugin-%d.sock", socketDir, i)
+		socketPath := filepath.Join(socketDir, fmt.Sprintf("plugin-%d.sock", i))
 		p := NewTestExamplePlugin(pluginName, registerapi.DevicePlugin, socketPath, supportedVersions...)
-		require.NoError(t, p.Serve("v1beta1", "v1beta2"))
+		require.NoError(t, p.Serve(tCtx, "v1beta1", "v1beta2"))
 
 		pluginInfo := GetPluginInfo(p)
 		waitForRegistration(t, pluginInfo.SocketPath, dsw)
@@ -165,17 +168,19 @@ func TestPluginRegistrationSameName(t *testing.T) {
 }
 
 func TestPluginReRegistration(t *testing.T) {
-	defer cleanup(t)
+	socketDir := initTempDir(t)
+	defer os.RemoveAll(socketDir)
 
+	tCtx := ktesting.Init(t)
 	dsw := cache.NewDesiredStateOfWorld()
-	newWatcher(t, dsw, wait.NeverStop)
+	newWatcher(t, socketDir, dsw, wait.NeverStop)
 
 	// Create a plugin first, we are then going to remove the plugin, update the plugin with a different name
 	// and recreate it.
-	socketPath := fmt.Sprintf("%s/plugin-reregistration.sock", socketDir)
+	socketPath := filepath.Join(socketDir, "plugin-reregistration.sock")
 	pluginName := "reregister-plugin"
 	p := NewTestExamplePlugin(pluginName, registerapi.DevicePlugin, socketPath, supportedVersions...)
-	require.NoError(t, p.Serve("v1beta1", "v1beta2"))
+	require.NoError(t, p.Serve(tCtx, "v1beta1", "v1beta2"))
 	pluginInfo := GetPluginInfo(p)
 	lastTimestamp := time.Now()
 	waitForRegistration(t, pluginInfo.SocketPath, dsw)
@@ -184,14 +189,14 @@ func TestPluginReRegistration(t *testing.T) {
 	// The updated plugin should be in the desired state of world cache
 	for i := 0; i < 10; i++ {
 		// Stop the plugin; the plugin should be removed from the desired state of world cache
-		// The plugin removel doesn't work when running the unit tests locally: event.Op of plugin watcher won't pick up the delete event
-		require.NoError(t, p.Stop())
+		// The plugin removal doesn't work when running the unit tests locally: event.Op of plugin watcher won't pick up the delete event
+		require.NoError(t, p.Stop(tCtx))
 		waitForUnregistration(t, pluginInfo.SocketPath, dsw)
 
 		// Add the plugin again
 		pluginName := fmt.Sprintf("dep-example-plugin-%d", i)
 		p := NewTestExamplePlugin(pluginName, registerapi.DevicePlugin, socketPath, supportedVersions...)
-		require.NoError(t, p.Serve("v1beta1", "v1beta2"))
+		require.NoError(t, p.Serve(tCtx, "v1beta1", "v1beta2"))
 		waitForRegistration(t, pluginInfo.SocketPath, dsw)
 
 		// Check the dsw cache. The updated plugin should be the only plugin in it
@@ -207,25 +212,27 @@ func TestPluginReRegistration(t *testing.T) {
 }
 
 func TestPluginRegistrationAtKubeletStart(t *testing.T) {
-	defer cleanup(t)
+	socketDir := initTempDir(t)
+	defer os.RemoveAll(socketDir)
 
+	tCtx := ktesting.Init(t)
 	plugins := make([]*examplePlugin, 10)
 
 	for i := 0; i < len(plugins); i++ {
-		socketPath := fmt.Sprintf("%s/plugin-%d.sock", socketDir, i)
+		socketPath := filepath.Join(socketDir, fmt.Sprintf("plugin-%d.sock", i))
 		pluginName := fmt.Sprintf("example-plugin-%d", i)
 
 		p := NewTestExamplePlugin(pluginName, registerapi.DevicePlugin, socketPath, supportedVersions...)
-		require.NoError(t, p.Serve("v1beta1", "v1beta2"))
+		require.NoError(t, p.Serve(tCtx, "v1beta1", "v1beta2"))
 		defer func(p *examplePlugin) {
-			require.NoError(t, p.Stop())
+			require.NoError(t, p.Stop(tCtx))
 		}(p)
 
 		plugins[i] = p
 	}
 
 	dsw := cache.NewDesiredStateOfWorld()
-	newWatcher(t, dsw, wait.NeverStop)
+	newWatcher(t, socketDir, dsw, wait.NeverStop)
 
 	var wg sync.WaitGroup
 	for i := 0; i < len(plugins); i++ {
@@ -253,9 +260,10 @@ func TestPluginRegistrationAtKubeletStart(t *testing.T) {
 	}
 }
 
-func newWatcher(t *testing.T, desiredStateOfWorldCache cache.DesiredStateOfWorld, stopCh <-chan struct{}) *Watcher {
+func newWatcher(t *testing.T, socketDir string, desiredStateOfWorldCache cache.DesiredStateOfWorld, stopCh <-chan struct{}) *Watcher {
+	tCtx := ktesting.Init(t)
 	w := NewWatcher(socketDir, desiredStateOfWorldCache)
-	require.NoError(t, w.Start(stopCh))
+	require.NoError(t, w.Start(tCtx, stopCh))
 
 	return w
 }

@@ -15,15 +15,11 @@ limitations under the License.
 */
 
 // Package test contains a reusable unit test for logging output and behavior.
-//
-// Experimental
-//
-// Notice: This package is EXPERIMENTAL and may be changed or removed in a
-// later release.
 package test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -39,32 +35,39 @@ import (
 	"github.com/go-logr/logr"
 
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
-// InitKlog must be called once in an init function of a test package to
-// configure klog for testing with Output.
+// InitKlog must be called in a test to configure klog for testing.
+// The previous klog configuration will be restored automatically
+// after the test.
 //
-// Experimental
-//
-// Notice: This function is EXPERIMENTAL and may be changed or removed in a
-// later release.
-func InitKlog() {
+// The returned flag set has the klog flags registered. It can
+// be used to make further changes to the klog configuration.
+func InitKlog(tb testing.TB) *flag.FlagSet {
+	state := klog.CaptureState()
+	tb.Cleanup(state.Restore)
+
+	expectNoError := func(err error) {
+		if err != nil {
+			tb.Fatalf("unexpected error: %v", err)
+		}
+	}
+
 	// klog gets configured so that it writes to a single output file that
 	// will be set during tests with SetOutput.
-	klog.InitFlags(nil)
-	flag.Set("v", "10")
-	flag.Set("log_file", "/dev/null")
-	flag.Set("logtostderr", "false")
-	flag.Set("alsologtostderr", "false")
-	flag.Set("stderrthreshold", "10")
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	expectNoError(fs.Set("v", "10"))
+	expectNoError(fs.Set("log_file", "/dev/null"))
+	expectNoError(fs.Set("logtostderr", "false"))
+	expectNoError(fs.Set("alsologtostderr", "false"))
+	expectNoError(fs.Set("stderrthreshold", "10"))
+
+	return &fs
 }
 
 // OutputConfig contains optional settings for Output.
-//
-// Experimental
-//
-// Notice: This type is EXPERIMENTAL and may be changed or removed in a
-// later release.
 type OutputConfig struct {
 	// NewLogger is called to create a new logger. If nil, output via klog
 	// is tested. Support for -vmodule is optional.  ClearLogger is called
@@ -92,6 +95,455 @@ type OutputConfig struct {
 	SupportsVModule bool
 }
 
+type testcase struct {
+	withHelper bool // use wrappers that get skipped during stack unwinding
+	withNames  []string
+	// For a first WithValues call: logger1 := logger.WithValues()
+	withValues []interface{}
+	// For another WithValues call: logger2 := logger1.WithValues()
+	moreValues []interface{}
+	// For another WithValues call on the same logger as before: logger3 := logger1.WithValues()
+	evenMoreValues []interface{}
+	v              int
+	vmodule        string
+	text           string
+	values         []interface{}
+	err            error
+	expectedOutput string
+}
+
+var tests = map[string]testcase{
+	"log with values": {
+		text:   "test",
+		values: []interface{}{"akey", "avalue"},
+		expectedOutput: `I output.go:<LINE>] "test" akey="avalue"
+`,
+	},
+	"call depth": {
+		text:       "helper",
+		withHelper: true,
+		values:     []interface{}{"akey", "avalue"},
+		expectedOutput: `I output.go:<LINE>] "helper" akey="avalue"
+`,
+	},
+	"verbosity enabled": {
+		text: "you see me",
+		v:    9,
+		expectedOutput: `I output.go:<LINE>] "you see me"
+`,
+	},
+	"verbosity disabled": {
+		text: "you don't see me",
+		v:    11,
+	},
+	"vmodule": {
+		text:    "v=11: you see me because of -vmodule output=11",
+		v:       11,
+		vmodule: "output=11",
+		expectedOutput: `I output.go:<LINE>] "v=11: you see me because of -vmodule output=11"
+`,
+	},
+	"other vmodule": {
+		text:    "v=11: you still don't see me because of -vmodule output_helper=11",
+		v:       11,
+		vmodule: "output_helper=11",
+	},
+	"vmodule with helper": {
+		text:       "v=11: you see me because of -vmodule output=11",
+		withHelper: true,
+		v:          11,
+		vmodule:    "output=11",
+		expectedOutput: `I output.go:<LINE>] "v=11: you see me because of -vmodule output=11"
+`,
+	},
+	"other vmodule with helper": {
+		text:       "v=11: you still don't see me because of -vmodule output_helper=11",
+		withHelper: true,
+		v:          11,
+		vmodule:    "output_helper=11",
+	},
+	"log with name and values": {
+		withNames: []string{"me"},
+		text:      "test",
+		values:    []interface{}{"akey", "avalue"},
+		expectedOutput: `I output.go:<LINE>] "test" logger="me" akey="avalue"
+`,
+	},
+	"log with multiple names and values": {
+		withNames: []string{"hello", "world"},
+		text:      "test",
+		values:    []interface{}{"akey", "avalue"},
+		expectedOutput: `I output.go:<LINE>] "test" logger="hello.world" akey="avalue"
+`,
+	},
+	"override single value": {
+		withValues: []interface{}{"akey", "avalue"},
+		text:       "test-with-values",
+		values:     []interface{}{"akey", "avalue2"},
+		expectedOutput: `I output.go:<LINE>] "test-with-values" akey="avalue2"
+`,
+	},
+	"override WithValues": {
+		withValues: []interface{}{"duration", time.Hour, "X", "y"},
+		text:       "test",
+		values:     []interface{}{"duration", time.Minute, "A", "b"},
+		expectedOutput: `I output.go:<LINE>] "test" X="y" duration="1m0s" A="b"
+`,
+	},
+	"odd WithValues": {
+		withValues: []interface{}{"keyWithoutValue"},
+		moreValues: []interface{}{"anotherKeyWithoutValue"},
+		text:       "odd WithValues",
+		expectedOutput: `I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
+I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)" anotherKeyWithoutValue="(MISSING)"
+I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
+`,
+	},
+	"multiple WithValues": {
+		withValues:     []interface{}{"firstKey", 1},
+		moreValues:     []interface{}{"secondKey", 2},
+		evenMoreValues: []interface{}{"secondKey", 3},
+		text:           "test",
+		expectedOutput: `I output.go:<LINE>] "test" firstKey=1
+I output.go:<LINE>] "test" firstKey=1 secondKey=2
+I output.go:<LINE>] "test" firstKey=1
+I output.go:<LINE>] "test" firstKey=1 secondKey=3
+`,
+	},
+	"empty WithValues": {
+		withValues: []interface{}{},
+		text:       "test",
+		expectedOutput: `I output.go:<LINE>] "test"
+`,
+	},
+	"print duplicate keys in arguments": {
+		text:   "test-arguments",
+		values: []interface{}{"akey", "avalue", "akey", "avalue2"},
+		expectedOutput: `I output.go:<LINE>] "test-arguments" akey="avalue2"
+`,
+	},
+	"preserve order of key/value pairs": {
+		withValues: []interface{}{"akey9", "avalue9", "akey8", "avalue8", "akey1", "avalue1"},
+		text:       "test",
+		values:     []interface{}{"akey5", "avalue5", "akey4", "avalue4"},
+		expectedOutput: `I output.go:<LINE>] "test" akey9="avalue9" akey8="avalue8" akey1="avalue1" akey5="avalue5" akey4="avalue4"
+`,
+	},
+	"handle odd-numbers of KVs": {
+		text:   "odd arguments",
+		values: []interface{}{"akey", "avalue", "akey2"},
+		expectedOutput: `I output.go:<LINE>] "odd arguments" akey="avalue" akey2="(MISSING)"
+`,
+	},
+	"html characters": {
+		text:   "test",
+		values: []interface{}{"akey", "<&>"},
+		expectedOutput: `I output.go:<LINE>] "test" akey="<&>"
+`,
+	},
+	"quotation": {
+		text:   `"quoted"`,
+		values: []interface{}{"key", `"quoted value"`},
+		expectedOutput: `I output.go:<LINE>] "\"quoted\"" key="\"quoted value\""
+`,
+	},
+	"handle odd-numbers of KVs in both log values and Info args": {
+		withValues: []interface{}{"basekey1", "basevar1", "basekey2"},
+		text:       "both odd",
+		values:     []interface{}{"akey", "avalue", "akey2"},
+		expectedOutput: `I output.go:<LINE>] "both odd" basekey1="basevar1" basekey2="(MISSING)" akey="avalue" akey2="(MISSING)"
+`,
+	},
+	"KObj": {
+		text:   "test",
+		values: []interface{}{"pod", klog.KObj(&kmeta{Name: "pod-1", Namespace: "kube-system"})},
+		expectedOutput: `I output.go:<LINE>] "test" pod="kube-system/pod-1"
+`,
+	},
+	"KObjs": {
+		text: "KObjs",
+		values: []interface{}{"pods",
+			klog.KObjs([]interface{}{
+				&kmeta{Name: "pod-1", Namespace: "kube-system"},
+				&kmeta{Name: "pod-2", Namespace: "kube-system"},
+			})},
+		expectedOutput: `I output.go:<LINE>] "KObjs" pods=[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]
+`,
+	},
+	"KObjSlice okay": {
+		text: "KObjSlice",
+		values: []interface{}{"pods",
+			klog.KObjSlice([]interface{}{
+				&kmeta{Name: "pod-1", Namespace: "kube-system"},
+				&kmeta{Name: "pod-2", Namespace: "kube-system"},
+			})},
+		expectedOutput: `I output.go:<LINE>] "KObjSlice" pods=["kube-system/pod-1","kube-system/pod-2"]
+`,
+	},
+	"KObjSlice nil arg": {
+		text: "test",
+		values: []interface{}{"pods",
+			klog.KObjSlice(nil)},
+		expectedOutput: `I output.go:<LINE>] "test" pods=null
+`,
+	},
+	"KObjSlice int arg": {
+		text: "test",
+		values: []interface{}{"pods",
+			klog.KObjSlice(1)},
+		expectedOutput: `I output.go:<LINE>] "test" pods="<KObjSlice needs a slice, got type int>"
+`,
+	},
+	"KObjSlice nil entry": {
+		text: "test",
+		values: []interface{}{"pods",
+			klog.KObjSlice([]interface{}{
+				&kmeta{Name: "pod-1", Namespace: "kube-system"},
+				nil,
+			})},
+		expectedOutput: `I output.go:<LINE>] "test" pods=["kube-system/pod-1",null]
+`,
+	},
+	"KObjSlice ints": {
+		text: "test",
+		values: []interface{}{"ints",
+			klog.KObjSlice([]int{1, 2, 3})},
+		expectedOutput: `I output.go:<LINE>] "test" ints=["<KObjSlice needs a slice of values implementing KMetadata, got type int>"]
+`,
+	},
+	"regular error types as value": {
+		text:   "test",
+		values: []interface{}{"err", errors.New("whoops")},
+		expectedOutput: `I output.go:<LINE>] "test" err="whoops"
+`,
+	},
+	"ignore MarshalJSON": {
+		text:   "test",
+		values: []interface{}{"err", &customErrorJSON{"whoops"}},
+		expectedOutput: `I output.go:<LINE>] "test" err="whoops"
+`,
+	},
+	"regular error types when using logr.Error": {
+		text: "test",
+		err:  errors.New("whoops"),
+		expectedOutput: `E output.go:<LINE>] "test" err="whoops"
+`,
+	},
+	"Error() for nil": {
+		text: "error nil",
+		err:  (*customErrorJSON)(nil),
+		expectedOutput: `E output.go:<LINE>] "error nil" err="<panic: runtime error: invalid memory address or nil pointer dereference>"
+`,
+	},
+	"String() for nil": {
+		text:   "stringer nil",
+		values: []interface{}{"stringer", (*stringer)(nil)},
+		expectedOutput: `I output.go:<LINE>] "stringer nil" stringer="<panic: runtime error: invalid memory address or nil pointer dereference>"
+`,
+	},
+	"MarshalLog() for nil": {
+		text:   "marshaler nil",
+		values: []interface{}{"obj", (*klog.ObjectRef)(nil)},
+		expectedOutput: `I output.go:<LINE>] "marshaler nil" obj="<panic: value method k8s.io/klog/v2.ObjectRef.WriteText called using nil *ObjectRef pointer>"
+`,
+	},
+	"Error() that panics": {
+		text: "error panic",
+		err:  faultyError{},
+		expectedOutput: `E output.go:<LINE>] "error panic" err="<panic: fake Error panic>"
+`,
+	},
+	"String() that panics": {
+		text:   "stringer panic",
+		values: []interface{}{"stringer", faultyStringer{}},
+		expectedOutput: `I output.go:<LINE>] "stringer panic" stringer="<panic: fake String panic>"
+`,
+	},
+	"MarshalLog() that panics": {
+		text:   "marshaler panic",
+		values: []interface{}{"obj", faultyMarshaler{}},
+		expectedOutput: `I output.go:<LINE>] "marshaler panic" obj="<panic: fake MarshalLog panic>"
+`,
+	},
+	"MarshalLog() that returns itself": {
+		text:   "marshaler recursion",
+		values: []interface{}{"obj", recursiveMarshaler{}},
+		expectedOutput: `I output.go:<LINE>] "marshaler recursion" obj={}
+`,
+	},
+	"handle integer keys": {
+		withValues: []interface{}{1, "value", 2, "value2"},
+		text:       "integer keys",
+		values:     []interface{}{"akey", "avalue", "akey2"},
+		expectedOutput: `I output.go:<LINE>] "integer keys" %!s(int=1)="value" %!s(int=2)="value2" akey="avalue" akey2="(MISSING)"
+`,
+	},
+	"struct keys": {
+		withValues: []interface{}{struct{ name string }{"name"}, "value", "test", "other value"},
+		text:       "struct keys",
+		values:     []interface{}{"key", "val"},
+		expectedOutput: `I output.go:<LINE>] "struct keys" {name}="value" test="other value" key="val"
+`,
+	},
+	"map keys": {
+		withValues: []interface{}{},
+		text:       "map keys",
+		values:     []interface{}{map[string]bool{"test": true}, "test"},
+		expectedOutput: `I output.go:<LINE>] "map keys" map[test:%!s(bool=true)]="test"
+`,
+	},
+	"map values": {
+		text:   "maps",
+		values: []interface{}{"s", map[string]string{"hello": "world"}, "i", map[int]int{1: 2, 3: 4}},
+		expectedOutput: `I output.go:<LINE>] "maps" s={"hello":"world"} i={"1":2,"3":4}
+`,
+	},
+	"slice values": {
+		text:   "slices",
+		values: []interface{}{"s", []string{"hello", "world"}, "i", []int{1, 2, 3}},
+		expectedOutput: `I output.go:<LINE>] "slices" s=["hello","world"] i=[1,2,3]
+`,
+	},
+	"struct values": {
+		text:   "structs",
+		values: []interface{}{"s", struct{ Name, Kind, hidden string }{Name: "worker", Kind: "pod", hidden: "ignore"}},
+		expectedOutput: `I output.go:<LINE>] "structs" s={"Name":"worker","Kind":"pod"}
+`,
+	},
+	"klog.Format": {
+		text:   "klog.Format",
+		values: []interface{}{"s", klog.Format(struct{ Name, Kind, hidden string }{Name: "worker", Kind: "pod", hidden: "ignore"})},
+		expectedOutput: `I output.go:<LINE>] "klog.Format" s=<
+	{
+	  "Name": "worker",
+	  "Kind": "pod"
+	}
+ >
+`,
+	},
+	"cyclic list": {
+		text:   "cycle",
+		values: []interface{}{"list", newCyclicList()},
+		expectedOutput: `I output.go:<LINE>] "cycle" list="<internal error: json: unsupported value: encountered a cycle via *test.myList>"
+`,
+	},
+	"duplicates": {
+		withValues:     []interface{}{"trace", traceIDFromHex("101112131415161718191A1B1C1D1E1F"), "span", spanIDFromHex("0102030405060708")},
+		moreValues:     []interface{}{"trace", traceIDFromHex("101112131415161718191A1B1C1D1E1F"), "span", spanIDFromHex("1112131415161718")},
+		evenMoreValues: []interface{}{"trace", traceIDFromHex("101112131415161718191A1B1C1D1E1F"), "span", spanIDFromHex("2122232425262728")},
+		text:           "duplicates",
+
+		expectedOutput: `I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="1112131415161718"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="2122232425262728"
+`,
+	},
+	"mixed duplicates": {
+		withValues:     []interface{}{"trace", traceIDFromHex("101112131415161718191A1B1C1D1E1F"), "span", spanIDFromHex("0102030405060708"), "a", 1},
+		moreValues:     []interface{}{"b", 2, "trace", traceIDFromHex("101112131415161718191A1B1C1D1E1F"), "span", spanIDFromHex("1112131415161718")},
+		evenMoreValues: []interface{}{"c", 3, "trace", traceIDFromHex("101112131415161718191A1B1C1D1E1F"), "span", spanIDFromHex("2122232425262728"), "d", 4},
+		text:           "duplicates",
+
+		expectedOutput: `I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708" a=1
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" a=1 b=2 span="1112131415161718"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708" a=1
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" a=1 c=3 span="2122232425262728" d=4
+`,
+	},
+}
+
+func printWithLogger(logger logr.Logger, test testcase) {
+	for _, name := range test.withNames {
+		logger = logger.WithName(name)
+	}
+	// When we have multiple WithValues calls, we test
+	// first with the initial set of additional values, then
+	// the combination, then again the original logger.
+	// It must not have been modified. This produces
+	// three log entries.
+	logger = logger.WithValues(test.withValues...) // <WITH-VALUES>
+	loggers := []logr.Logger{logger}
+	if test.moreValues != nil {
+		// Intentionally append the logger again: WithValues must not change what it prints.
+		loggers = append(loggers, logger.WithValues(test.moreValues...), logger) // <WITH-VALUES-2>
+	}
+	if test.evenMoreValues != nil {
+		loggers = append(loggers, logger.WithValues(test.evenMoreValues...)) // <WITH-VALUES-3>
+	}
+	for _, logger := range loggers {
+		if test.withHelper {
+			loggerHelper(logger.V(test.v), test.text, test.values) // <LINE>
+		} else if test.err != nil {
+			logger.Error(test.err, test.text, test.values...) // <LINE>
+		} else {
+			logger.V(test.v).Info(test.text, test.values...) // <LINE>
+		}
+	}
+}
+
+var _, _, printWithLoggerLine, _ = runtime.Caller(0) // anchor for finding the line numbers above
+
+func initPrintWithKlog(tb testing.TB, test testcase) {
+	if test.withHelper && test.vmodule != "" {
+		tb.Skip("klog does not support -vmodule properly when using helper functions")
+	}
+
+	state := klog.CaptureState()
+	tb.Cleanup(state.Restore)
+
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	if err := fs.Set("v", "10"); err != nil {
+		tb.Fatalf("unexpected error: %v", err)
+	}
+	if err := fs.Set("vmodule", test.vmodule); err != nil {
+		tb.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func printWithKlog(test testcase) {
+	kv := []interface{}{}
+	appendKV := func(withValues ...interface{}) {
+		if len(withValues)%2 != 0 {
+			withValues = append(withValues, "(MISSING)")
+		}
+		for i := 0; i < len(withValues); i += 2 {
+			kv = append(kv, withValues[i], withValues[i+1])
+		}
+	}
+	// Here we need to emulate the handling of WithValues above.
+	if len(test.withNames) > 0 {
+		appendKV("logger", strings.Join(test.withNames, "."))
+	}
+	appendKV(test.withValues...)
+	kvs := [][]interface{}{copySlice(kv)}
+	if test.moreValues != nil {
+		appendKV(test.moreValues...)
+		kvs = append(kvs, copySlice(kv), copySlice(kvs[0]))
+	}
+	if test.evenMoreValues != nil {
+		kv = copySlice(kvs[0])
+		appendKV(test.evenMoreValues...)
+		kvs = append(kvs, copySlice(kv))
+	}
+	for _, kv := range kvs {
+		if len(test.values) > 0 {
+			kv = append(kv, test.values...)
+		}
+		text := test.text
+		if test.withHelper {
+			klogHelper(klog.Level(test.v), text, kv)
+		} else if test.err != nil {
+			klog.ErrorS(test.err, text, kv...)
+		} else {
+			klog.V(klog.Level(test.v)).InfoS(text, kv...)
+		}
+	}
+}
+
+var _, _, printWithKlogLine, _ = runtime.Caller(0) // anchor for finding the line numbers above
+
 // Output covers various special cases of emitting log output.
 // It can be used for arbitrary logr.Logger implementations.
 //
@@ -102,317 +554,15 @@ type OutputConfig struct {
 //
 // Loggers will be tested with direct calls to Info or
 // as backend for klog.
-//
-// Experimental
-//
-// Notice: This function is EXPERIMENTAL and may be changed or removed in a
-// later release. The test cases and thus the expected output also may
-// change.
 func Output(t *testing.T, config OutputConfig) {
-	tests := map[string]struct {
-		withHelper bool // use wrappers that get skipped during stack unwinding
-		withNames  []string
-		// For a first WithValues call: logger1 := logger.WithValues()
-		withValues []interface{}
-		// For another WithValues call: logger2 := logger1.WithValues()
-		moreValues []interface{}
-		// For another WithValues call on the same logger as before: logger3 := logger1.WithValues()
-		evenMoreValues []interface{}
-		v              int
-		vmodule        string
-		text           string
-		values         []interface{}
-		err            error
-		expectedOutput string
-	}{
-		"log with values": {
-			text:   "test",
-			values: []interface{}{"akey", "avalue"},
-			expectedOutput: `I output.go:<LINE>] "test" akey="avalue"
-`,
-		},
-		"call depth": {
-			text:       "helper",
-			withHelper: true,
-			values:     []interface{}{"akey", "avalue"},
-			expectedOutput: `I output.go:<LINE>] "helper" akey="avalue"
-`,
-		},
-		"verbosity enabled": {
-			text: "you see me",
-			v:    9,
-			expectedOutput: `I output.go:<LINE>] "you see me"
-`,
-		},
-		"verbosity disabled": {
-			text: "you don't see me",
-			v:    11,
-		},
-		"vmodule": {
-			text:    "v=11: you see me because of -vmodule output=11",
-			v:       11,
-			vmodule: "output=11",
-		},
-		"other vmodule": {
-			text:    "v=11: you still don't see me because of -vmodule output_helper=11",
-			v:       11,
-			vmodule: "output_helper=11",
-		},
-		"log with name and values": {
-			withNames: []string{"me"},
-			text:      "test",
-			values:    []interface{}{"akey", "avalue"},
-			expectedOutput: `I output.go:<LINE>] "me: test" akey="avalue"
-`,
-		},
-		"log with multiple names and values": {
-			withNames: []string{"hello", "world"},
-			text:      "test",
-			values:    []interface{}{"akey", "avalue"},
-			expectedOutput: `I output.go:<LINE>] "hello/world: test" akey="avalue"
-`,
-		},
-		"override single value": {
-			withValues: []interface{}{"akey", "avalue"},
-			text:       "test",
-			values:     []interface{}{"akey", "avalue2"},
-			expectedOutput: `I output.go:<LINE>] "test" akey="avalue2"
-`,
-		},
-		"override WithValues": {
-			withValues: []interface{}{"duration", time.Hour, "X", "y"},
-			text:       "test",
-			values:     []interface{}{"duration", time.Minute, "A", "b"},
-			expectedOutput: `I output.go:<LINE>] "test" X="y" duration="1m0s" A="b"
-`,
-		},
-		"odd WithValues": {
-			withValues: []interface{}{"keyWithoutValue"},
-			moreValues: []interface{}{"anotherKeyWithoutValue"},
-			text:       "odd WithValues",
-			expectedOutput: `I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
-I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)" anotherKeyWithoutValue="(MISSING)"
-I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
-`,
-		},
-		"multiple WithValues": {
-			withValues:     []interface{}{"firstKey", 1},
-			moreValues:     []interface{}{"secondKey", 2},
-			evenMoreValues: []interface{}{"secondKey", 3},
-			text:           "test",
-			expectedOutput: `I output.go:<LINE>] "test" firstKey=1
-I output.go:<LINE>] "test" firstKey=1 secondKey=2
-I output.go:<LINE>] "test" firstKey=1
-I output.go:<LINE>] "test" firstKey=1 secondKey=3
-`,
-		},
-		"empty WithValues": {
-			withValues: []interface{}{},
-			text:       "test",
-			expectedOutput: `I output.go:<LINE>] "test"
-`,
-		},
-		// TODO: unify behavior of loggers.
-		// klog doesn't deduplicate, klogr and textlogger do. We can ensure via static code analysis
-		// that this doesn't occur, so we shouldn't pay the runtime overhead for deduplication here
-		// and remove that from klogr and textlogger (https://github.com/kubernetes/klog/issues/286).
-		// 		"print duplicate keys in arguments": {
-		// 			text:   "test",
-		// 			values: []interface{}{"akey", "avalue", "akey", "avalue2"},
-		// 			expectedOutput: `I output.go:<LINE>] "test" akey="avalue" akey="avalue2"
-		// `,
-		// 		},
-		"preserve order of key/value pairs": {
-			withValues: []interface{}{"akey9", "avalue9", "akey8", "avalue8", "akey1", "avalue1"},
-			text:       "test",
-			values:     []interface{}{"akey5", "avalue5", "akey4", "avalue4"},
-			expectedOutput: `I output.go:<LINE>] "test" akey9="avalue9" akey8="avalue8" akey1="avalue1" akey5="avalue5" akey4="avalue4"
-`,
-		},
-		"handle odd-numbers of KVs": {
-			text:   "odd arguments",
-			values: []interface{}{"akey", "avalue", "akey2"},
-			expectedOutput: `I output.go:<LINE>] "odd arguments" akey="avalue" akey2="(MISSING)"
-`,
-		},
-		"html characters": {
-			text:   "test",
-			values: []interface{}{"akey", "<&>"},
-			expectedOutput: `I output.go:<LINE>] "test" akey="<&>"
-`,
-		},
-		"quotation": {
-			text:   `"quoted"`,
-			values: []interface{}{"key", `"quoted value"`},
-			expectedOutput: `I output.go:<LINE>] "\"quoted\"" key="\"quoted value\""
-`,
-		},
-		"handle odd-numbers of KVs in both log values and Info args": {
-			withValues: []interface{}{"basekey1", "basevar1", "basekey2"},
-			text:       "both odd",
-			values:     []interface{}{"akey", "avalue", "akey2"},
-			expectedOutput: `I output.go:<LINE>] "both odd" basekey1="basevar1" basekey2="(MISSING)" akey="avalue" akey2="(MISSING)"
-`,
-		},
-		"KObj": {
-			text:   "test",
-			values: []interface{}{"pod", klog.KObj(&kmeta{Name: "pod-1", Namespace: "kube-system"})},
-			expectedOutput: `I output.go:<LINE>] "test" pod="kube-system/pod-1"
-`,
-		},
-		"KObjs": {
-			text: "test",
-			values: []interface{}{"pods",
-				klog.KObjs([]interface{}{
-					&kmeta{Name: "pod-1", Namespace: "kube-system"},
-					&kmeta{Name: "pod-2", Namespace: "kube-system"},
-				})},
-			expectedOutput: `I output.go:<LINE>] "test" pods=[kube-system/pod-1 kube-system/pod-2]
-`,
-		},
-		"regular error types as value": {
-			text:   "test",
-			values: []interface{}{"err", errors.New("whoops")},
-			expectedOutput: `I output.go:<LINE>] "test" err="whoops"
-`,
-		},
-		"ignore MarshalJSON": {
-			text:   "test",
-			values: []interface{}{"err", &customErrorJSON{"whoops"}},
-			expectedOutput: `I output.go:<LINE>] "test" err="whoops"
-`,
-		},
-		"regular error types when using logr.Error": {
-			text: "test",
-			err:  errors.New("whoops"),
-			expectedOutput: `E output.go:<LINE>] "test" err="whoops"
-`,
-		},
-		"Error() for nil": {
-			text: "error nil",
-			err:  (*customErrorJSON)(nil),
-			expectedOutput: `E output.go:<LINE>] "error nil" err="<panic: runtime error: invalid memory address or nil pointer dereference>"
-`,
-		},
-		"String() for nil": {
-			text:   "stringer nil",
-			values: []interface{}{"stringer", (*stringer)(nil)},
-			expectedOutput: `I output.go:<LINE>] "stringer nil" stringer="<panic: runtime error: invalid memory address or nil pointer dereference>"
-`,
-		},
-		"MarshalLog() for nil": {
-			text:   "marshaler nil",
-			values: []interface{}{"obj", (*klog.ObjectRef)(nil)},
-			expectedOutput: `I output.go:<LINE>] "marshaler nil" obj="<panic: value method k8s.io/klog/v2.ObjectRef.String called using nil *ObjectRef pointer>"
-`,
-		},
-		"Error() that panics": {
-			text: "error panic",
-			err:  faultyError{},
-			expectedOutput: `E output.go:<LINE>] "error panic" err="<panic: fake Error panic>"
-`,
-		},
-		"String() that panics": {
-			text:   "stringer panic",
-			values: []interface{}{"stringer", faultyStringer{}},
-			expectedOutput: `I output.go:<LINE>] "stringer panic" stringer="<panic: fake String panic>"
-`,
-		},
-		"MarshalLog() that panics": {
-			text:   "marshaler panic",
-			values: []interface{}{"obj", faultyMarshaler{}},
-			expectedOutput: `I output.go:<LINE>] "marshaler panic" obj={}
-`,
-		},
-	}
 	for n, test := range tests {
 		t.Run(n, func(t *testing.T) {
-			defer klog.ClearLogger()
+			initPrintWithKlog(t, test)
 
-			printWithLogger := func(logger logr.Logger) {
-				for _, name := range test.withNames {
-					logger = logger.WithName(name)
-				}
-				// When we have multiple WithValues calls, we test
-				// first with the initial set of additional values, then
-				// the combination, then again the original logger.
-				// It must not have been modified. This produces
-				// three log entries.
-				logger = logger.WithValues(test.withValues...) // <WITH-VALUES>
-				loggers := []logr.Logger{logger}
-				if test.moreValues != nil {
-					loggers = append(loggers, logger.WithValues(test.moreValues...), logger) // <WITH-VALUES-2>
-				}
-				if test.evenMoreValues != nil {
-					loggers = append(loggers, logger.WithValues(test.evenMoreValues...)) // <WITH-VALUES-3>
-				}
-				for _, logger := range loggers {
-					if test.withHelper {
-						loggerHelper(logger, test.text, test.values) // <LINE>
-					} else if test.err != nil {
-						logger.Error(test.err, test.text, test.values...) // <LINE>
-					} else {
-						logger.V(test.v).Info(test.text, test.values...) // <LINE>
-					}
-				}
-			}
-			_, _, printWithLoggerLine, _ := runtime.Caller(0)
-
-			printWithKlog := func() {
-				kv := []interface{}{}
-				haveKeyInValues := func(key interface{}) bool {
-					for i := 0; i < len(test.values); i += 2 {
-						if key == test.values[i] {
-							return true
-						}
-					}
-					return false
-				}
-				appendKV := func(withValues []interface{}) {
-					if len(withValues)%2 != 0 {
-						withValues = append(withValues, "(MISSING)")
-					}
-					for i := 0; i < len(withValues); i += 2 {
-						if !haveKeyInValues(withValues[i]) {
-							kv = append(kv, withValues[i], withValues[i+1])
-						}
-					}
-				}
-				// Here we need to emulate the handling of WithValues above.
-				appendKV(test.withValues)
-				kvs := [][]interface{}{copySlice(kv)}
-				if test.moreValues != nil {
-					appendKV(test.moreValues)
-					kvs = append(kvs, copySlice(kv), copySlice(kvs[0]))
-				}
-				if test.evenMoreValues != nil {
-					kv = copySlice(kvs[0])
-					appendKV(test.evenMoreValues)
-					kvs = append(kvs, copySlice(kv))
-				}
-				for _, kv := range kvs {
-					if len(test.values) > 0 {
-						kv = append(kv, test.values...)
-					}
-					text := test.text
-					if len(test.withNames) > 0 {
-						text = strings.Join(test.withNames, "/") + ": " + text
-					}
-					if test.withHelper {
-						klogHelper(text, kv)
-					} else if test.err != nil {
-						klog.ErrorS(test.err, text, kv...)
-					} else {
-						klog.V(klog.Level(test.v)).InfoS(text, kv...)
-					}
-				}
-			}
-			_, _, printWithKlogLine, _ := runtime.Caller(0)
-
-			testOutput := func(t *testing.T, expectedLine int, print func(buffer *bytes.Buffer)) {
+			testOutput := func(t *testing.T, expectedLine int, logToBuffer func(buffer *bytes.Buffer)) {
 				var tmpWriteBuffer bytes.Buffer
 				klog.SetOutput(&tmpWriteBuffer)
-				print(&tmpWriteBuffer)
+				logToBuffer(&tmpWriteBuffer)
 				klog.Flush()
 
 				actual := tmpWriteBuffer.String()
@@ -436,30 +586,30 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 				}
 				expectedWithPlaceholder := expected
 				expected = strings.ReplaceAll(expected, "<LINE>", fmt.Sprintf("%d", callLine))
-				expected = strings.ReplaceAll(expected, "<WITH-VALUES>", fmt.Sprintf("%d", expectedLine-18))
+				expected = strings.ReplaceAll(expected, "<WITH-VALUES>", fmt.Sprintf("%d", expectedLine-19))
 				expected = strings.ReplaceAll(expected, "<WITH-VALUES-2>", fmt.Sprintf("%d", expectedLine-15))
 				expected = strings.ReplaceAll(expected, "<WITH-VALUES-3>", fmt.Sprintf("%d", expectedLine-12))
 				if actual != expected {
 					if expectedWithPlaceholder == test.expectedOutput {
-						t.Errorf("Output mismatch. Expected:\n%s\nActual:\n%s\n", expectedWithPlaceholder, actual)
+						t.Errorf("Output mismatch.\n\nExpected with placeholders:\n%s\nExpected without placeholders:\n%s\nActual:\n%s\n", expectedWithPlaceholder, expected, actual)
 					} else {
-						t.Errorf("Output mismatch. klog:\n%s\nExpected:\n%s\nActual:\n%s\n", test.expectedOutput, expectedWithPlaceholder, actual)
+						t.Errorf("Output mismatch. klog:\n%s\n\nExpected with placeholders:\n%s\nExpected without placeholders:\n%s\nActual:\n%s\n", test.expectedOutput, expectedWithPlaceholder, expected, actual)
 					}
 				}
 			}
 
 			if config.NewLogger == nil {
 				// Test klog.
-				testOutput(t, printWithKlogLine, func(buffer *bytes.Buffer) {
-					printWithKlog()
+				testOutput(t, printWithKlogLine-1, func(_ *bytes.Buffer) {
+					printWithKlog(test)
 				})
 				return
 			}
 
 			if config.AsBackend {
-				testOutput(t, printWithKlogLine, func(buffer *bytes.Buffer) {
-					klog.SetLogger(config.NewLogger(buffer, 10, ""))
-					printWithKlog()
+				testOutput(t, printWithKlogLine-1, func(buffer *bytes.Buffer) {
+					setLogger(config.NewLogger(buffer, 10, test.vmodule))
+					printWithKlog(test)
 				})
 				return
 			}
@@ -468,13 +618,22 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 				t.Skip("vmodule not supported")
 			}
 
-			testOutput(t, printWithLoggerLine, func(buffer *bytes.Buffer) {
-				printWithLogger(config.NewLogger(buffer, 10, test.vmodule))
+			testOutput(t, printWithLoggerLine-1, func(buffer *bytes.Buffer) {
+				printWithLogger(config.NewLogger(buffer, 10, test.vmodule), test)
 			})
 		})
 	}
 
 	if config.NewLogger == nil || config.AsBackend {
+		configStruct := klog.Format(myConfig{typeMeta: typeMeta{Kind: "config"}, RealField: 42})
+		configStructOutput := `I output.go:<LINE>] "Format" config=<
+	{
+	  "Kind": "config",
+	  "RealField": 42
+	}
+ >
+`
+
 		// Test all klog output functions.
 		//
 		// Each test case must be defined with the same number of
@@ -640,16 +799,22 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 				logFunc: func() { klog.V(1).ErrorS(errors.New("hello"), "one world") },
 				output:  "E output.go:<LINE>] \"one world\" err=\"hello\"\n",
 			},
+			{
+				name:    "Format InfoS",
+				logFunc: func() { klog.InfoS("Format", "config", configStruct) },
+				output:  configStructOutput,
+			},
 		}
 		_, _, line, _ := runtime.Caller(0)
 
 		for i, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
 				var buffer bytes.Buffer
+				haveWriteKlogBuffer := false
 				if config.NewLogger == nil {
 					klog.SetOutput(&buffer)
 				} else {
-					klog.SetLogger(config.NewLogger(&buffer, 10, ""))
+					haveWriteKlogBuffer = setLogger(config.NewLogger(&buffer, 10, ""))
 					defer klog.ClearLogger()
 				}
 				test.logFunc()
@@ -670,6 +835,7 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 				// result, including a trailing newline, to
 				// Logger.Info.
 				if config.NewLogger != nil &&
+					!haveWriteKlogBuffer &&
 					!strings.HasSuffix(test.name, "S") &&
 					!strings.HasSuffix(test.name, "SDepth") {
 					// klog: I output.go:<LINE>] hello world
@@ -693,14 +859,68 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 				expected = strings.ReplaceAll(expected, "<LINE>", fmt.Sprintf("%d", callLine))
 				if actual != expected {
 					if expectedWithPlaceholder == test.output {
-						t.Errorf("Output mismatch. Expected:\n%s\nActual:\n%s\n", expectedWithPlaceholder, actual)
+						t.Errorf("Output mismatch. Expected with placeholders:\n%s\nExpected without placeholders:\n%s\nActual:\n%s\n", expectedWithPlaceholder, expected, actual)
 					} else {
-						t.Errorf("Output mismatch. klog:\n%s\nExpected:\n%s\nActual:\n%s\n", test.output, expectedWithPlaceholder, actual)
+						t.Errorf("Output mismatch. klog:\n%s\nExpected with placeholders:\n%s\nExpected without placeholders:\n%s\nActual:\n%s\n", test.output, expectedWithPlaceholder, expected, actual)
 					}
 				}
 			})
 		}
 	}
+}
+
+// Benchmark covers various special cases of emitting log output.
+// It can be used for arbitrary logr.Logger implementations.
+//
+// Loggers will be tested with direct calls to Info or
+// as backend for klog.
+func Benchmark(b *testing.B, config OutputConfig) {
+	for n, test := range tests {
+		b.Run(n, func(b *testing.B) {
+			state := klog.CaptureState()
+			defer state.Restore()
+			klog.SetOutput(io.Discard)
+			initPrintWithKlog(b, test)
+			b.ResetTimer()
+
+			if config.NewLogger == nil {
+				// Test klog.
+				for i := 0; i < b.N; i++ {
+					printWithKlog(test)
+				}
+				return
+			}
+
+			if config.AsBackend {
+				setLogger(config.NewLogger(io.Discard, 10, ""))
+				for i := 0; i < b.N; i++ {
+					printWithKlog(test)
+				}
+				return
+			}
+
+			if test.vmodule != "" && !config.SupportsVModule {
+				b.Skip("vmodule not supported")
+			}
+
+			logger := config.NewLogger(io.Discard, 10, test.vmodule)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				printWithLogger(logger, test)
+			}
+		})
+	}
+}
+
+func setLogger(logger logr.Logger) bool {
+	haveWriteKlogBuffer := false
+	var opts []klog.LoggerOption
+	if writer, ok := logger.GetSink().(textlogger.KlogBufferWriter); ok {
+		opts = append(opts, klog.WriteKlogBuffer(writer.WriteKlogBuffer))
+		haveWriteKlogBuffer = true
+	}
+	klog.SetLoggerWithOptions(logger, opts...)
+	return haveWriteKlogBuffer
 }
 
 func copySlice(in []interface{}) []interface{} {
@@ -765,6 +985,15 @@ func (f faultyMarshaler) MarshalLog() interface{} {
 
 var _ logr.Marshaler = faultyMarshaler{}
 
+type recursiveMarshaler struct{}
+
+// MarshalLog returns itself, which could cause the logger to recurse infinitely.
+func (r recursiveMarshaler) MarshalLog() interface{} {
+	return r
+}
+
+var _ logr.Marshaler = recursiveMarshaler{}
+
 type faultyError struct{}
 
 // Error always panics.
@@ -773,3 +1002,101 @@ func (f faultyError) Error() string {
 }
 
 var _ error = faultyError{}
+
+// typeMeta implements fmt.Stringer and logr.Marshaler. config below
+// inherits those (incomplete!) implementations.
+type typeMeta struct {
+	Kind string
+}
+
+func (t typeMeta) String() string {
+	return "kind is " + t.Kind
+}
+
+func (t typeMeta) MarshalLog() interface{} {
+	return t.Kind
+}
+
+type myConfig struct {
+	typeMeta
+
+	RealField int
+}
+
+var _ logr.Marshaler = myConfig{}
+var _ fmt.Stringer = myConfig{}
+
+// This is a linked list. It can contain a cycle, which cannot be expressed in JSON.
+type myList struct {
+	Value int
+	Next  *myList
+}
+
+func newCyclicList() *myList {
+	a := &myList{Value: 1}
+	b := &myList{Value: 2, Next: a}
+	a.Next = b
+	return a
+}
+
+// SpanID mimicks https://pkg.go.dev/go.opentelemetry.io/otel/trace#SpanID.
+type SpanID [8]byte
+
+var (
+	_ json.Marshaler = SpanID{}
+	_ fmt.Stringer   = SpanID{}
+)
+
+func (s SpanID) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+func (s SpanID) String() string {
+	return hex.EncodeToString(s[:])
+}
+
+func spanIDFromHex(str string) SpanID {
+	decoded, err := hex.DecodeString(str)
+	if err != nil {
+		panic(fmt.Sprintf("invalid hex string %q: %v", str, err))
+	}
+	if len(decoded) != len(SpanID{}) {
+		panic(fmt.Sprintf("invalid length of hex string %q: need %d bytes", str, len(SpanID{})))
+	}
+	var result SpanID
+	for i := range result {
+		result[i] = decoded[i]
+	}
+	return result
+}
+
+// TraceID mimicks https://pkg.go.dev/go.opentelemetry.io/otel/trace#TraceID.
+type TraceID [16]byte
+
+var (
+	_ json.Marshaler = TraceID{}
+	_ fmt.Stringer   = TraceID{}
+)
+
+func (s TraceID) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+func (s TraceID) String() string {
+	return hex.EncodeToString(s[:])
+}
+
+func traceIDFromHex(str string) TraceID {
+	decoded, err := hex.DecodeString(str)
+	if err != nil {
+		panic(fmt.Sprintf("invalid hex string %q: %v", str, err))
+	}
+	if len(decoded) != len(TraceID{}) {
+		panic(fmt.Sprintf("invalid length of hex string %q: need %d bytes", str, len(TraceID{})))
+	}
+	var result TraceID
+	for i := range result {
+		result[i] = decoded[i]
+	}
+	return result
+}

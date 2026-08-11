@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"io"
 
-	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/spf13/cobra"
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/json"
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -43,40 +44,61 @@ import (
 	"k8s.io/kubectl/pkg/util/templates"
 )
 
+// AnnotateFlags directly reflect the information that CLI is gathering via flags.  They will be converted to Options, which
+// reflect the runtime requirements for the command.  This structure reduces the transformation to wiring and makes
+// the logic itself easy to unit test
+type AnnotateFlags struct {
+	PrintFlags           *genericclioptions.PrintFlags
+	RecordFlags          *genericclioptions.RecordFlags
+	ResourceBuilderFlags *genericclioptions.ResourceBuilderFlags
+	RESTClientGetter     genericclioptions.RESTClientGetter
+
+	FieldManager    string
+	List            bool
+	Overwrite       bool
+	ResourceVersion string
+
+	genericiooptions.IOStreams
+}
+
+// NewAnnotateFlags returns a default AnnotateFlags
+func NewAnnotateFlags(
+	restClientGetter genericclioptions.RESTClientGetter,
+	streams genericiooptions.IOStreams,
+) *AnnotateFlags {
+	return &AnnotateFlags{
+		RESTClientGetter: restClientGetter,
+		PrintFlags:       genericclioptions.NewPrintFlags("annotated").WithTypeSetter(scheme.Scheme),
+		RecordFlags:      genericclioptions.NewRecordFlags(),
+		ResourceBuilderFlags: genericclioptions.NewResourceBuilderFlags().
+			WithLabelSelector("").
+			WithFieldSelector("").
+			WithAll(false).
+			WithAllNamespaces(false).
+			WithLocal(false).
+			WithFile(true, new(string)).
+			WithLatest(),
+
+		IOStreams: streams,
+	}
+}
+
 // AnnotateOptions have the data required to perform the annotate operation
 type AnnotateOptions struct {
-	PrintFlags *genericclioptions.PrintFlags
-	PrintObj   printers.ResourcePrinterFunc
+	PrintObj        printers.ResourcePrinterFunc
+	Recorder        genericclioptions.Recorder
+	ResourceBuilder genericclioptions.ResourceFinder
 
-	// Filename options
-	resource.FilenameOptions
-	RecordFlags *genericclioptions.RecordFlags
+	DryRunStrategy    cmdutil.DryRunStrategy
+	FieldManager      string
+	List              bool
+	Local             bool
+	NewAnnotations    map[string]string
+	Overwrite         bool
+	RemoveAnnotations []string
+	ResourceVersion   string
 
-	// Common user flags
-	overwrite       bool
-	list            bool
-	local           bool
-	dryRunStrategy  cmdutil.DryRunStrategy
-	dryRunVerifier  *resource.QueryParamVerifier
-	fieldManager    string
-	all             bool
-	allNamespaces   bool
-	resourceVersion string
-	selector        string
-	fieldSelector   string
-	outputFormat    string
-
-	// results of arg parsing
-	resources                    []string
-	newAnnotations               map[string]string
-	removeAnnotations            []string
-	Recorder                     genericclioptions.Recorder
-	namespace                    string
-	enforceNamespace             bool
-	builder                      *resource.Builder
-	unstructuredClientForMapping func(mapping *meta.RESTMapping) (resource.RESTClient, error)
-
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var (
@@ -114,20 +136,9 @@ var (
     kubectl annotate pods foo description-`))
 )
 
-// NewAnnotateOptions creates the options for annotate
-func NewAnnotateOptions(ioStreams genericclioptions.IOStreams) *AnnotateOptions {
-	return &AnnotateOptions{
-		PrintFlags: genericclioptions.NewPrintFlags("annotated").WithTypeSetter(scheme.Scheme),
-
-		RecordFlags: genericclioptions.NewRecordFlags(),
-		Recorder:    genericclioptions.NoopRecorder{},
-		IOStreams:   ioStreams,
-	}
-}
-
 // NewCmdAnnotate creates the `annotate` command
-func NewCmdAnnotate(parent string, f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
-	o := NewAnnotateOptions(ioStreams)
+func NewCmdAnnotate(parent string, f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
+	flags := NewAnnotateFlags(f, streams)
 
 	cmd := &cobra.Command{
 		Use:                   "annotate [--overwrite] (-f FILENAME | TYPE NAME) KEY_1=VAL_1 ... KEY_N=VAL_N [--resource-version=version]",
@@ -137,152 +148,133 @@ func NewCmdAnnotate(parent string, f cmdutil.Factory, ioStreams genericclioption
 		Example:               annotateExample,
 		ValidArgsFunction:     completion.ResourceTypeAndNameCompletionFunc(f),
 		Run: func(cmd *cobra.Command, args []string) {
-			cmdutil.CheckErr(o.Complete(f, cmd, args))
-			cmdutil.CheckErr(o.Validate())
+			o, err := flags.ToOptions(cmd, args)
+			cmdutil.CheckErr(err)
 			cmdutil.CheckErr(o.RunAnnotate())
 		},
 	}
 
-	// bind flag structs
-	o.RecordFlags.AddFlags(cmd)
-	o.PrintFlags.AddFlags(cmd)
-
-	cmd.Flags().BoolVar(&o.overwrite, "overwrite", o.overwrite, "If true, allow annotations to be overwritten, otherwise reject annotation updates that overwrite existing annotations.")
-	cmd.Flags().BoolVar(&o.list, "list", o.list, "If true, display the annotations for a given resource.")
-	cmd.Flags().BoolVar(&o.local, "local", o.local, "If true, annotation will NOT contact api-server but run locally.")
-	cmd.Flags().StringVar(&o.fieldSelector, "field-selector", o.fieldSelector, "Selector (field query) to filter on, supports '=', '==', and '!='.(e.g. --field-selector key1=value1,key2=value2). The server only supports a limited number of field queries per type.")
-	cmd.Flags().BoolVar(&o.all, "all", o.all, "Select all resources, in the namespace of the specified resource types.")
-	cmd.Flags().BoolVarP(&o.allNamespaces, "all-namespaces", "A", o.allNamespaces, "If true, check the specified action in all namespaces.")
-	cmd.Flags().StringVar(&o.resourceVersion, "resource-version", o.resourceVersion, i18n.T("If non-empty, the annotation update will only succeed if this is the current resource-version for the object. Only valid when specifying a single resource."))
-	usage := "identifying the resource to update the annotation"
-	cmdutil.AddFilenameOptionFlags(cmd, &o.FilenameOptions, usage)
-	cmdutil.AddDryRunFlag(cmd)
-	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-annotate")
-	cmdutil.AddLabelSelectorFlagVar(cmd, &o.selector)
+	flags.AddFlags(cmd, streams)
 
 	return cmd
 }
 
-// Complete adapts from the command line args and factory to the data required.
-func (o *AnnotateOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []string) error {
-	var err error
+// AddFlags registers flags for a cli.
+func (flags *AnnotateFlags) AddFlags(cmd *cobra.Command, ioStreams genericiooptions.IOStreams) {
+	flags.PrintFlags.AddFlags(cmd)
+	flags.ResourceBuilderFlags.AddFlags(cmd.Flags())
+	flags.RecordFlags.AddFlags(cmd)
 
-	o.RecordFlags.Complete(cmd)
-	o.Recorder, err = o.RecordFlags.ToRecorder()
-	if err != nil {
-		return err
-	}
+	cmdutil.AddDryRunFlag(cmd)
+	cmdutil.AddFieldManagerFlagVar(cmd, &flags.FieldManager, "kubectl-annotate")
+	cmd.Flags().BoolVar(&flags.Overwrite, "overwrite", flags.Overwrite, "If true, allow annotations to be overwritten, otherwise reject annotation updates that overwrite existing annotations.")
+	cmd.Flags().BoolVar(&flags.List, "list", flags.List, "If true, display the annotations for a given resource.")
+	cmd.Flags().StringVar(&flags.ResourceVersion, "resource-version", flags.ResourceVersion, i18n.T("If non-empty, the annotation update will only succeed if this is the current resource-version for the object. Only valid when specifying a single resource."))
+}
 
-	o.outputFormat = cmdutil.GetFlagString(cmd, "output")
-	o.dryRunStrategy, err = cmdutil.GetDryRunStrategy(cmd)
+// ToOptions converts from CLI inputs to runtime inputs.
+func (flags *AnnotateFlags) ToOptions(cmd *cobra.Command, args []string) (*AnnotateOptions, error) {
+	dryRunStrategy, err := cmdutil.GetDryRunStrategy(cmd)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.dryRunVerifier = resource.NewQueryParamVerifier(dynamicClient, f.OpenAPIGetter(), resource.QueryParamDryRun)
-
-	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
-	printer, err := o.PrintFlags.ToPrinter()
-	if err != nil {
-		return err
-	}
-	o.PrintObj = func(obj runtime.Object, out io.Writer) error {
-		return printer.PrintObj(obj, out)
-	}
-
-	if o.list && len(o.outputFormat) > 0 {
-		return fmt.Errorf("--list and --output may not be specified together")
-	}
-
-	o.namespace, o.enforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
-		return err
-	}
-	o.builder = f.NewBuilder()
-	o.unstructuredClientForMapping = f.UnstructuredClientForMapping
 
 	// retrieves resource and annotation args from args
 	// also checks args to verify that all resources are specified before annotations
 	resources, annotationArgs, err := cmdutil.GetResourcesAndPairs(args, "annotation")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	o.resources = resources
-	o.newAnnotations, o.removeAnnotations, err = parseAnnotations(annotationArgs)
+
+	newAnnotations, removeAnnotations, err := parseAnnotations(annotationArgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
-}
+	// Checks the options and flags to see if there is sufficient information run the command.
+	if flags.List && flags.PrintFlags.OutputFormat != nil && len(*flags.PrintFlags.OutputFormat) > 0 {
+		return nil, fmt.Errorf("--list and --output may not be specified together")
+	}
+	if *flags.ResourceBuilderFlags.All && len(*flags.ResourceBuilderFlags.LabelSelector) > 0 {
+		return nil, fmt.Errorf("cannot set --all and --selector at the same time")
+	}
+	if *flags.ResourceBuilderFlags.All && len(*flags.ResourceBuilderFlags.FieldSelector) > 0 {
+		return nil, fmt.Errorf("cannot set --all and --field-selector at the same time")
+	}
 
-// Validate checks to the AnnotateOptions to see if there is sufficient information run the command.
-func (o AnnotateOptions) Validate() error {
-	if o.all && len(o.selector) > 0 {
-		return fmt.Errorf("cannot set --all and --selector at the same time")
-	}
-	if o.all && len(o.fieldSelector) > 0 {
-		return fmt.Errorf("cannot set --all and --field-selector at the same time")
-	}
-	if !o.local {
-		if len(o.resources) < 1 && cmdutil.IsFilenameSliceEmpty(o.Filenames, o.Kustomize) {
-			return fmt.Errorf("one or more resources must be specified as <resource> <name> or <resource>/<name>")
+	filenameOptions := flags.ResourceBuilderFlags.FileNameFlags.ToOptions()
+
+	if !*flags.ResourceBuilderFlags.Local {
+		if len(resources) < 1 && cmdutil.IsFilenameSliceEmpty(filenameOptions.Filenames, filenameOptions.Kustomize) {
+			return nil, fmt.Errorf("one or more resources must be specified as <resource> <name> or <resource>/<name>")
 		}
 	} else {
-		if o.dryRunStrategy == cmdutil.DryRunServer {
-			return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
+		if dryRunStrategy == cmdutil.DryRunServer {
+			return nil, fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
 		}
-		if len(o.resources) > 0 {
-			return fmt.Errorf("can only use local files by -f rsrc.yaml or --filename=rsrc.json when --local=true is set")
+		if len(resources) > 0 {
+			return nil, fmt.Errorf("can only use local files by -f rsrc.yaml or --filename=rsrc.json when --local=true is set")
 		}
-		if cmdutil.IsFilenameSliceEmpty(o.Filenames, o.Kustomize) {
-			return fmt.Errorf("one or more files must be specified as -f rsrc.yaml or --filename=rsrc.json")
+		if cmdutil.IsFilenameSliceEmpty(filenameOptions.Filenames, filenameOptions.Kustomize) {
+			return nil, fmt.Errorf("one or more files must be specified as -f rsrc.yaml or --filename=rsrc.json")
 		}
 	}
-	if len(o.newAnnotations) < 1 && len(o.removeAnnotations) < 1 && !o.list {
-		return fmt.Errorf("at least one annotation update is required")
+	if len(newAnnotations) < 1 && len(removeAnnotations) < 1 && !flags.List {
+		return nil, fmt.Errorf("at least one annotation update is required")
 	}
-	return validateAnnotations(o.removeAnnotations, o.newAnnotations)
+	if err := validateAnnotations(removeAnnotations, newAnnotations); err != nil {
+		return nil, err
+	}
+
+	options := &AnnotateOptions{
+		FieldManager:      flags.FieldManager,
+		IOStreams:         flags.IOStreams,
+		List:              flags.List,
+		Local:             *flags.ResourceBuilderFlags.Local,
+		Overwrite:         flags.Overwrite,
+		ResourceVersion:   flags.ResourceVersion,
+		Recorder:          genericclioptions.NoopRecorder{},
+		DryRunStrategy:    dryRunStrategy,
+		NewAnnotations:    newAnnotations,
+		RemoveAnnotations: removeAnnotations,
+	}
+
+	if err := flags.RecordFlags.Complete(cmd); err != nil {
+		return nil, err
+	}
+	options.Recorder, err = flags.RecordFlags.ToRecorder()
+	if err != nil {
+		return nil, err
+	}
+
+	cmdutil.PrintFlagsWithDryRunStrategy(flags.PrintFlags, options.DryRunStrategy)
+	printer, err := flags.PrintFlags.ToPrinter()
+	if err != nil {
+		return nil, err
+	}
+	options.PrintObj = func(obj runtime.Object, out io.Writer) error {
+		return printer.PrintObj(obj, out)
+	}
+
+	options.ResourceBuilder = flags.ResourceBuilderFlags.ToBuilder(flags.RESTClientGetter, resources)
+	return options, nil
 }
 
 // RunAnnotate does the work
 func (o AnnotateOptions) RunAnnotate() error {
-	b := o.builder.
-		Unstructured().
-		LocalParam(o.local).
-		ContinueOnError().
-		NamespaceParam(o.namespace).DefaultNamespace().
-		FilenameParam(o.enforceNamespace, &o.FilenameOptions).
-		Flatten()
-
-	if !o.local {
-		b = b.LabelSelectorParam(o.selector).
-			FieldSelectorParam(o.fieldSelector).
-			AllNamespaces(o.allNamespaces).
-			ResourceTypeOrNameArgs(o.all, o.resources...).
-			Latest()
-	}
-
-	r := b.Do()
-	if err := r.Err(); err != nil {
-		return err
-	}
+	visitor := o.ResourceBuilder.Do()
 
 	var singleItemImpliedResource bool
-	r.IntoSingleItemImplied(&singleItemImpliedResource)
+	if result, ok := visitor.(*resource.Result); ok {
+		result.IntoSingleItemImplied(&singleItemImpliedResource)
+	}
 
 	// only apply resource version locking on a single resource.
-	// we must perform this check after o.builder.Do() as
-	// []o.resources can not accurately return the proper number
-	// of resources when they are not passed in "resource/name" format.
-	if !singleItemImpliedResource && len(o.resourceVersion) > 0 {
+	if !singleItemImpliedResource && len(o.ResourceVersion) > 0 {
 		return fmt.Errorf("--resource-version may only be used with a single resource")
 	}
 
-	return r.Visit(func(info *resource.Info, err error) error {
+	return visitor.Visit(func(info *resource.Info, err error) error {
 		if err != nil {
 			return err
 		}
@@ -290,21 +282,16 @@ func (o AnnotateOptions) RunAnnotate() error {
 		var outputObj runtime.Object
 		obj := info.Object
 
-		if o.dryRunStrategy == cmdutil.DryRunClient || o.local || o.list {
+		if o.DryRunStrategy == cmdutil.DryRunClient || o.Local || o.List {
 			if err := o.updateAnnotations(obj); err != nil {
 				return err
 			}
 			outputObj = obj
 		} else {
 			mapping := info.ResourceMapping()
-			if o.dryRunStrategy == cmdutil.DryRunServer {
-				if err := o.dryRunVerifier.HasSupport(mapping.GroupVersionKind); err != nil {
-					return err
-				}
-			}
 			name, namespace := info.Name, info.Namespace
 
-			if len(o.resourceVersion) != 0 {
+			if len(o.ResourceVersion) != 0 {
 				// ensure resourceVersion is always sent in the patch by clearing it from the starting JSON
 				accessor, err := meta.Accessor(obj)
 				if err != nil {
@@ -333,14 +320,10 @@ func (o AnnotateOptions) RunAnnotate() error {
 				klog.V(2).Infof("couldn't compute patch: %v", err)
 			}
 
-			client, err := o.unstructuredClientForMapping(mapping)
-			if err != nil {
-				return err
-			}
 			helper := resource.
-				NewHelper(client, mapping).
-				DryRun(o.dryRunStrategy == cmdutil.DryRunServer).
-				WithFieldManager(o.fieldManager)
+				NewHelper(info.Client, mapping).
+				DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
+				WithFieldManager(o.FieldManager)
 
 			if createdPatch {
 				outputObj, err = helper.Patch(namespace, name, types.MergePatchType, patchBytes, nil)
@@ -352,7 +335,7 @@ func (o AnnotateOptions) RunAnnotate() error {
 			}
 		}
 
-		if o.list {
+		if o.List {
 			accessor, err := meta.Accessor(outputObj)
 			if err != nil {
 				return err
@@ -404,16 +387,16 @@ func validateAnnotations(removeAnnotations []string, newAnnotations map[string]s
 // validateNoAnnotationOverwrites validates that when overwrite is false, to-be-updated annotations don't exist in the object annotation map (yet)
 func validateNoAnnotationOverwrites(accessor metav1.Object, annotations map[string]string) error {
 	var buf bytes.Buffer
-	for key := range annotations {
+	for key, value := range annotations {
 		// change-cause annotation can always be overwritten
 		if key == polymorphichelpers.ChangeCauseAnnotation {
 			continue
 		}
-		if value, found := accessor.GetAnnotations()[key]; found {
+		if currValue, found := accessor.GetAnnotations()[key]; found && currValue != value {
 			if buf.Len() > 0 {
 				buf.WriteString("; ")
 			}
-			buf.WriteString(fmt.Sprintf("'%s' already has a value (%s)", key, value))
+			buf.WriteString(fmt.Sprintf("'%s' already has a value (%s)", key, currValue))
 		}
 	}
 	if buf.Len() > 0 {
@@ -428,8 +411,8 @@ func (o AnnotateOptions) updateAnnotations(obj runtime.Object) error {
 	if err != nil {
 		return err
 	}
-	if !o.overwrite {
-		if err := validateNoAnnotationOverwrites(accessor, o.newAnnotations); err != nil {
+	if !o.Overwrite {
+		if err := validateNoAnnotationOverwrites(accessor, o.NewAnnotations); err != nil {
 			return err
 		}
 	}
@@ -439,16 +422,16 @@ func (o AnnotateOptions) updateAnnotations(obj runtime.Object) error {
 		annotations = make(map[string]string)
 	}
 
-	for key, value := range o.newAnnotations {
+	for key, value := range o.NewAnnotations {
 		annotations[key] = value
 	}
-	for _, annotation := range o.removeAnnotations {
+	for _, annotation := range o.RemoveAnnotations {
 		delete(annotations, annotation)
 	}
 	accessor.SetAnnotations(annotations)
 
-	if len(o.resourceVersion) != 0 {
-		accessor.SetResourceVersion(o.resourceVersion)
+	if len(o.ResourceVersion) != 0 {
+		accessor.SetResourceVersion(o.ResourceVersion)
 	}
 	return nil
 }

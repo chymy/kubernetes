@@ -14,16 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//go:generate mockgen -source=summary.go -destination=testing/mock_summary_provider.go -package=testing SummaryProvider
+//go:generate mockery
 package stats
 
 import (
+	"context"
 	"fmt"
 
 	"k8s.io/klog/v2"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/util"
 )
 
@@ -31,9 +36,9 @@ import (
 type SummaryProvider interface {
 	// Get provides a new Summary with the stats from Kubelet,
 	// and will update some stats if updateStats is true
-	Get(updateStats bool) (*statsapi.Summary, error)
+	Get(ctx context.Context, updateStats bool) (*statsapi.Summary, error)
 	// GetCPUAndMemoryStats provides a new Summary with the CPU and memory stats from Kubelet,
-	GetCPUAndMemoryStats() (*statsapi.Summary, error)
+	GetCPUAndMemoryStats(ctx context.Context) (*statsapi.Summary, error)
 }
 
 // summaryProviderImpl implements the SummaryProvider interface.
@@ -50,12 +55,13 @@ var _ SummaryProvider = &summaryProviderImpl{}
 
 // NewSummaryProvider returns a SummaryProvider using the stats provided by the
 // specified statsProvider.
-func NewSummaryProvider(statsProvider Provider) SummaryProvider {
+func NewSummaryProvider(ctx context.Context, statsProvider Provider) SummaryProvider {
+	logger := klog.FromContext(ctx)
 	kubeletCreationTime := metav1.Now()
-	bootTime, err := util.GetBootTime()
+	bootTime, err := util.GetBootTime(logger)
 	if err != nil {
 		// bootTime will be zero if we encounter an error getting the boot time.
-		klog.InfoS("Error getting system boot time. Node metrics will have an incorrect start time", "err", err)
+		logger.Info("Error getting system boot time. Node metrics will have an incorrect start time", "err", err)
 	}
 
 	return &summaryProviderImpl{
@@ -65,15 +71,15 @@ func NewSummaryProvider(statsProvider Provider) SummaryProvider {
 	}
 }
 
-func (sp *summaryProviderImpl) Get(updateStats bool) (*statsapi.Summary, error) {
+func (sp *summaryProviderImpl) Get(ctx context.Context, updateStats bool) (*statsapi.Summary, error) {
 	// TODO(timstclair): Consider returning a best-effort response if any of
 	// the following errors occur.
-	node, err := sp.provider.GetNode()
+	node, err := sp.provider.GetNode(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node info: %v", err)
 	}
 	nodeConfig := sp.provider.GetNodeConfig()
-	rootStats, networkStats, err := sp.provider.GetCgroupStats("/", updateStats)
+	rootStats, networkStats, err := sp.provider.GetCgroupStats(ctx, "/", updateStats)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get root cgroup stats: %v", err)
 	}
@@ -81,15 +87,15 @@ func (sp *summaryProviderImpl) Get(updateStats bool) (*statsapi.Summary, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rootFs stats: %v", err)
 	}
-	imageFsStats, err := sp.provider.ImageFsStats()
+	imageFsStats, containerFsStats, err := sp.provider.ImageFsStats(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get imageFs stats: %v", err)
 	}
 	var podStats []statsapi.PodStats
 	if updateStats {
-		podStats, err = sp.provider.ListPodStatsAndUpdateCPUNanoCoreUsage()
+		podStats, err = sp.provider.ListPodStatsAndUpdateCPUNanoCoreUsage(ctx)
 	} else {
-		podStats, err = sp.provider.ListPodStats()
+		podStats, err = sp.provider.ListPodStats(ctx)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pod stats: %v", err)
@@ -100,16 +106,24 @@ func (sp *summaryProviderImpl) Get(updateStats bool) (*statsapi.Summary, error) 
 		return nil, fmt.Errorf("failed to get rlimit stats: %v", err)
 	}
 
+	memory := rootStats.Memory
+	if utilfeature.DefaultFeatureGate.Enabled(features.HugepageAwareEviction) {
+		memory = adjustForHugePages(memory, node)
+	}
 	nodeStats := statsapi.NodeStats{
 		NodeName:         node.Name,
 		CPU:              rootStats.CPU,
-		Memory:           rootStats.Memory,
+		Memory:           memory,
+		Swap:             rootStats.Swap,
 		Network:          networkStats,
 		StartTime:        sp.systemBootTime,
 		Fs:               rootFsStats,
-		Runtime:          &statsapi.RuntimeStats{ImageFs: imageFsStats},
+		Runtime:          &statsapi.RuntimeStats{ContainerFs: containerFsStats, ImageFs: imageFsStats},
 		Rlimit:           rlimit,
-		SystemContainers: sp.GetSystemContainersStats(nodeConfig, podStats, updateStats),
+		SystemContainers: sp.GetSystemContainersStats(ctx, nodeConfig, podStats, updateStats),
+	}
+	if utilfeature.DefaultFeatureGate.Enabled(features.KubeletPSI) {
+		nodeStats.IO = rootStats.IO
 	}
 	summary := statsapi.Summary{
 		Node: nodeStats,
@@ -118,10 +132,10 @@ func (sp *summaryProviderImpl) Get(updateStats bool) (*statsapi.Summary, error) 
 	return &summary, nil
 }
 
-func (sp *summaryProviderImpl) GetCPUAndMemoryStats() (*statsapi.Summary, error) {
+func (sp *summaryProviderImpl) GetCPUAndMemoryStats(ctx context.Context) (*statsapi.Summary, error) {
 	// TODO(timstclair): Consider returning a best-effort response if any of
 	// the following errors occur.
-	node, err := sp.provider.GetNode()
+	node, err := sp.provider.GetNode(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node info: %v", err)
 	}
@@ -131,21 +145,64 @@ func (sp *summaryProviderImpl) GetCPUAndMemoryStats() (*statsapi.Summary, error)
 		return nil, fmt.Errorf("failed to get root cgroup stats: %v", err)
 	}
 
-	podStats, err := sp.provider.ListPodCPUAndMemoryStats()
+	podStats, err := sp.provider.ListPodCPUAndMemoryStats(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pod stats: %v", err)
 	}
 
+	memory := rootStats.Memory
+	if utilfeature.DefaultFeatureGate.Enabled(features.HugepageAwareEviction) {
+		memory = adjustForHugePages(memory, node)
+	}
 	nodeStats := statsapi.NodeStats{
 		NodeName:         node.Name,
 		CPU:              rootStats.CPU,
-		Memory:           rootStats.Memory,
+		Memory:           memory,
+		Swap:             rootStats.Swap,
 		StartTime:        rootStats.StartTime,
-		SystemContainers: sp.GetSystemContainersCPUAndMemoryStats(nodeConfig, podStats, false),
+		SystemContainers: sp.GetSystemContainersCPUAndMemoryStats(ctx, nodeConfig, podStats, false),
 	}
 	summary := statsapi.Summary{
 		Node: nodeStats,
 		Pods: podStats,
 	}
 	return &summary, nil
+}
+
+// adjustForHugePages returns a copy of memoryStats with AvailableBytes reduced
+// by the node's total hugepage capacity.
+//
+// The root cgroup's memory limit is set to MemTotal (which includes
+// hugepage-reserved RAM), but the memory cgroup controller does not track
+// hugetlb allocations in WorkingSet. This causes AvailableBytes
+// (limit - WorkingSet) to overstate real available regular memory by the
+// hugepage reservation amount, delaying eviction until the node is under
+// severe memory pressure.
+func adjustForHugePages(memory *statsapi.MemoryStats, node *v1.Node) *statsapi.MemoryStats {
+	if memory == nil || memory.AvailableBytes == nil || node == nil {
+		return memory
+	}
+
+	var totalHugePageBytes uint64
+	for name, quantity := range node.Status.Capacity {
+		if v1helper.IsHugePageResourceName(name) {
+			totalHugePageBytes += uint64(quantity.Value())
+		}
+	}
+	if totalHugePageBytes == 0 {
+		return memory
+	}
+
+	adjusted := *memory
+	if *adjusted.AvailableBytes > totalHugePageBytes {
+		available := *adjusted.AvailableBytes - totalHugePageBytes
+		adjusted.AvailableBytes = &available
+	} else {
+		// The unadjusted AvailableBytes (limit - WorkingSet) still includes
+		// hugepage memory that is not usable as regular memory. If it is less
+		// than the hugepage reservation, regular memory is exhausted.
+		available := uint64(0)
+		adjusted.AvailableBytes = &available
+	}
+	return &adjusted
 }

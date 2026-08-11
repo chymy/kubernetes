@@ -42,28 +42,26 @@ import (
 ```
 - test ownership must be declared via a top-level SIGDescribe call defined in the sig-owned package, e.g.
 ```golang
-// test/e2e/lifecycle/framework.go
-package lifecycle
+// test/e2e/autoscaling/framework.go
+package autoscaling
 
-import "github.com/onsi/ginkgo"
+import "k8s.io/kubernetes/test/e2e/framework"
 
 // SIGDescribe annotates the test with the SIG label.
-func SIGDescribe(text string, body func()) bool {
-	return ginkgo.Describe("[sig-cluster-lifecycle] "+text, body)
-}
+var SIGDescribe = framework.SIGDescribe("autoscaling")
 ```
 ```golang
-// test/e2e/lifecycle/bootstrap/bootstrap_signer.go
+// test/e2e/autoscaling/horizontal_pod_autoscaling.go
 
-package bootstrap
+package autoscaling
 
 import (
 	"github.com/onsi/ginkgo"
-	"k8s.io/kubernetes/test/e2e/lifecycle"
+	"k8s.io/kubernetes/test/e2e/feature"
 )
-var _ = lifecycle.SIGDescribe("[Feature:BootstrapTokens]", func() {
+var _ = SIGDescribe(feature.HPA, "Horizontal pod autoscaling (scale resource: CPU)", func() {
   /* ... */
-  ginkgo.It("should sign the new added bootstrap tokens", func() {
+  ginkgo.It("should scale up on CPU utilization", func(ctx context.Context) {
     /* ... */
   })
   /* etc */

@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
 Copyright 2015 The Kubernetes Authors.
@@ -25,11 +24,13 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	pkgfeatures "k8s.io/kubernetes/pkg/features"
+	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
+	"k8s.io/utils/ptr"
 )
 
 // getResourceList returns a ResourceList with the
@@ -54,8 +55,11 @@ func getResourceRequirements(requests, limits v1.ResourceList) v1.ResourceRequir
 }
 
 func TestResourceConfigForPod(t *testing.T) {
-	defaultQuotaPeriod := uint64(100 * time.Millisecond / time.Microsecond)
-	tunedQuotaPeriod := uint64(5 * time.Millisecond / time.Microsecond)
+	const Mi = int64(1024 * 1024)
+	const Gi = int64(1024 * 1024 * 1024)
+	defaultQuotaPeriod := uint64(100 * time.Millisecond / time.Microsecond) // in microseconds
+	tunedQuotaPeriod := uint64(5 * time.Millisecond / time.Microsecond)     // in microseconds
+	tunedQuota := int64(1 * time.Millisecond / time.Microsecond)
 
 	minShares := uint64(MinShares)
 	burstableShares := MilliCPUToShares(100)
@@ -69,13 +73,17 @@ func TestResourceConfigForPod(t *testing.T) {
 	memoryQuantity = resource.MustParse("100Mi")
 	cpuNoLimit := int64(-1)
 	guaranteedMemory := memoryQuantity.Value()
-	testCases := map[string]struct {
-		pod              *v1.Pod
-		expected         *ResourceConfig
-		enforceCPULimits bool
-		quotaPeriod      uint64
+	testCases := []struct {
+		description                        string
+		pod                                *v1.Pod
+		expected                           *ResourceConfig
+		enforceCPULimits                   bool
+		quotaPeriod                        uint64 // in microseconds
+		podLevelResourcesEnabled           bool
+		draNodeAllocatableResourcesEnabled bool
 	}{
-		"besteffort": {
+		{
+			description: "besteffort",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -87,9 +95,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &minShares},
+			expected:         &ResourceConfig{CPUShares: &minShares},
 		},
-		"burstable-no-limits": {
+		{
+			description: "burstable-no-limits",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -101,9 +110,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares},
+			expected:         &ResourceConfig{CPUShares: &burstableShares},
 		},
-		"burstable-with-limits": {
+		{
+			description: "burstable-with-limits",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -115,9 +125,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &burstableQuota, CpuPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &burstableQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
 		},
-		"burstable-with-limits-no-cpu-enforcement": {
+		{
+			description: "burstable-with-limits-no-cpu-enforcement",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -129,54 +140,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &cpuNoLimit, CpuPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &cpuNoLimit, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
 		},
-		"burstable-partial-limits": {
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
-						},
-						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("", "")),
-						},
-					},
-				},
-			},
-			enforceCPULimits: true,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares},
-		},
-		"burstable-with-limits-with-tuned-quota": {
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
-						},
-					},
-				},
-			},
-			enforceCPULimits: true,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &burstableQuota, CpuPeriod: &tunedQuotaPeriod, Memory: &burstableMemory},
-		},
-		"burstable-with-limits-no-cpu-enforcement-with-tuned-quota": {
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
-						},
-					},
-				},
-			},
-			enforceCPULimits: false,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &cpuNoLimit, CpuPeriod: &tunedQuotaPeriod, Memory: &burstableMemory},
-		},
-		"burstable-partial-limits-with-tuned-quota": {
+		{
+			description: "burstable-partial-limits",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -190,10 +157,59 @@ func TestResourceConfigForPod(t *testing.T) {
 				},
 			},
 			enforceCPULimits: true,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares},
+			quotaPeriod:      defaultQuotaPeriod,
+			expected:         &ResourceConfig{CPUShares: &burstablePartialShares},
 		},
-		"guaranteed": {
+		{
+			description: "burstable-with-limits-with-tuned-quota",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+						},
+					},
+				},
+			},
+			enforceCPULimits: true,
+			quotaPeriod:      tunedQuotaPeriod,
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &tunedQuota, CPUPeriod: &tunedQuotaPeriod, Memory: &burstableMemory},
+		},
+		{
+			description: "burstable-with-limits-no-cpu-enforcement-with-tuned-quota",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+						},
+					},
+				},
+			},
+			enforceCPULimits: false,
+			quotaPeriod:      tunedQuotaPeriod,
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &cpuNoLimit, CPUPeriod: &tunedQuotaPeriod, Memory: &burstableMemory},
+		},
+		{
+			description: "burstable-partial-limits-with-tuned-quota",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+						},
+						{
+							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("", "")),
+						},
+					},
+				},
+			},
+			enforceCPULimits: true,
+			quotaPeriod:      tunedQuotaPeriod,
+			expected:         &ResourceConfig{CPUShares: &burstablePartialShares},
+		},
+		{
+			description: "guaranteed",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -205,9 +221,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &guaranteedQuota, CpuPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"guaranteed-no-cpu-enforcement": {
+		{
+			description: "guaranteed-no-cpu-enforcement",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -219,9 +236,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &cpuNoLimit, CpuPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &cpuNoLimit, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"guaranteed-with-tuned-quota": {
+		{
+			description: "guaranteed-with-tuned-quota",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -233,9 +251,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &guaranteedTunedQuota, CpuPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedTunedQuota, CPUPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"guaranteed-no-cpu-enforcement-with-tuned-quota": {
+		{
+			description: "guaranteed-no-cpu-enforcement-with-tuned-quota",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -247,9 +266,10 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &cpuNoLimit, CpuPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &cpuNoLimit, CPUPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"burstable-partial-limits-with-init-containers": {
+		{
+			description: "burstable-partial-limits-with-init-containers",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
@@ -272,57 +292,16 @@ func TestResourceConfigForPod(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares},
+			expected:         &ResourceConfig{CPUShares: &burstablePartialShares},
 		},
-	}
-
-	for testName, testCase := range testCases {
-
-		actual := ResourceConfigForPod(testCase.pod, testCase.enforceCPULimits, testCase.quotaPeriod, false)
-
-		if !reflect.DeepEqual(actual.CpuPeriod, testCase.expected.CpuPeriod) {
-			t.Errorf("unexpected result, test: %v, cpu period not as expected. Expected: %v, Actual:%v", testName, *testCase.expected.CpuPeriod, *actual.CpuPeriod)
-		}
-		if !reflect.DeepEqual(actual.CpuQuota, testCase.expected.CpuQuota) {
-			t.Errorf("unexpected result, test: %v, cpu quota not as expected. Expected: %v, Actual:%v", testName, *testCase.expected.CpuQuota, *actual.CpuQuota)
-		}
-		if !reflect.DeepEqual(actual.CpuShares, testCase.expected.CpuShares) {
-			t.Errorf("unexpected result, test: %v, cpu shares not as expected. Expected: %v, Actual:%v", testName, *testCase.expected.CpuShares, &actual.CpuShares)
-		}
-		if !reflect.DeepEqual(actual.Memory, testCase.expected.Memory) {
-			t.Errorf("unexpected result, test: %v, memory not as expected. Expected: %v, Actual:%v", testName, *testCase.expected.Memory, *actual.Memory)
-		}
-	}
-}
-
-func TestResourceConfigForPodWithCustomCPUCFSQuotaPeriod(t *testing.T) {
-	defaultQuotaPeriod := uint64(100 * time.Millisecond / time.Microsecond)
-	tunedQuotaPeriod := uint64(5 * time.Millisecond / time.Microsecond)
-	tunedQuota := int64(1 * time.Millisecond / time.Microsecond)
-
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.CPUCFSQuotaPeriod, true)()
-
-	minShares := uint64(MinShares)
-	burstableShares := MilliCPUToShares(100)
-	memoryQuantity := resource.MustParse("200Mi")
-	burstableMemory := memoryQuantity.Value()
-	burstablePartialShares := MilliCPUToShares(200)
-	burstableQuota := MilliCPUToQuota(200, int64(defaultQuotaPeriod))
-	guaranteedShares := MilliCPUToShares(100)
-	guaranteedQuota := MilliCPUToQuota(100, int64(defaultQuotaPeriod))
-	guaranteedTunedQuota := MilliCPUToQuota(100, int64(tunedQuotaPeriod))
-	memoryQuantity = resource.MustParse("100Mi")
-	cpuNoLimit := int64(-1)
-	guaranteedMemory := memoryQuantity.Value()
-	testCases := map[string]struct {
-		pod              *v1.Pod
-		expected         *ResourceConfig
-		enforceCPULimits bool
-		quotaPeriod      uint64
-	}{
-		"besteffort": {
+		{
+			description: "besteffort-with-pod-level-resources-enabled",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("", ""),
+						Limits:   getResourceList("", ""),
+					},
 					Containers: []v1.Container{
 						{
 							Resources: getResourceRequirements(getResourceList("", ""), getResourceList("", "")),
@@ -330,188 +309,643 @@ func TestResourceConfigForPodWithCustomCPUCFSQuotaPeriod(t *testing.T) {
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &minShares},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &minShares},
 		},
-		"burstable-no-limits": {
+		{
+			description: "burstable-with-pod-level-requests",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("", "")),
+							Name: "Container with no resources",
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &burstableShares},
 		},
-		"burstable-with-limits": {
+		{
+			description: "burstable-with-pod-and-container-level-requests",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+							Name:      "Container with resources",
+							Resources: getResourceRequirements(getResourceList("10m", "50Mi"), getResourceList("", "")),
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &burstableQuota, CpuPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &burstableShares},
 		},
-		"burstable-with-limits-no-cpu-enforcement": {
+		{
+			description: "burstable-with-pod-level-resources",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+						Limits:   getResourceList("200m", "200Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+							Name: "Container with no resources",
 						},
 					},
 				},
 			},
-			enforceCPULimits: false,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &cpuNoLimit, CpuPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &burstableQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
 		},
-		"burstable-partial-limits": {
+		{
+			description: "burstable-with-pod-and-container-level-resources",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+						Limits:   getResourceList("200m", "200Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
-						},
-						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("", "")),
+							Name:      "Container with resources",
+							Resources: getResourceRequirements(getResourceList("10m", "50Mi"), getResourceList("50m", "100Mi")),
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &burstableQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
 		},
-		"burstable-with-limits-with-tuned-quota": {
+		{
+			description: "burstable-with-partial-pod-level-resources-limits",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("200m", "300Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+							Name:      "Container with guaranteed resources",
+							Resources: getResourceRequirements(getResourceList("200m", "200Mi"), getResourceList("200m", "200Mi")),
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &tunedQuota, CpuPeriod: &tunedQuotaPeriod, Memory: &burstableMemory},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &burstablePartialShares, CPUQuota: &burstableQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory},
 		},
-		"burstable-with-limits-no-cpu-enforcement-with-tuned-quota": {
+		{
+			description: "guaranteed-with-pod-level-resources",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+						Limits:   getResourceList("100m", "100Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
+							Name: "Container with no resources",
 						},
 					},
 				},
 			},
-			enforceCPULimits: false,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &cpuNoLimit, CpuPeriod: &tunedQuotaPeriod, Memory: &burstableMemory},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"burstable-partial-limits-with-tuned-quota": {
+		{
+			description: "guaranteed-with-pod-and-container-level-resources",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+						Limits:   getResourceList("100m", "100Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi")),
-						},
-						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("", "")),
+							Name:      "Container with resources",
+							Resources: getResourceRequirements(getResourceList("10m", "50Mi"), getResourceList("50m", "100Mi")),
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"guaranteed": {
+		{
+			description: "guaranteed-pod-level-resources-with-init-containers",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("100m", "100Mi"),
+						Limits:   getResourceList("100m", "100Mi"),
+					},
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("100m", "100Mi")),
+							Name:      "Container with resources",
+							Resources: getResourceRequirements(getResourceList("10m", "50Mi"), getResourceList("50m", "50Mi")),
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:      "Container with resources",
+							Resources: getResourceRequirements(getResourceList("10m", "50Mi"), getResourceList("50m", "50Mi")),
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &guaranteedQuota, CpuPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
+			podLevelResourcesEnabled: true,
+			enforceCPULimits:         true,
+			quotaPeriod:              defaultQuotaPeriod,
+			expected:                 &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
 		},
-		"guaranteed-no-cpu-enforcement": {
+		{
+			description: "burstable-with-dra-direct-claims",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("100m", "100Mi")),
+							Resources: getResourceRequirements(
+								getResourceList("1", "200Mi"), // requests
+								getResourceList("3", "500Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "direct-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+							},
 						},
 					},
 				},
 			},
-			enforceCPULimits: false,
-			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &cpuNoLimit, CpuPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// CPUShares: c1 request (1) + direct claim (2)
+			// CPUQuota: c1 limit (3) + direct claim (2)
+			expected: &ResourceConfig{CPUShares: new(MilliCPUToShares((1 + 2) * 1000)), CPUQuota: new(MilliCPUToQuota((3+2)*1000, int64(defaultQuotaPeriod))), CPUPeriod: &defaultQuotaPeriod, Memory: new(500 * Mi)},
 		},
-		"guaranteed-with-tuned-quota": {
+		{
+			description: "burstable-with-dra-overhead-claims",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("100m", "100Mi")),
+							Resources: getResourceRequirements(
+								getResourceList("1", "200Mi"), // requests
+								getResourceList("3", "500Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "overhead-claim",
+							Containers:        []string{"c1"},
+							Overhead: []v1.NodeAllocatableOverheadResources{
+								{
+									Name:         v1.ResourceMemory,
+									PerPod:       new(resource.MustParse("300Mi")),
+									PerContainer: new(resource.MustParse("100Mi")),
+								},
+							},
 						},
 					},
 				},
 			},
-			enforceCPULimits: true,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &guaranteedTunedQuota, CpuPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// Memory: c1 limit (500) + perPodRef overhead (300) + perContainerRef overhead * 1 container (100 * 1)
+			expected: &ResourceConfig{CPUShares: new(MilliCPUToShares(1 * 1000)), CPUQuota: new(MilliCPUToQuota(3*1000, int64(defaultQuotaPeriod))), CPUPeriod: &defaultQuotaPeriod, Memory: new((500 + 300 + 100) * Mi)},
 		},
-		"guaranteed-no-cpu-enforcement-with-tuned-quota": {
+		{
+			description: "burstable-with-dra-combined-mapping-and-overhead-claims",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
 						{
-							Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("100m", "100Mi")),
+							Resources: getResourceRequirements(
+								getResourceList("1", "200Mi"), // requests
+								getResourceList("3", "500Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "combined-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+								{Name: v1.ResourceMemory, Quantity: new(resource.MustParse("100Mi"))},
+							},
+							Overhead: []v1.NodeAllocatableOverheadResources{
+								{
+									Name:         v1.ResourceCPU,
+									PerPod:       new(resource.MustParse("1")),
+									PerContainer: new(resource.MustParse("1500m")),
+								},
+								{
+									Name:         v1.ResourceMemory,
+									PerPod:       new(resource.MustParse("300Mi")),
+									PerContainer: new(resource.MustParse("100Mi")),
+								},
+							},
 						},
 					},
 				},
 			},
-			enforceCPULimits: false,
-			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &cpuNoLimit, CpuPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// CPUShares: c1 request (1) + mapping (2) + overhead PerPod (1) + overhead PerContainer (1.5) = 5.5 CPUs
+			// CPUQuota: c1 limit (3) + mapping (2) + overhead PerPod (1) + overhead PerContainer (1.5) = 7.5 CPUs
+			// Memory: c1 limit (500) + mapping (100) + overhead PerPod (300) + overhead PerContainer (100) = 1000 Mi
+			expected: &ResourceConfig{
+				CPUShares: new(MilliCPUToShares(5500)),
+				CPUQuota:  new(MilliCPUToQuota(7500, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				Memory:    new(1000 * Mi),
+			},
+		},
+		{
+			description: "burstable-with-dra-feature-gate-disabled",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: getResourceRequirements(
+								getResourceList("1", "200Mi"), // requests
+								getResourceList("3", "500Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "direct-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: false,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// DRA values not added
+			expected: &ResourceConfig{CPUShares: new(MilliCPUToShares(1 * 1000)), CPUQuota: new(MilliCPUToQuota(3*1000, int64(defaultQuotaPeriod))), CPUPeriod: &defaultQuotaPeriod, Memory: new(500 * Mi)},
+		},
+		{
+			description: "burstable-with-dra-hugepages-only",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: getResourceRequirements(
+								getResourceList("1", "200Mi"), // requests
+								getResourceList("3", "500Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "hugepage-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceName(v1.ResourceHugePagesPrefix + "1Gi"), Quantity: new(resource.MustParse("2Gi"))},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			expected: &ResourceConfig{
+				CPUShares: new(MilliCPUToShares(1 * 1000)),
+				CPUQuota:  new(MilliCPUToQuota(3*1000, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				Memory:    ptr.To(500 * Mi),
+				HugePageLimit: map[int64]int64{
+					// HugePageLimit: DRA claim hugepage allocation of 2 x 1Gi
+					1 * Gi: 2 * Gi,
+				},
+			},
+		},
+		{
+			description: "burstable-with-dra-and-pod-level-resources",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: getResourceList("4", "600Mi"),
+						Limits:   getResourceList("8", "900Mi"),
+					},
+					Containers: []v1.Container{
+						{
+							Name: "c1",
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "direct-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+								{Name: v1.ResourceMemory, Quantity: new(resource.MustParse("300Mi"))},
+							},
+						},
+					},
+				},
+			},
+			podLevelResourcesEnabled:           true,
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// pod-level resources override DRA CPU/Memory
+			expected: &ResourceConfig{
+				CPUShares: new(MilliCPUToShares(4 * 1000)),
+				CPUQuota:  new(MilliCPUToQuota(8*1000, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				Memory:    ptr.To(900 * Mi),
+			},
+		},
+		{
+			description: "burstable-with-multiple-dra-claims",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "c1",
+							Resources: getResourceRequirements(
+								getResourceList("100m", "200Mi"), // requests
+								getResourceList("300m", "500Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "direct-claim-1",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("100m"))},
+							},
+						},
+						{
+							ResourceClaimName: "direct-claim-2",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("200m"))},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// CPUShares: c1 request (100) + claim 1 CPU (100) + claim 2 CPU (200)
+			// CPUQuota: c1 limit (300) + claim 1 CPU (100) + claim 2 CPU (200)
+			expected: &ResourceConfig{
+				CPUShares: new(MilliCPUToShares(100 + 100 + 200)),
+				CPUQuota:  new(MilliCPUToQuota(300+100+200, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				Memory:    ptr.To(500 * Mi),
+			},
+		},
+		{
+			description: "burstable-with-multiple-containers-referencing-overhead-claim",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "c1",
+							Resources: getResourceRequirements(
+								getResourceList("100m", "200Mi"), // requests
+								getResourceList("300m", "500Mi"), // limits
+							),
+						},
+						{
+							Name: "c2",
+							Resources: getResourceRequirements(
+								getResourceList("200m", "300Mi"), // requests
+								getResourceList("400m", "600Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "overhead-claim",
+							Containers:        []string{"c1", "c2"},
+							Overhead: []v1.NodeAllocatableOverheadResources{
+								{
+									Name:         v1.ResourceMemory,
+									PerPod:       new(resource.MustParse("200Mi")),
+									PerContainer: new(resource.MustParse("100Mi")),
+								},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			expected: &ResourceConfig{
+				CPUShares: new(MilliCPUToShares(100 + 200)),
+				CPUQuota:  new(MilliCPUToQuota(300+400, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				// Memory: c1 limit (500) + c2 limit (600) + perPodRef (200) + perContainerRef * 2 containers (100 * 2)
+				Memory: ptr.To((500 + 600 + 200 + 100*2) * Mi),
+			},
+		},
+		{
+			description: "burstable-with-direct-claim-shared-by-two-containers",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "c1",
+							Resources: getResourceRequirements(
+								getResourceList("1", "200Mi"), // requests
+								getResourceList("3", "500Mi"), // limits
+							),
+						},
+						{
+							Name: "c2",
+							Resources: getResourceRequirements(
+								getResourceList("2", "300Mi"), // requests
+								getResourceList("4", "600Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "shared-direct-claim",
+							Containers:        []string{"c1", "c2"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+								{Name: v1.ResourceMemory, Quantity: new(resource.MustParse("400Mi"))},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			expected: &ResourceConfig{
+				// CPUShares: c1 request (1) + c2 request (2) + direct claim CPU (2) (shared direct resources are not multiplied)
+				CPUShares: new(MilliCPUToShares((1 + 2 + 2) * 1000)),
+				// CPUQuota: c1 limit (3) + c2 limit (4) + direct claim CPU (2)
+				CPUQuota:  new(MilliCPUToQuota((3+4+2)*1000, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				// Memory: c1 limit (500) + c2 limit (600) + direct claim memory (400)
+				Memory: ptr.To((500 + 600 + 400) * Mi),
+			},
+		},
+		{
+			description: "besteffort-with-dra-direct-claims",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "c1",
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "direct-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+								{Name: v1.ResourceMemory, Quantity: new(resource.MustParse("400Mi"))},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			// set min shares with DRA and without spec requests
+			expected: &ResourceConfig{
+				CPUShares: new(uint64(MinShares)),
+				Memory:    nil,
+			},
+		},
+		{
+			description: "guaranteed-with-dra-direct-claims",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "c1",
+							Resources: getResourceRequirements(
+								getResourceList("1", "300Mi"), // requests
+								getResourceList("1", "300Mi"), // limits
+							),
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					NodeAllocatableResourceClaimStatuses: []v1.NodeAllocatableResourceClaimStatus{
+						{
+							ResourceClaimName: "direct-claim",
+							Containers:        []string{"c1"},
+							Mapping: []v1.NodeAllocatableMappedResources{
+								{Name: v1.ResourceCPU, Quantity: new(resource.MustParse("2"))},
+								{Name: v1.ResourceMemory, Quantity: new(resource.MustParse("400Mi"))},
+							},
+						},
+					},
+				},
+			},
+			draNodeAllocatableResourcesEnabled: true,
+			enforceCPULimits:                   true,
+			quotaPeriod:                        defaultQuotaPeriod,
+			expected: &ResourceConfig{
+				// CPUShares: c1 request (1) + direct claim CPU (2)
+				CPUShares: new(MilliCPUToShares((1 + 2) * 1000)),
+				// CPUQuota: c1 limit (1) + direct claim CPU (2)
+				CPUQuota:  new(MilliCPUToQuota((1+2)*1000, int64(defaultQuotaPeriod))),
+				CPUPeriod: &defaultQuotaPeriod,
+				// Memory: c1 limit (300) + direct claim memory (400)
+				Memory: ptr.To((300 + 400) * Mi),
+			},
 		},
 	}
 
-	for testName, testCase := range testCases {
-
-		actual := ResourceConfigForPod(testCase.pod, testCase.enforceCPULimits, testCase.quotaPeriod, false)
-
-		if !reflect.DeepEqual(actual.CpuPeriod, testCase.expected.CpuPeriod) {
-			t.Errorf("unexpected result, test: %v, cpu period not as expected", testName)
-		}
-		if !reflect.DeepEqual(actual.CpuQuota, testCase.expected.CpuQuota) {
-			t.Errorf("unexpected result, test: %v, cpu quota not as expected", testName)
-		}
-		if !reflect.DeepEqual(actual.CpuShares, testCase.expected.CpuShares) {
-			t.Errorf("unexpected result, test: %v, cpu shares not as expected", testName)
-		}
-		if !reflect.DeepEqual(actual.Memory, testCase.expected.Memory) {
-			t.Errorf("unexpected result, test: %v, memory not as expected", testName)
-		}
+	for _, testCase := range testCases {
+		t.Run(testCase.description, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.PodLevelResources, testCase.podLevelResourcesEnabled)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.DRANodeAllocatableResources, testCase.draNodeAllocatableResourcesEnabled)
+			actual := ResourceConfigForPod(testCase.pod, testCase.enforceCPULimits, testCase.quotaPeriod, false, kubeletconfig.NoneMemoryReservationPolicy)
+			if !reflect.DeepEqual(actual.CPUPeriod, testCase.expected.CPUPeriod) {
+				t.Errorf("cpu period not as expected. Expected: %v, Actual:%v", *testCase.expected.CPUPeriod, *actual.CPUPeriod)
+			}
+			if !reflect.DeepEqual(actual.CPUQuota, testCase.expected.CPUQuota) {
+				t.Errorf("cpu quota not as expected. Expected: %v, Actual:%v", *testCase.expected.CPUQuota, *actual.CPUQuota)
+			}
+			if !reflect.DeepEqual(actual.CPUShares, testCase.expected.CPUShares) {
+				t.Errorf("cpu shares not as expected. Expected: %v, Actual:%v", *testCase.expected.CPUShares, *actual.CPUShares)
+			}
+			if !reflect.DeepEqual(actual.Memory, testCase.expected.Memory) {
+				t.Errorf("memory not as expected. Expected: %v, Actual:%v", *testCase.expected.Memory, *actual.Memory)
+			}
+			if len(testCase.expected.HugePageLimit) > 0 || len(actual.HugePageLimit) > 0 {
+				if !reflect.DeepEqual(actual.HugePageLimit, testCase.expected.HugePageLimit) {
+					t.Errorf("hugepage limit not as expected. Expected: %v, Actual:%v", testCase.expected.HugePageLimit, actual.HugePageLimit)
+				}
+			}
+		})
 	}
 }
 
@@ -642,16 +1076,32 @@ func TestHugePageLimits(t *testing.T) {
 			resultValue := HugePageLimits(resourceList)
 
 			if !reflect.DeepEqual(testcase.expected, resultValue) {
-				t.Errorf("unexpected result, expected: %v, actual: %v", testcase.expected, resultValue)
+				t.Errorf("unexpected result for HugePageLimits(), expected: %v, actual: %v", testcase.expected, resultValue)
+			}
+
+			// ensure ResourceConfigForPod uses HugePageLimits correctly internally
+			p := v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Requests: resourceList,
+							},
+						},
+					},
+				},
+			}
+			resultValuePod := ResourceConfigForPod(&p, false, 0, false, kubeletconfig.NoneMemoryReservationPolicy)
+			if !reflect.DeepEqual(testcase.expected, resultValuePod.HugePageLimit) {
+				t.Errorf("unexpected result for ResourceConfigForPod(), expected: %v, actual: %v", testcase.expected, resultValuePod)
 			}
 		})
-
 	}
 }
 
 func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
-	defaultQuotaPeriod := uint64(100 * time.Millisecond / time.Microsecond)
-	tunedQuotaPeriod := uint64(5 * time.Millisecond / time.Microsecond)
+	defaultQuotaPeriod := uint64(100 * time.Millisecond / time.Microsecond) // in microseconds
+	tunedQuotaPeriod := uint64(5 * time.Millisecond / time.Microsecond)     // in microseconds
 
 	minShares := uint64(MinShares)
 	burstableShares := MilliCPUToShares(100)
@@ -669,7 +1119,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 		pod              *v1.Pod
 		expected         *ResourceConfig
 		enforceCPULimits bool
-		quotaPeriod      uint64
+		quotaPeriod      uint64 // in microseconds
 	}{
 		"besteffort": {
 			pod: &v1.Pod{
@@ -683,7 +1133,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &minShares},
+			expected:         &ResourceConfig{CPUShares: &minShares},
 		},
 		"burstable-no-limits": {
 			pod: &v1.Pod{
@@ -697,7 +1147,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, Unified: map[string]string{"memory.low": "104857600"}},
 		},
 		"burstable-with-limits": {
 			pod: &v1.Pod{
@@ -711,7 +1161,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &burstableQuota, CpuPeriod: &defaultQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &burstableQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.low": "104857600"}},
 		},
 		"burstable-with-limits-no-cpu-enforcement": {
 			pod: &v1.Pod{
@@ -725,7 +1175,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &cpuNoLimit, CpuPeriod: &defaultQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &cpuNoLimit, CPUPeriod: &defaultQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.low": "104857600"}},
 		},
 		"burstable-partial-limits": {
 			pod: &v1.Pod{
@@ -742,7 +1192,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares, Unified: map[string]string{"memory.min": "209715200"}},
+			expected:         &ResourceConfig{CPUShares: &burstablePartialShares, Unified: map[string]string{"memory.low": "209715200"}},
 		},
 		"burstable-with-limits-with-tuned-quota": {
 			pod: &v1.Pod{
@@ -756,7 +1206,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &burstableQuota, CpuPeriod: &tunedQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &burstableQuota, CPUPeriod: &tunedQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.low": "104857600"}},
 		},
 		"burstable-with-limits-no-cpu-enforcement-with-tuned-quota": {
 			pod: &v1.Pod{
@@ -770,7 +1220,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstableShares, CpuQuota: &cpuNoLimit, CpuPeriod: &tunedQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &burstableShares, CPUQuota: &cpuNoLimit, CPUPeriod: &tunedQuotaPeriod, Memory: &burstableMemory, Unified: map[string]string{"memory.low": "104857600"}},
 		},
 		"burstable-partial-limits-with-tuned-quota": {
 			pod: &v1.Pod{
@@ -787,7 +1237,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &burstablePartialShares, Unified: map[string]string{"memory.min": "209715200"}},
+			expected:         &ResourceConfig{CPUShares: &burstablePartialShares, Unified: map[string]string{"memory.low": "209715200"}},
 		},
 		"guaranteed": {
 			pod: &v1.Pod{
@@ -801,7 +1251,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &guaranteedQuota, CpuPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedQuota, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
 		},
 		"guaranteed-no-cpu-enforcement": {
 			pod: &v1.Pod{
@@ -815,7 +1265,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      defaultQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &cpuNoLimit, CpuPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &cpuNoLimit, CPUPeriod: &defaultQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
 		},
 		"guaranteed-with-tuned-quota": {
 			pod: &v1.Pod{
@@ -829,7 +1279,7 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: true,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &guaranteedTunedQuota, CpuPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &guaranteedTunedQuota, CPUPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
 		},
 		"guaranteed-no-cpu-enforcement-with-tuned-quota": {
 			pod: &v1.Pod{
@@ -843,16 +1293,156 @@ func TestResourceConfigForPodWithEnforceMemoryQoS(t *testing.T) {
 			},
 			enforceCPULimits: false,
 			quotaPeriod:      tunedQuotaPeriod,
-			expected:         &ResourceConfig{CpuShares: &guaranteedShares, CpuQuota: &cpuNoLimit, CpuPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
+			expected:         &ResourceConfig{CPUShares: &guaranteedShares, CPUQuota: &cpuNoLimit, CPUPeriod: &tunedQuotaPeriod, Memory: &guaranteedMemory, Unified: map[string]string{"memory.min": "104857600"}},
 		},
 	}
 
 	for testName, testCase := range testCases {
 
-		actual := ResourceConfigForPod(testCase.pod, testCase.enforceCPULimits, testCase.quotaPeriod, true)
+		actual := ResourceConfigForPod(testCase.pod, testCase.enforceCPULimits, testCase.quotaPeriod, true, kubeletconfig.TieredReservationMemoryReservationPolicy)
 
 		if !reflect.DeepEqual(actual.Unified, testCase.expected.Unified) {
 			t.Errorf("unexpected result, test: %v, unified not as expected", testName)
 		}
+	}
+}
+
+func TestApplyPodLevelMemoryHigh(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.PodLevelResources, true)
+
+	t.Run("cpu-only pod-level resources does not set memory.high", func(t *testing.T) {
+		pod := &v1.Pod{
+			Spec: v1.PodSpec{
+				Resources: &v1.ResourceRequirements{
+					Limits: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("2"),
+					},
+				},
+				Containers: []v1.Container{
+					{Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", ""))},
+				},
+			},
+		}
+		rc := &ResourceConfig{}
+		ApplyPodLevelMemoryHigh(pod, rc, 0.9)
+		if rc.Unified != nil {
+			t.Errorf("expected no Unified map, got %v", rc.Unified)
+		}
+	})
+
+	// Overhead is included via PodResourcesOptions{ExcludeOverhead: false} (the default).
+	t.Run("pod overhead is included in memory.high calculation", func(t *testing.T) {
+		pod := &v1.Pod{
+			Spec: v1.PodSpec{
+				Overhead: v1.ResourceList{
+					v1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Resources: &v1.ResourceRequirements{
+					Requests: v1.ResourceList{
+						v1.ResourceMemory: resource.MustParse("128Mi"),
+						v1.ResourceCPU:    resource.MustParse("1"),
+					},
+					Limits: v1.ResourceList{
+						v1.ResourceMemory: resource.MustParse("256Mi"),
+						v1.ResourceCPU:    resource.MustParse("1"),
+					},
+				},
+				Containers: []v1.Container{
+					{Resources: getResourceRequirements(getResourceList("1", "128Mi"), getResourceList("1", "256Mi"))},
+				},
+			},
+		}
+		rc := &ResourceConfig{}
+		ApplyPodLevelMemoryHigh(pod, rc, 0.9)
+		if rc.Unified == nil {
+			t.Fatal("expected Unified map to be set")
+		}
+		// Without overhead: request=128Mi, limit=256Mi → memory.high based on 128Mi..256Mi
+		rcNoOverhead := &ResourceConfig{}
+		podNoOverhead := pod.DeepCopy()
+		podNoOverhead.Spec.Overhead = nil
+		ApplyPodLevelMemoryHigh(podNoOverhead, rcNoOverhead, 0.9)
+		if rcNoOverhead.Unified == nil {
+			t.Fatal("expected Unified map without overhead")
+		}
+		withOverhead, _ := strconv.ParseInt(rc.Unified[Cgroup2MemoryHigh], 10, 64)
+		withoutOverhead, _ := strconv.ParseInt(rcNoOverhead.Unified[Cgroup2MemoryHigh], 10, 64)
+		if withOverhead <= withoutOverhead {
+			t.Errorf("memory.high with overhead (%d) should be greater than without overhead (%d)",
+				withOverhead, withoutOverhead)
+		}
+	})
+
+	t.Run("mixed declared/undeclared memory limits does not set memory.high", func(t *testing.T) {
+		pod := &v1.Pod{
+			Spec: v1.PodSpec{
+				Resources: &v1.ResourceRequirements{
+					Limits: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("2"),
+					},
+				},
+				Containers: []v1.Container{
+					{Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("200m", "200Mi"))},
+					{Resources: getResourceRequirements(getResourceList("100m", "100Mi"), getResourceList("", ""))},
+				},
+			},
+		}
+		rc := &ResourceConfig{}
+		ApplyPodLevelMemoryHigh(pod, rc, 0.9)
+		if rc.Unified != nil {
+			t.Errorf("expected no Unified map for mixed limits, got %v", rc.Unified)
+		}
+	})
+}
+
+func TestCPUSharesEqualAfterV2RoundTrip(t *testing.T) {
+	testCases := []struct {
+		name            string
+		allocatedShares uint64
+		readbackShares  uint64
+		expected        bool
+	}{
+		{
+			// 50m -> shares=51 -> weight=2 -> shares=28
+			name:            "matches lossy cgroup v2 readback for 50m",
+			allocatedShares: MilliCPUToShares(50),
+			readbackShares:  28,
+			expected:        true,
+		},
+		{
+			name:            "does not match nearby non-roundtrip readback",
+			allocatedShares: MilliCPUToShares(50),
+			readbackShares:  27,
+			expected:        false,
+		},
+		{
+			// 100m -> shares=102 -> weight=4 -> shares=80
+			name:            "matches lossy cgroup v2 readback for 100m",
+			allocatedShares: MilliCPUToShares(100),
+			readbackShares:  80,
+			expected:        true,
+		},
+		{
+			name:            "does not match identity when conversion is lossy",
+			allocatedShares: MilliCPUToShares(100),
+			readbackShares:  MilliCPUToShares(100),
+			expected:        false,
+		},
+		{
+			name:            "does not match unrelated higher readback",
+			allocatedShares: MilliCPUToShares(50),
+			readbackShares:  MilliCPUToShares(100),
+			expected:        false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CPUSharesEqualAfterV2RoundTrip(tc.allocatedShares, tc.readbackShares)
+			if got != tc.expected {
+				t.Fatalf("CPUSharesEqualAfterV2RoundTrip(%d, %d) = %t, want %t",
+					tc.allocatedShares, tc.readbackShares, got, tc.expected)
+			}
+		})
 	}
 }

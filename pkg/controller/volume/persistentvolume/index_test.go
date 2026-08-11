@@ -38,7 +38,7 @@ func makePVC(size string, modfn func(*v1.PersistentVolumeClaim)) *v1.PersistentV
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany, v1.ReadWriteOnce},
-			Resources: v1.ResourceRequirements{
+			Resources: v1.VolumeResourceRequirements{
 				Requests: v1.ResourceList{
 					v1.ResourceName(v1.ResourceStorage): resource.MustParse(size),
 				},
@@ -61,7 +61,7 @@ func makeVolumeModePVC(size string, mode *v1.PersistentVolumeMode, modfn func(*v
 		Spec: v1.PersistentVolumeClaimSpec{
 			VolumeMode:  mode,
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Resources: v1.ResourceRequirements{
+			Resources: v1.VolumeResourceRequirements{
 				Requests: v1.ResourceList{
 					v1.ResourceName(v1.ResourceStorage): resource.MustParse(size),
 				},
@@ -132,6 +132,24 @@ func TestMatchVolume(t *testing.T) {
 					},
 				}
 				pvc.Spec.AccessModes = []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce}
+			}),
+		},
+		"successful-match-with-empty-vac": {
+			expectedMatch: "gce-pd-10",
+			claim: makePVC("8G", func(pvc *v1.PersistentVolumeClaim) {
+				pvc.Spec.VolumeAttributesClassName = &classEmpty
+			}),
+		},
+		"successful-match-with-vac": {
+			expectedMatch: "gce-pd-vac-silver1",
+			claim: makePVC("1G", func(pvc *v1.PersistentVolumeClaim) {
+				pvc.Spec.VolumeAttributesClassName = &classSilver
+			}),
+		},
+		"successful-no-match-vac-nonexisting": {
+			expectedMatch: "",
+			claim: makePVC("1G", func(pvc *v1.PersistentVolumeClaim) {
+				pvc.Spec.VolumeAttributesClassName = &classNonExisting
 			}),
 		},
 		"successful-match-with-class": {
@@ -251,7 +269,7 @@ func TestMatchingWithBoundVolumes(t *testing.T) {
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany, v1.ReadWriteOnce},
-			Resources: v1.ResourceRequirements{
+			Resources: v1.VolumeResourceRequirements{
 				Requests: v1.ResourceList{
 					v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G"),
 				},
@@ -387,7 +405,7 @@ func TestFindingVolumeWithDifferentAccessModes(t *testing.T) {
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Resources:   v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G")}},
+			Resources:   v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G")}},
 			VolumeMode:  &fs,
 		},
 	}
@@ -962,6 +980,29 @@ func createTestVolumes() []*v1.PersistentVolume {
 				VolumeMode:       &fs,
 			},
 		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:  "gce-pd-vac-silver1",
+				Name: "gce-pd-vac-silver1",
+			},
+			Spec: v1.PersistentVolumeSpec{
+				Capacity: v1.ResourceList{
+					v1.ResourceName(v1.ResourceStorage): resource.MustParse("100G"),
+				},
+				PersistentVolumeSource: v1.PersistentVolumeSource{
+					GCEPersistentDisk: &v1.GCEPersistentDiskVolumeSource{},
+				},
+				AccessModes: []v1.PersistentVolumeAccessMode{
+					v1.ReadWriteOnce,
+					v1.ReadOnlyMany,
+				},
+				VolumeAttributesClassName: &classSilver,
+				VolumeMode:                &fs,
+			},
+			Status: v1.PersistentVolumeStatus{
+				Phase: v1.VolumeAvailable,
+			},
+		},
 	}
 }
 
@@ -1236,7 +1277,7 @@ func TestStorageObjectInUseProtectionFiltering(t *testing.T) {
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Resources:   v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G")}},
+			Resources:   v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1G")}},
 			VolumeMode:  &fs,
 		},
 	}
@@ -1318,7 +1359,7 @@ func TestFindingPreboundVolumes(t *testing.T) {
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Resources:   v1.ResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1Gi")}},
+			Resources:   v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceName(v1.ResourceStorage): resource.MustParse("1Gi")}},
 			VolumeMode:  &fs,
 		},
 	}

@@ -544,7 +544,7 @@ func TestNodeSelectorRequirementKeyExistsInNodeSelectorTerms(t *testing.T) {
 			exists: true,
 		},
 		{
-			name: "key existence in terms with one of the keys specfied",
+			name: "key existence in terms with one of the keys specified",
 			reqs: []v1.NodeSelectorRequirement{
 				{
 					Key:      "key1",
@@ -715,88 +715,5 @@ func TestHugePageUnitSizeFromByteSize(t *testing.T) {
 		if test.expected != result {
 			t.Errorf("HugePageUnitSizeFromByteSize() expected %v but got %v", test.expected, result)
 		}
-	}
-}
-
-func TestLoadBalancerStatusEqual(t *testing.T) {
-
-	testCases := []struct {
-		left      *v1.LoadBalancerStatus
-		right     *v1.LoadBalancerStatus
-		name      string
-		expectVal bool
-	}{{
-		name: "left equals right",
-		left: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host1",
-			}},
-		},
-		right: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host1",
-			}},
-		},
-		expectVal: true,
-	}, {
-		name: "length of LoadBalancerIngress slice is not equal",
-		left: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host1",
-			}, {
-				IP:       "1.1.1.2",
-				Hostname: "host1",
-			}},
-		},
-		right: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host1",
-			}},
-		},
-		expectVal: false,
-	}, {
-		name: "LoadBalancerIngress ip is not equal",
-		left: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.2",
-				Hostname: "host1",
-			}},
-		},
-		right: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host1",
-			}},
-		},
-		expectVal: false,
-	}, {
-		name: "LoadBalancerIngress hostname is not equal",
-		left: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host2",
-			}},
-		},
-		right: &v1.LoadBalancerStatus{
-			Ingress: []v1.LoadBalancerIngress{{
-				IP:       "1.1.1.1",
-				Hostname: "host1",
-			}},
-		},
-		expectVal: false,
-	}}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			v := LoadBalancerStatusEqual(tc.left, tc.right)
-			if v != tc.expectVal {
-				t.Errorf("test %s failed. left input=%v, right input=%v, Got %v but expected %v",
-					tc.name, tc.left, tc.right, v, tc.expectVal)
-			}
-		})
 	}
 }

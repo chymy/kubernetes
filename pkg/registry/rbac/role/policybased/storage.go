@@ -36,12 +36,12 @@ var groupResource = rbac.Resource("roles")
 type Storage struct {
 	rest.StandardStorage
 
-	authorizer authorizer.Authorizer
+	authorizer authorizer.UnconditionalAuthorizer
 
 	ruleResolver rbacregistryvalidation.AuthorizationRuleResolver
 }
 
-func NewStorage(s rest.StandardStorage, authorizer authorizer.Authorizer, ruleResolver rbacregistryvalidation.AuthorizationRuleResolver) *Storage {
+func NewStorage(s rest.StandardStorage, authorizer authorizer.UnconditionalAuthorizer, ruleResolver rbacregistryvalidation.AuthorizationRuleResolver) *Storage {
 	return &Storage{s, authorizer, ruleResolver}
 }
 
@@ -98,4 +98,14 @@ func (s *Storage) Update(ctx context.Context, name string, obj rest.UpdatedObjec
 	})
 
 	return s.StandardStorage.Update(ctx, name, nonEscalatingInfo, createValidation, updateValidation, forceAllowCreate, options)
+}
+
+var _ rest.SingularNameProvider = &Storage{}
+
+func (s *Storage) GetSingularName() string {
+	snp, ok := s.StandardStorage.(rest.SingularNameProvider)
+	if !ok {
+		return ""
+	}
+	return snp.GetSingularName()
 }

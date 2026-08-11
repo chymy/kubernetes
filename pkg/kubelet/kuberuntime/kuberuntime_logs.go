@@ -21,8 +21,8 @@ import (
 	"io"
 	"time"
 
-	"k8s.io/api/core/v1"
-	"k8s.io/kubernetes/pkg/kubelet/kuberuntime/logs"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/cri-client/pkg/logs"
 )
 
 // ReadLogs read the container log and redirect into stdout and stderr.
@@ -30,7 +30,19 @@ import (
 // just pass in empty string "".
 func (m *kubeGenericRuntimeManager) ReadLogs(ctx context.Context, path, containerID string, apiOpts *v1.PodLogOptions, stdout, stderr io.Writer) error {
 	// Convert v1.PodLogOptions into internal log options.
-	opts := logs.NewLogOptions(apiOpts, time.Now())
+	now := time.Now()
+	opts := &logs.LogOptions{
+		TailLines:  apiOpts.TailLines,
+		LimitBytes: apiOpts.LimitBytes,
+		Follow:     apiOpts.Follow,
+		Timestamp:  apiOpts.Timestamps,
+	}
+	if apiOpts.SinceSeconds != nil {
+		opts.Since = now.Add(-time.Duration(*apiOpts.SinceSeconds) * time.Second)
+	}
+	if apiOpts.SinceTime != nil && apiOpts.SinceTime.After(opts.Since) {
+		opts.Since = apiOpts.SinceTime.Time
+	}
 
 	return logs.ReadLogs(ctx, path, containerID, opts, m.runtimeService, stdout, stderr)
 }

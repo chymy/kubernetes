@@ -17,19 +17,21 @@ limitations under the License.
 package bootstrap
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
+	utiltesting "k8s.io/client-go/util/testing"
+	"k8s.io/kubernetes/test/utils/ktesting"
+
+	"github.com/google/go-cmp/cmp"
 	certificatesv1 "k8s.io/api/certificates/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	certificatesclient "k8s.io/client-go/kubernetes/typed/certificates/v1beta1"
@@ -101,11 +103,13 @@ users:
     client-key: mycertvalid.key
 
 `)
-	filevalid, err := ioutil.TempFile(fileDir, "kubeconfigvalid")
+	filevalid, err := os.CreateTemp(fileDir, "kubeconfigvalid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ioutil.WriteFile(filevalid.Name(), testDataValid, os.FileMode(0755))
+	// os.CreateTemp also opens the file, and removing it without closing it will result in a failure.
+	defer filevalid.Close()
+	os.WriteFile(filevalid.Name(), testDataValid, os.FileMode(0755))
 
 	testDataInvalid := []byte(`
 apiVersion: v1
@@ -141,11 +145,12 @@ users:
     client-key: mycertinvalid.key
 
 `)
-	fileinvalid, err := ioutil.TempFile(fileDir, "kubeconfiginvalid")
+	fileinvalid, err := os.CreateTemp(fileDir, "kubeconfiginvalid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ioutil.WriteFile(fileinvalid.Name(), testDataInvalid, os.FileMode(0755))
+	defer fileinvalid.Close()
+	os.WriteFile(fileinvalid.Name(), testDataInvalid, os.FileMode(0755))
 
 	testDatabootstrap := []byte(`
 apiVersion: v1
@@ -178,13 +183,14 @@ users:
   user:
    token: mytoken-b
 `)
-	fileboot, err := ioutil.TempFile(fileDir, "kubeconfig")
+	fileboot, err := os.CreateTemp(fileDir, "kubeconfig")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ioutil.WriteFile(fileboot.Name(), testDatabootstrap, os.FileMode(0755))
+	defer fileboot.Close()
+	os.WriteFile(fileboot.Name(), testDatabootstrap, os.FileMode(0755))
 
-	dir, err := ioutil.TempDir(fileDir, "k8s-test-certstore-current")
+	dir, err := os.MkdirTemp(fileDir, "k8s-test-certstore-current")
 	if err != nil {
 		t.Fatalf("Unable to create the test directory %q: %v", dir, err)
 	}
@@ -210,16 +216,16 @@ users:
 			expectedCertConfig: &restclient.Config{
 				Host: "https://cluster-b.com",
 				TLSClientConfig: restclient.TLSClientConfig{
-					CertFile: fileDir + "/mycertvalid.crt",
-					KeyFile:  fileDir + "/mycertvalid.key",
+					CertFile: filepath.Join(fileDir, "mycertvalid.crt"),
+					KeyFile:  filepath.Join(fileDir, "mycertvalid.key"),
 				},
 				BearerToken: "",
 			},
 			expectedClientConfig: &restclient.Config{
 				Host: "https://cluster-b.com",
 				TLSClientConfig: restclient.TLSClientConfig{
-					CertFile: fileDir + "/mycertvalid.crt",
-					KeyFile:  fileDir + "/mycertvalid.key",
+					CertFile: filepath.Join(fileDir, "mycertvalid.crt"),
+					KeyFile:  filepath.Join(fileDir, "mycertvalid.key"),
 				},
 				BearerToken: "",
 			},
@@ -232,16 +238,16 @@ users:
 			expectedCertConfig: &restclient.Config{
 				Host: "https://cluster-b.com",
 				TLSClientConfig: restclient.TLSClientConfig{
-					CertFile: fileDir + "/mycertvalid.crt",
-					KeyFile:  fileDir + "/mycertvalid.key",
+					CertFile: filepath.Join(fileDir, "mycertvalid.crt"),
+					KeyFile:  filepath.Join(fileDir, "mycertvalid.key"),
 				},
 				BearerToken: "",
 			},
 			expectedClientConfig: &restclient.Config{
 				Host: "https://cluster-b.com",
 				TLSClientConfig: restclient.TLSClientConfig{
-					CertFile: fileDir + "/mycertvalid.crt",
-					KeyFile:  fileDir + "/mycertvalid.key",
+					CertFile: filepath.Join(fileDir, "mycertvalid.crt"),
+					KeyFile:  filepath.Join(fileDir, "mycertvalid.key"),
 				},
 				BearerToken: "",
 			},
@@ -267,17 +273,18 @@ users:
 		},
 	}
 
+	logger, _ := ktesting.NewTestContext(t)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			certConfig, clientConfig, err := LoadClientConfig(test.kubeconfigPath, test.bootstrapPath, test.certDir)
+			certConfig, clientConfig, err := LoadClientConfig(logger, test.kubeconfigPath, test.bootstrapPath, test.certDir)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(certConfig, test.expectedCertConfig) {
-				t.Errorf("Unexpected certConfig: %s", diff.ObjectDiff(certConfig, test.expectedCertConfig))
+				t.Errorf("Unexpected certConfig: %s", cmp.Diff(certConfig, test.expectedCertConfig))
 			}
 			if !reflect.DeepEqual(clientConfig, test.expectedClientConfig) {
-				t.Errorf("Unexpected clientConfig: %s", diff.ObjectDiff(clientConfig, test.expectedClientConfig))
+				t.Errorf("Unexpected clientConfig: %s", cmp.Diff(clientConfig, test.expectedClientConfig))
 			}
 		})
 	}
@@ -316,12 +323,12 @@ users:
   user:
     token: mytoken-b
 `)
-	f, err := ioutil.TempFile("", "kubeconfig")
+	f, err := os.CreateTemp("", "kubeconfig")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(f.Name())
-	ioutil.WriteFile(f.Name(), testData, os.FileMode(0755))
+	defer utiltesting.CloseAndRemove(t, f)
+	f.Write(testData)
 
 	config, err := loadRESTClientConfig(f.Name())
 	if err != nil {
@@ -337,12 +344,13 @@ users:
 	}
 
 	if !reflect.DeepEqual(config, expectedConfig) {
-		t.Errorf("Unexpected config: %s", diff.ObjectDiff(config, expectedConfig))
+		t.Errorf("Unexpected config: %s", cmp.Diff(config, expectedConfig))
 	}
 }
 
 func TestRequestNodeCertificateNoKeyData(t *testing.T) {
-	certData, err := requestNodeCertificate(context.TODO(), newClientset(fakeClient{}), []byte{}, "fake-node-name")
+	tCtx := ktesting.Init(t)
+	certData, err := requestNodeCertificate(tCtx, newClientset(fakeClient{}), []byte{}, "fake-node-name")
 	if err == nil {
 		t.Errorf("Got no error, wanted error an error because there was an empty private key passed in.")
 	}
@@ -352,6 +360,7 @@ func TestRequestNodeCertificateNoKeyData(t *testing.T) {
 }
 
 func TestRequestNodeCertificateErrorCreatingCSR(t *testing.T) {
+	tCtx := ktesting.Init(t)
 	client := newClientset(fakeClient{
 		failureType: createError,
 	})
@@ -360,7 +369,7 @@ func TestRequestNodeCertificateErrorCreatingCSR(t *testing.T) {
 		t.Fatalf("Unable to generate a new private key: %v", err)
 	}
 
-	certData, err := requestNodeCertificate(context.TODO(), client, privateKeyData, "fake-node-name")
+	certData, err := requestNodeCertificate(tCtx, client, privateKeyData, "fake-node-name")
 	if err == nil {
 		t.Errorf("Got no error, wanted error an error because client.Create failed.")
 	}
@@ -370,12 +379,13 @@ func TestRequestNodeCertificateErrorCreatingCSR(t *testing.T) {
 }
 
 func TestRequestNodeCertificate(t *testing.T) {
+	tCtx := ktesting.Init(t)
 	privateKeyData, err := keyutil.MakeEllipticPrivateKeyPEM()
 	if err != nil {
 		t.Fatalf("Unable to generate a new private key: %v", err)
 	}
 
-	certData, err := requestNodeCertificate(context.TODO(), newClientset(fakeClient{}), privateKeyData, "fake-node-name")
+	certData, err := requestNodeCertificate(tCtx, newClientset(fakeClient{}), privateKeyData, "fake-node-name")
 	if err != nil {
 		t.Errorf("Got %v, wanted no error.", err)
 	}
@@ -387,7 +397,7 @@ func TestRequestNodeCertificate(t *testing.T) {
 type failureType int
 
 const (
-	noError failureType = iota //nolint:deadcode,varcheck
+	noError failureType = iota
 	createError
 	certificateSigningRequestDenied
 )

@@ -19,12 +19,12 @@ package top
 import (
 	"context"
 	"errors"
-
 	"github.com/spf13/cobra"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/discovery"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -33,6 +33,7 @@ import (
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 	metricsapi "k8s.io/metrics/pkg/apis/metrics"
+	metricsV1api "k8s.io/metrics/pkg/apis/metrics/v1"
 	metricsV1beta1api "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
@@ -45,13 +46,14 @@ type TopNodeOptions struct {
 	NoHeaders          bool
 	UseProtocolBuffers bool
 	ShowCapacity       bool
+	ShowSwap           bool
 
 	NodeClient      corev1client.CoreV1Interface
 	Printer         *metricsutil.TopCmdPrinter
 	DiscoveryClient discovery.DiscoveryInterface
 	MetricsClient   metricsclientset.Interface
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var (
@@ -68,7 +70,7 @@ var (
 		  kubectl top node NODE_NAME`))
 )
 
-func NewCmdTopNode(f cmdutil.Factory, o *TopNodeOptions, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdTopNode(f cmdutil.Factory, o *TopNodeOptions, streams genericiooptions.IOStreams) *cobra.Command {
 	if o == nil {
 		o = &TopNodeOptions{
 			IOStreams:          streams,
@@ -95,6 +97,7 @@ func NewCmdTopNode(f cmdutil.Factory, o *TopNodeOptions, streams genericclioptio
 	cmd.Flags().BoolVar(&o.NoHeaders, "no-headers", o.NoHeaders, "If present, print output without headers")
 	cmd.Flags().BoolVar(&o.UseProtocolBuffers, "use-protocol-buffers", o.UseProtocolBuffers, "Enables using protocol-buffers to access Metrics API.")
 	cmd.Flags().BoolVar(&o.ShowCapacity, "show-capacity", o.ShowCapacity, "Print node resources based on Capacity instead of Allocatable(default) of the nodes.")
+	cmd.Flags().BoolVar(&o.ShowSwap, "show-swap", o.ShowSwap, "Print node resources related to swap memory.")
 
 	return cmd
 }
@@ -127,7 +130,7 @@ func (o *TopNodeOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []
 
 	o.NodeClient = clientset.CoreV1()
 
-	o.Printer = metricsutil.NewTopCmdPrinter(o.Out)
+	o.Printer = metricsutil.NewTopCmdPrinter(o.Out, o.ShowSwap)
 	return nil
 }
 
@@ -160,11 +163,11 @@ func (o TopNodeOptions) RunTopNode() error {
 
 	metricsAPIAvailable := SupportedMetricsAPIVersionAvailable(apiGroups)
 
-	if !metricsAPIAvailable {
+	if metricsAPIAvailable == "" {
 		return errors.New("Metrics API not available")
 	}
 
-	metrics, err := getNodeMetricsFromMetricsAPI(o.MetricsClient, o.ResourceName, selector)
+	metrics, err := getNodeMetricsFromMetricsAPI(o.MetricsClient, o.ResourceName, selector, metricsAPIAvailable)
 	if err != nil {
 		return err
 	}
@@ -198,13 +201,45 @@ func (o TopNodeOptions) RunTopNode() error {
 		} else {
 			availableResources[n.Name] = n.Status.Capacity
 		}
+
+		if n.Status.NodeInfo.Swap != nil && n.Status.NodeInfo.Swap.Capacity != nil {
+			swapCapacity := *n.Status.NodeInfo.Swap.Capacity
+			availableResources[n.Name]["swap"] = *resource.NewQuantity(swapCapacity, resource.BinarySI)
+		} else {
+			o.Printer.RegisterMissingResource(n.Name, metricsutil.ResourceSwap)
+		}
+
 	}
 
 	return o.Printer.PrintNodeMetrics(metrics.Items, availableResources, o.NoHeaders, o.SortBy)
 }
 
-func getNodeMetricsFromMetricsAPI(metricsClient metricsclientset.Interface, resourceName string, selector labels.Selector) (*metricsapi.NodeMetricsList, error) {
+func getNodeMetricsFromMetricsAPI(metricsClient metricsclientset.Interface, resourceName string, selector labels.Selector, metricsVersion string) (*metricsapi.NodeMetricsList, error) {
 	var err error
+	if metricsVersion == "v1" {
+		versionedMetrics := &metricsV1api.NodeMetricsList{}
+		mc := metricsClient.MetricsV1()
+		nm := mc.NodeMetricses()
+		if resourceName != "" {
+			m, err := nm.Get(context.TODO(), resourceName, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			versionedMetrics.Items = []metricsV1api.NodeMetrics{*m}
+		} else {
+			versionedMetrics, err = nm.List(context.TODO(), metav1.ListOptions{LabelSelector: selector.String()})
+			if err != nil {
+				return nil, err
+			}
+		}
+		metrics := &metricsapi.NodeMetricsList{}
+		err = metricsV1api.Convert_v1_NodeMetricsList_To_metrics_NodeMetricsList(versionedMetrics, metrics, nil)
+		if err != nil {
+			return nil, err
+		}
+		return metrics, nil
+	}
+	// fallback to metric v1beta1
 	versionedMetrics := &metricsV1beta1api.NodeMetricsList{}
 	mc := metricsClient.MetricsV1beta1()
 	nm := mc.NodeMetricses()

@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/networking/ingress"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // REST implements a RESTStorage for replication controllers
@@ -40,9 +40,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against replication controllers.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &networking.Ingress{} },
-		NewListFunc:              func() runtime.Object { return &networking.IngressList{} },
-		DefaultQualifiedResource: networking.Resource("ingresses"),
+		NewFunc:                   func() runtime.Object { return &networking.Ingress{} },
+		NewListFunc:               func() runtime.Object { return &networking.IngressList{} },
+		DefaultQualifiedResource:  networking.Resource("ingresses"),
+		SingularQualifiedResource: networking.Resource("ingress"),
 
 		CreateStrategy:      ingress.Strategy,
 		UpdateStrategy:      ingress.Strategy,

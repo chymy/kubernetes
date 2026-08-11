@@ -17,14 +17,13 @@ limitations under the License.
 package service
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strconv"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"golang.org/x/net/context"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 )
@@ -89,7 +88,7 @@ func (s *service) NodeStageVolume(
 	s.vols[i] = v
 
 	if hookVal, hookMsg := s.execHook("NodeStageVolumeEnd"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 
 	return &csi.NodeStageVolumeResponse{}, nil
@@ -130,7 +129,7 @@ func (s *service) NodeUnstageVolume(
 	s.vols[i] = v
 
 	if hookVal, hookMsg := s.execHook("NodeUnstageVolumeEnd"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
@@ -141,7 +140,7 @@ func (s *service) NodePublishVolume(
 	*csi.NodePublishVolumeResponse, error) {
 
 	if hookVal, hookMsg := s.execHook("NodePublishVolumeStart"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 	ephemeralVolume := req.GetVolumeContext()["csi.storage.k8s.io/ephemeral"] == "true"
 	device, ok := req.PublishContext["device"]
@@ -229,7 +228,7 @@ func (s *service) NodePublishVolume(
 		s.vols[i] = v
 	}
 	if hookVal, hookMsg := s.execHook("NodePublishVolumeEnd"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 
 	return &csi.NodePublishVolumeResponse{}, nil
@@ -247,7 +246,7 @@ func (s *service) NodeUnpublishVolume(
 		return nil, status.Error(codes.InvalidArgument, "Target Path cannot be empty")
 	}
 	if hookVal, hookMsg := s.execHook("NodeUnpublishVolumeStart"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 
 	s.volsRWL.Lock()
@@ -282,7 +281,7 @@ func (s *service) NodeUnpublishVolume(
 		s.vols[i] = v
 	}
 	if hookVal, hookMsg := s.execHook("NodeUnpublishVolumeEnd"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
@@ -296,7 +295,7 @@ func (s *service) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolum
 		return nil, status.Error(codes.InvalidArgument, "Volume Path cannot be empty")
 	}
 	if hookVal, hookMsg := s.execHook("NodeExpandVolumeStart"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 
 	s.volsRWL.Lock()
@@ -323,7 +322,7 @@ func (s *service) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolum
 		s.vols[i] = v
 	}
 	if hookVal, hookMsg := s.execHook("NodeExpandVolumeEnd"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 
 	return resp, nil
@@ -335,7 +334,7 @@ func (s *service) NodeGetCapabilities(
 	*csi.NodeGetCapabilitiesResponse, error) {
 
 	if hookVal, hookMsg := s.execHook("NodeGetCapabilities"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 	capabilities := []*csi.NodeServiceCapability{
 		{
@@ -359,19 +358,32 @@ func (s *service) NodeGetCapabilities(
 				},
 			},
 		},
-		{
-			Type: &csi.NodeServiceCapability_Rpc{
-				Rpc: &csi.NodeServiceCapability_RPC{
-					Type: csi.NodeServiceCapability_RPC_VOLUME_CONDITION,
-				},
-			},
-		},
 	}
 	if s.config.NodeExpansionRequired {
 		capabilities = append(capabilities, &csi.NodeServiceCapability{
 			Type: &csi.NodeServiceCapability_Rpc{
 				Rpc: &csi.NodeServiceCapability_RPC{
 					Type: csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
+				},
+			},
+		})
+	}
+
+	if s.config.NodeVolumeConditionRequired {
+		capabilities = append(capabilities, &csi.NodeServiceCapability{
+			Type: &csi.NodeServiceCapability_Rpc{
+				Rpc: &csi.NodeServiceCapability_RPC{
+					Type: csi.NodeServiceCapability_RPC_GET_VOLUME_HEALTH,
+				},
+			},
+		})
+	}
+
+	if s.config.NodeStorageHealthRequired {
+		capabilities = append(capabilities, &csi.NodeServiceCapability{
+			Type: &csi.NodeServiceCapability_Rpc{
+				Rpc: &csi.NodeServiceCapability_RPC{
+					Type: csi.NodeServiceCapability_RPC_GET_STORAGE_HEALTH,
 				},
 			},
 		})
@@ -395,7 +407,7 @@ func (s *service) NodeGetCapabilities(
 func (s *service) NodeGetInfo(ctx context.Context,
 	req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
 	if hookVal, hookMsg := s.execHook("NodeGetInfo"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
+		return nil, status.Error(hookVal, hookMsg)
 	}
 	csiNodeResponse := &csi.NodeGetInfoResponse{
 		NodeId: s.nodeID,
@@ -416,9 +428,7 @@ func (s *service) NodeGetInfo(ctx context.Context,
 func (s *service) NodeGetVolumeStats(ctx context.Context,
 	req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 
-	resp := &csi.NodeGetVolumeStatsResponse{
-		VolumeCondition: &csi.VolumeCondition{},
-	}
+	resp := &csi.NodeGetVolumeStatsResponse{}
 
 	if len(req.GetVolumeId()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID cannot be empty")
@@ -430,24 +440,10 @@ func (s *service) NodeGetVolumeStats(ctx context.Context,
 
 	i, v := s.findVolNoLock("id", req.VolumeId)
 	if i < 0 {
-		resp.VolumeCondition.Abnormal = true
-		resp.VolumeCondition.Message = "Volume not found"
 		return resp, status.Error(codes.NotFound, req.VolumeId)
 	}
 
 	nodeMntPathKey := path.Join(s.nodeID, req.VolumePath)
-
-	_, exists := v.VolumeContext[nodeMntPathKey]
-	if !exists {
-		msg := fmt.Sprintf("volume %q doest not exist on the specified path %q", req.VolumeId, req.VolumePath)
-		resp.VolumeCondition.Abnormal = true
-		resp.VolumeCondition.Message = msg
-		return resp, status.Errorf(codes.NotFound, msg)
-	}
-
-	if hookVal, hookMsg := s.execHook("NodeGetVolumeStatsEnd"); hookVal != codes.OK {
-		return nil, status.Errorf(hookVal, hookMsg)
-	}
 
 	resp.Usage = []*csi.VolumeUsage{
 		{
@@ -456,5 +452,53 @@ func (s *service) NodeGetVolumeStats(ctx context.Context,
 		},
 	}
 
+	_, exists := v.VolumeContext[nodeMntPathKey]
+	if !exists {
+		msg := fmt.Sprintf("volume %q doest not exist on the specified path %q", req.VolumeId, req.VolumePath)
+		return resp, status.Error(codes.NotFound, msg)
+	}
+
+	if hookVal, hookMsg := s.execHook("NodeGetVolumeStatsEnd"); hookVal != codes.OK {
+		return nil, status.Error(hookVal, hookMsg)
+	}
+
 	return resp, nil
+}
+
+func (s *service) NodeGetVolumeHealth(ctx context.Context,
+	req *csi.NodeGetVolumeHealthRequest) (*csi.NodeGetVolumeHealthResponse, error) {
+
+	resp := &csi.NodeGetVolumeHealthResponse{
+		VolumeHealth: &csi.VolumeHealth{
+			VolumeId: req.GetVolumeId(),
+		},
+	}
+
+	if len(req.GetVolumeId()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID cannot be empty")
+	}
+
+	i, _ := s.findVolNoLock("id", req.VolumeId)
+	if i < 0 {
+		resp.VolumeHealth.HealthStatuses = []*csi.VolumeHealth_VolumeHealthEntry{
+			{
+				Status:  csi.VolumeHealthErrorType_INACCESSIBLE,
+				Reason:  "VolumeNotFound",
+				Message: "Volume not found",
+			},
+		}
+		return resp, status.Error(codes.NotFound, req.VolumeId)
+	}
+
+	if hookVal, hookMsg := s.execHook("NodeGetVolumeHealthEnd"); hookVal != codes.OK {
+		return nil, status.Error(hookVal, hookMsg)
+	}
+
+	return resp, nil
+}
+
+func (s *service) NodeGetStorageHealth(ctx context.Context,
+	req *csi.NodeGetStorageHealthRequest) (*csi.NodeGetStorageHealthResponse, error) {
+
+	return &csi.NodeGetStorageHealthResponse{}, nil
 }

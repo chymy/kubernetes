@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	storagev1beta1 "k8s.io/api/storage/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/version"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
@@ -101,7 +102,6 @@ func TestSetDefaultStorageCapacityEnabled(t *testing.T) {
 }
 
 func TestSetDefaultVolumeLifecycleModesEnabled(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, true)()
 	driver := &storagev1beta1.CSIDriver{}
 
 	// field should be defaulted
@@ -115,21 +115,7 @@ func TestSetDefaultVolumeLifecycleModesEnabled(t *testing.T) {
 	}
 }
 
-func TestSetDefaultVolumeLifecycleModesDisabled(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, false)()
-	driver := &storagev1beta1.CSIDriver{}
-
-	// field should not be defaulted
-	output := roundTrip(t, runtime.Object(driver)).(*storagev1beta1.CSIDriver)
-	outModes := output.Spec.VolumeLifecycleModes
-	if outModes != nil {
-		t.Errorf("Expected VolumeLifecycleModes to remain nil, got: %+v", outModes)
-	}
-}
-
 func TestSetDefaultCSIDriver(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, true)()
-
 	enabled := true
 	disabled := false
 	tests := []struct {
@@ -163,5 +149,59 @@ func TestSetDefaultCSIDriver(t *testing.T) {
 				t.Errorf("CSIDriver defaults diff (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestSetDefaultSELinuxMountReadWriteOncePodEnabled(t *testing.T) {
+	driver := &storagev1beta1.CSIDriver{}
+
+	// field should be defaulted
+	defaultSELinuxMount := false
+	output := roundTrip(t, runtime.Object(driver)).(*storagev1beta1.CSIDriver)
+	outSELinuxMount := output.Spec.SELinuxMount
+	if outSELinuxMount == nil {
+		t.Errorf("Expected SELinuxMount to be defaulted to: %+v, got: nil", defaultSELinuxMount)
+	} else if *outSELinuxMount != defaultSELinuxMount {
+		t.Errorf("Expected SELinuxMount to be defaulted to: %+v, got: %+v", defaultSELinuxMount, outSELinuxMount)
+	}
+}
+
+func TestSetDefaultSELinuxMountReadWriteOncePodDisabled(t *testing.T) {
+	featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.35"))
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.SELinuxMountReadWriteOncePod, false)
+	driver := &storagev1beta1.CSIDriver{}
+
+	// field should not be defaulted
+	output := roundTrip(t, runtime.Object(driver)).(*storagev1beta1.CSIDriver)
+	outSELinuxMount := output.Spec.SELinuxMount
+	if outSELinuxMount != nil {
+		t.Errorf("Expected SELinuxMount remain nil, got: %+v", outSELinuxMount)
+	}
+}
+
+func TestSetDefaultPreventPodSchedulingIfMissingVolumeLimitScalingEnabled(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.VolumeLimitScaling, true)
+	driver := &storagev1beta1.CSIDriver{}
+
+	// field should be defaulted
+	defaultPreventPodSchedulingIfMissing := false
+	output := roundTrip(t, runtime.Object(driver)).(*storagev1beta1.CSIDriver)
+	outPreventPodSchedulingIfMissing := output.Spec.PreventPodSchedulingIfMissing
+	if outPreventPodSchedulingIfMissing == nil {
+		t.Errorf("Expected PreventPodSchedulingIfMissing to be defaulted to: %+v, got: nil", defaultPreventPodSchedulingIfMissing)
+	} else if *outPreventPodSchedulingIfMissing != defaultPreventPodSchedulingIfMissing {
+		t.Errorf("Expected PreventPodSchedulingIfMissing to be defaulted to: %+v, got: %+v", defaultPreventPodSchedulingIfMissing, *outPreventPodSchedulingIfMissing)
+	}
+}
+
+func TestSetDefaultPreventPodSchedulingIfMissingVolumeLimitScalingDisabled(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.VolumeLimitScaling, false)
+	driver := &storagev1beta1.CSIDriver{}
+
+	// field should not be defaulted
+	output := roundTrip(t, runtime.Object(driver)).(*storagev1beta1.CSIDriver)
+	outPreventPodSchedulingIfMissing := output.Spec.PreventPodSchedulingIfMissing
+	if outPreventPodSchedulingIfMissing != nil {
+		t.Errorf("Expected PreventPodSchedulingIfMissing to remain nil, got: %+v", *outPreventPodSchedulingIfMissing)
 	}
 }

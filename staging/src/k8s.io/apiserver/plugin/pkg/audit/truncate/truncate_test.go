@@ -70,7 +70,6 @@ func TestTruncatingEvents(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 
@@ -78,7 +77,7 @@ func TestTruncatingEvents(t *testing.T) {
 
 			fb := &fake.Backend{
 				OnRequest: func(events []*auditinternal.Event) {
-					require.Equal(t, 1, len(events), "Expected single event in batch")
+					require.Len(t, events, 1, "Expected single event in batch")
 					event = events[0]
 				},
 			}
@@ -122,7 +121,6 @@ func TestSplittingBatches(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 

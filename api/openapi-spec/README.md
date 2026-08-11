@@ -5,7 +5,7 @@ This folder contains an [OpenAPI specification](https://github.com/OAI/OpenAPI-S
 ## Vendor Extensions
 
 Kubernetes extends OpenAPI using these extensions. Note the version that
-extensions has been added.
+extensions have been added.
 
 ### `x-kubernetes-group-version-kind`
 
@@ -51,6 +51,34 @@ For example:
             "x-kubernetes-action": "list"
         }
     }
+}
+```
+
+### `x-kubernetes-list-map-keys`
+
+Operations and Definitions may have `x-kubernetes-list-maps-keys` if they
+are associated with a [kubernetes resource](https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources). `x-kubernetes-list-type` = `map` specifies field names inside each list element to serve as unique keys for the list-as-map.
+
+**For example:**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "servers": {
+      "type": "array",
+      "x-kubernetes-list-type": "map",
+      "x-kubernetes-list-map-keys": ["name"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "address": { "type": "string" }
+        },
+        "required": ["name"]
+      }
+    }
+  }
 }
 ```
 

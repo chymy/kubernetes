@@ -22,30 +22,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	ndf "k8s.io/component-helpers/nodedeclaredfeatures"
+	ndftesting "k8s.io/component-helpers/nodedeclaredfeatures/testing"
+	"k8s.io/component-helpers/storage/volume"
 	"k8s.io/kubernetes/pkg/features"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	testutils "k8s.io/kubernetes/test/integration/util"
 	imageutils "k8s.io/kubernetes/test/utils/image"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 var (
 	createAndWaitForNodesInCache = testutils.CreateAndWaitForNodesInCache
 	createNamespacesWithLabels   = testutils.CreateNamespacesWithLabels
 	createNode                   = testutils.CreateNode
+	updateNode                   = testutils.UpdateNode
 	createPausePod               = testutils.CreatePausePod
 	deletePod                    = testutils.DeletePod
 	getPod                       = testutils.GetPod
+	runPausePod                  = testutils.RunPausePod
 	initPausePod                 = testutils.InitPausePod
 	initTest                     = testutils.InitTestSchedulerWithNS
 	podScheduledIn               = testutils.PodScheduledIn
+	podScheduled                 = testutils.PodScheduled
 	podUnschedulable             = testutils.PodUnschedulable
 	waitForPodUnschedulable      = testutils.WaitForPodUnschedulable
 )
@@ -57,43 +67,28 @@ const pollInterval = 100 * time.Millisecond
 var (
 	ignorePolicy = v1.NodeInclusionPolicyIgnore
 	honorPolicy  = v1.NodeInclusionPolicyHonor
-	taints       = []v1.Taint{{Key: v1.TaintNodeUnschedulable, Value: "", Effect: v1.TaintEffectPreferNoSchedule}}
+	taints       = []v1.Taint{{Key: v1.TaintNodeUnschedulable, Value: "", Effect: v1.TaintEffectNoSchedule}}
 )
 
 // TestInterPodAffinity verifies that scheduler's inter pod affinity and
 // anti-affinity predicate functions works correctly.
 func TestInterPodAffinity(t *testing.T) {
-	testCtx := initTest(t, "")
-	defer testutils.CleanupTest(t, testCtx)
-
-	// Add a few nodes with labels
-	nodes, err := createAndWaitForNodesInCache(testCtx, "testnode", st.MakeNode().Label("region", "r1").Label("zone", "z11"), 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cs := testCtx.ClientSet
 	podLabel := map[string]string{"service": "securityscan"}
 	podLabel2 := map[string]string{"security": "S1"}
 
-	if err := createNamespacesWithLabels(cs, []string{"ns1", "ns2"}, map[string]string{"team": "team1"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := createNamespacesWithLabels(cs, []string{"ns3"}, map[string]string{"team": "team2"}); err != nil {
-		t.Fatal(err)
-	}
 	defaultNS := "ns1"
 
 	tests := []struct {
-		name      string
-		pod       *v1.Pod
-		pods      []*v1.Pod
-		fits      bool
-		errorType string
+		name        string
+		incomingPod *v1.Pod
+		nextPod     *v1.Pod
+		pods        []*v1.Pod
+		fits        bool
+		errorType   string
 	}{
 		{
-			name: "validates that a pod with an invalid podAffinity is rejected because of the LabelSelectorRequirement is invalid",
-			pod: &v1.Pod{
+			name: "incomingPod with invalid podAffinity is rejected because LabelSelectorRequirement is invalid",
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -124,7 +119,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "validates that Inter-pod-Affinity is respected if not matching",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -154,8 +149,8 @@ func TestInterPodAffinity(t *testing.T) {
 			fits: false,
 		},
 		{
-			name: "validates that InterPodAffinity is respected if matching. requiredDuringSchedulingIgnoredDuringExecution in PodAffinity using In operator that matches the existing pod",
-			pod: &v1.Pod{
+			name: "InterPodAffinity is respected if matching. requiredDuringSchedulingIgnoredDuringExecution with In operator matches existing pod",
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -189,15 +184,15 @@ func TestInterPodAffinity(t *testing.T) {
 				},
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-					NodeName:   nodes[0].Name,
+					NodeName:   "testnode-0",
 				},
 			},
 			},
 			fits: true,
 		},
 		{
-			name: "validates that InterPodAffinity is respected if matching. requiredDuringSchedulingIgnoredDuringExecution in PodAffinity using not in operator in labelSelector that matches the existing pod",
-			pod: &v1.Pod{
+			name: "PodAffinity is respected if matching. requiredDuringSchedulingIgnoredDuringExecution with NOT IN operator matches existing pod",
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -226,7 +221,7 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name},
+				NodeName:   "testnode-0"},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename2",
 					Labels: podLabel}}},
@@ -234,7 +229,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "validates that inter-pod-affinity is respected when pods have different Namespaces",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -264,7 +259,7 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name},
+				NodeName:   "testnode-0"},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename2",
 					Labels: podLabel, Namespace: "ns2"}}},
@@ -272,7 +267,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "Doesn't satisfy the PodAffinity because of unmatching labelSelector with the existing pod",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel,
@@ -301,14 +296,14 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name}, ObjectMeta: metav1.ObjectMeta{
+				NodeName:   "testnode-0"}, ObjectMeta: metav1.ObjectMeta{
 				Name:   "fakename2",
 				Labels: podLabel}}},
 			fits: false,
 		},
 		{
 			name: "validates that InterPodAffinity is respected if matching with multiple affinities in multiple RequiredDuringSchedulingIgnoredDuringExecution ",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -354,14 +349,14 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name}, ObjectMeta: metav1.ObjectMeta{
+				NodeName:   "testnode-0"}, ObjectMeta: metav1.ObjectMeta{
 				Name:   "fakename2",
 				Labels: podLabel}}},
 			fits: true,
 		},
 		{
 			name: "The labelSelector requirements(items of matchExpressions) are ANDed, the pod cannot schedule onto the node because one of the matchExpression items doesn't match.",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: podLabel2,
 					Name:   "fakename",
@@ -407,14 +402,14 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name}, ObjectMeta: metav1.ObjectMeta{
+				NodeName:   "testnode-0"}, ObjectMeta: metav1.ObjectMeta{
 				Name:   "fakename2",
 				Labels: podLabel}}},
 			fits: false,
 		},
 		{
 			name: "validates that InterPod Affinity and AntiAffinity is respected if matching",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -459,14 +454,14 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name}, ObjectMeta: metav1.ObjectMeta{
+				NodeName:   "testnode-0"}, ObjectMeta: metav1.ObjectMeta{
 				Name:   "fakename2",
 				Labels: podLabel}}},
 			fits: true,
 		},
 		{
 			name: "satisfies the PodAffinity and PodAntiAffinity and PodAntiAffinity symmetry with the existing pod",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -513,7 +508,7 @@ func TestInterPodAffinity(t *testing.T) {
 				{
 					Spec: v1.PodSpec{
 						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-						NodeName:   nodes[0].Name,
+						NodeName:   "testnode-0",
 						Affinity: &v1.Affinity{
 							PodAntiAffinity: &v1.PodAntiAffinity{
 								RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
@@ -542,7 +537,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "satisfies the PodAffinity but doesn't satisfies the PodAntiAffinity with the existing pod",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel2,
@@ -587,14 +582,14 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-				NodeName:   nodes[0].Name}, ObjectMeta: metav1.ObjectMeta{
+				NodeName:   "testnode-0"}, ObjectMeta: metav1.ObjectMeta{
 				Name:   "fakename2",
 				Labels: podLabel}}},
 			fits: false,
 		},
 		{
 			name: "satisfies the PodAffinity and PodAntiAffinity but doesn't satisfies PodAntiAffinity symmetry with the existing pod",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel,
@@ -640,7 +635,7 @@ func TestInterPodAffinity(t *testing.T) {
 			pods: []*v1.Pod{
 				{
 					Spec: v1.PodSpec{
-						NodeName:   nodes[0].Name,
+						NodeName:   "testnode-0",
 						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
 						Affinity: &v1.Affinity{
 							PodAntiAffinity: &v1.PodAntiAffinity{
@@ -670,7 +665,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "pod matches its own Label in PodAffinity and that matches the existing pod Labels",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel,
@@ -706,7 +701,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "Verify that PodAntiAffinity of an existing pod is respected when PodAntiAffinity symmetry is not satisfied with the existing pod",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fakename",
 					Labels: podLabel,
@@ -715,7 +710,7 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{
 				{
-					Spec: v1.PodSpec{NodeName: nodes[0].Name,
+					Spec: v1.PodSpec{NodeName: "testnode-0",
 						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
 						Affinity: &v1.Affinity{
 							PodAntiAffinity: &v1.PodAntiAffinity{
@@ -745,7 +740,7 @@ func TestInterPodAffinity(t *testing.T) {
 		},
 		{
 			name: "Verify that PodAntiAffinity from existing pod is respected when pod statisfies PodAntiAffinity symmetry with the existing pod",
-			pod: &v1.Pod{
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "fake-name",
 					Labels: podLabel,
@@ -754,7 +749,7 @@ func TestInterPodAffinity(t *testing.T) {
 			},
 			pods: []*v1.Pod{
 				{
-					Spec: v1.PodSpec{NodeName: nodes[0].Name,
+					Spec: v1.PodSpec{NodeName: "testnode-0",
 						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
 						Affinity: &v1.Affinity{
 							PodAntiAffinity: &v1.PodAntiAffinity{
@@ -783,8 +778,8 @@ func TestInterPodAffinity(t *testing.T) {
 			fits: true,
 		},
 		{
-			name: "nodes[0] and nodes[1] have same topologyKey and label value. nodes[0] has an existing pod that matches the inter pod affinity rule. The new pod can not be scheduled onto either of the two nodes.",
-			pod: &v1.Pod{
+			name: "same topology label, existing pod matches affinity, fits=false",
+			incomingPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "fake-name2"},
 				Spec: v1.PodSpec{
 					Containers:   []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
@@ -812,66 +807,404 @@ func TestInterPodAffinity(t *testing.T) {
 			pods: []*v1.Pod{
 				{Spec: v1.PodSpec{
 					Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
-					NodeName:   nodes[0].Name}, ObjectMeta: metav1.ObjectMeta{Name: "fakename", Labels: map[string]string{"foo": "abc"}}},
+					NodeName:   "testnode-0"}, ObjectMeta: metav1.ObjectMeta{Name: "fakename", Labels: map[string]string{"foo": "abc"}}},
+			},
+			fits: false,
+		},
+		{
+			name: "anti affinity: matchLabelKeys is merged into LabelSelector with In operator (feature flag: enabled)",
+			incomingPod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+					Affinity: &v1.Affinity{
+						PodAntiAffinity: &v1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+								{
+									TopologyKey: "zone",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      "foo",
+												Operator: metav1.LabelSelectorOpExists,
+											},
+										},
+									},
+									MatchLabelKeys: []string{"bar"},
+								},
+							},
+						},
+					},
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "incoming",
+					Labels: map[string]string{"foo": "", "bar": "a"},
+				},
+			},
+			pods: []*v1.Pod{
+				// It matches the incoming Pod's anti affinity's labelSelector.
+				// BUT, the matchLabelKeys make the existing Pod's anti affinity's labelSelector not match with this label.
+				{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{"foo": "", "bar": "fuga"}},
+				},
+				// It matches the incoming Pod's anti affinity's labelSelector.
+				// BUT, the matchLabelKeys make the existing Pod's anti affinity's labelSelector not match with this label.
+				{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{"foo": "", "bar": "hoge"}},
+				},
+			},
+			fits: true,
+		},
+		{
+			name: "anti affinity: mismatchLabelKeys is merged into LabelSelector with NotIn operator (feature flag: enabled)",
+			incomingPod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+					Affinity: &v1.Affinity{
+						PodAntiAffinity: &v1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+								{
+									TopologyKey: "zone",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      "foo",
+												Operator: metav1.LabelSelectorOpExists,
+											},
+										},
+									},
+									MismatchLabelKeys: []string{"bar"},
+								},
+							},
+						},
+					},
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "incoming",
+					Labels: map[string]string{"foo": "", "bar": "a"},
+				},
+			},
+			pods: []*v1.Pod{
+				// It matches the incoming Pod's anti affinity's labelSelector.
+				// BUT, the mismatchLabelKeys make the existing Pod's anti affinity's labelSelector not match with this label.
+				{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{"foo": "", "bar": "a"}},
+				},
+				// It matches the incoming Pod's anti affinity's labelSelector.
+				// BUT, the mismatchLabelKeys make the existing Pod's anti affinity's labelSelector not match with this label.
+				{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{"foo": "", "bar": "a"}},
+				},
+			},
+			fits: true,
+		},
+		{
+			name: "affinity: matchLabelKeys is merged into LabelSelector with In operator (feature flag: enabled)",
+			incomingPod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "container",
+							Image: imageutils.GetPauseImageName(),
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceMemory: resource.MustParse("1G"),
+								},
+							},
+						},
+					},
+					Affinity: &v1.Affinity{
+						PodAffinity: &v1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+								{
+									TopologyKey: "node",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      "foo",
+												Operator: metav1.LabelSelectorOpExists,
+											},
+										},
+									},
+									MatchLabelKeys: []string{"bar"},
+								},
+							},
+						},
+					},
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "incoming",
+					Labels: map[string]string{"foo": "", "bar": "a"},
+				},
+			},
+			pods: []*v1.Pod{
+				{
+					// It matches the incoming affinity. But, it uses all resources on nodes[1].
+					// So, the incoming Pod can no longer get scheduled on nodes[1].
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{
+							{
+								Name:  "container",
+								Image: imageutils.GetPauseImageName(),
+								Resources: v1.ResourceRequirements{
+									Requests: v1.ResourceList{
+										v1.ResourceMemory: resource.MustParse("1G"),
+									},
+								},
+							},
+						},
+						NodeName: "anothernode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{"foo": "", "bar": "a"}},
+				},
+				{
+					// It doesn't match the incoming affinity due to matchLabelKeys.
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{"foo": "", "bar": "hoge"}},
+				},
+				{
+					// It doesn't match the incoming affinity due to matchLabelKeys.
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod3", Labels: map[string]string{"foo": "", "bar": "fuga"}},
+				},
+			},
+			fits: false,
+		},
+		{
+			name: "affinity: mismatchLabelKeys is merged into LabelSelector with NotIn operator (feature flag: enabled)",
+			incomingPod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "container",
+							Image: imageutils.GetPauseImageName(),
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceMemory: resource.MustParse("1G"),
+								},
+							},
+						},
+					},
+					Affinity: &v1.Affinity{
+						PodAffinity: &v1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+								{
+									TopologyKey: "node",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      "foo",
+												Operator: metav1.LabelSelectorOpExists,
+											},
+										},
+									},
+									MismatchLabelKeys: []string{"bar"},
+								},
+							},
+						},
+					},
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "incoming",
+					Labels: map[string]string{"foo": "", "bar": "a"},
+				},
+			},
+			pods: []*v1.Pod{
+				{
+					// It matches the incoming affinity. But, it uses all resources on nodes[1].
+					// So, the incoming Pod can no longer get scheduled on nodes[1].
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{
+							{
+								Name:  "container",
+								Image: imageutils.GetPauseImageName(),
+								Resources: v1.ResourceRequirements{
+									Requests: v1.ResourceList{
+										v1.ResourceMemory: resource.MustParse("1G"),
+									},
+								},
+							},
+						},
+						NodeName: "anothernode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{"foo": "", "bar": "fuga"}},
+				},
+				{
+					// It doesn't match the incoming affinity due to mismatchLabelKeys.
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{"foo": "", "bar": "a"}},
+				},
+				{
+					// It doesn't match the incoming affinity due to mismatchLabelKeys.
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "container", Image: imageutils.GetPauseImageName()}},
+						NodeName:   "testnode-0",
+					},
+					ObjectMeta: metav1.ObjectMeta{Name: "pod3", Labels: map[string]string{"foo": "", "bar": "a"}},
+				},
+			},
+			fits: false,
+		},
+		{
+			name:        "validates that InterPodAffinity is respected for self affinity",
+			incomingPod: st.MakePod().Name("pod1").Priority(0).Label("service", "securityscan").Container("pause").PodAffinityIn("service", v1.LabelHostname, []string{"securityscan"}, st.PodAffinityWithRequiredReq).Obj(),
+			nextPod:     st.MakePod().Name("pod2").Priority(0).Label("service", "securityscan").Container("pause").PodAffinityIn("service", v1.LabelHostname, []string{"securityscan"}, st.PodAffinityWithRequiredReq).Obj(),
+			pods: []*v1.Pod{
+				st.MakePod().Name("existing-pod1").Node("testnode-0").Priority(0).Label("security", "S1").Container("pause").Obj(),
+				st.MakePod().Name("existing-pod2").Node("testnode-1").Priority(0).Label("security", "S1").Container("pause").Obj(),
+			},
+			fits: true,
+		},
+		{
+			name:        "validates that InterPodAffinity is respected with hostname topology key (fast path)",
+			incomingPod: st.MakePod().Name("fakename").Priority(0).Label("security", "S1").Container("pause").PodAffinityIn("service", v1.LabelHostname, []string{"securityscan"}, st.PodAffinityWithRequiredReq).Obj(),
+			pods: []*v1.Pod{
+				st.MakePod().Name("fakename2").Node("testnode-0").Priority(0).Label("service", "securityscan").Container("pause").Obj(),
+			},
+			fits: true,
+		},
+		{
+			name:        "validates that InterPodAntiAffinity is respected with hostname topology key (fast path)",
+			incomingPod: st.MakePod().Name("fakename").Priority(0).Label("security", "S1").Container("pause").PodAntiAffinityIn("service", v1.LabelHostname, []string{"securityscan"}, st.PodAntiAffinityWithRequiredReq).Obj(),
+			pods: []*v1.Pod{
+				st.MakePod().Name("fakename2").Node("testnode-0").Priority(0).Label("service", "securityscan").Container("pause").Obj(),
+				st.MakePod().Name("fakename3").Node("anothernode-0").Priority(0).Label("service", "securityscan").Container("pause").Obj(),
 			},
 			fits: false,
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			for _, pod := range test.pods {
-				if pod.Namespace == "" {
-					pod.Namespace = defaultNS
-				}
-				createdPod, err := cs.CoreV1().Pods(pod.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
-				if err != nil {
-					t.Fatalf("Error while creating pod: %v", err)
-				}
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodScheduled(cs, createdPod.Namespace, createdPod.Name))
-				if err != nil {
-					t.Errorf("Error while creating pod: %v", err)
-				}
-			}
-			if test.pod.Namespace == "" {
-				test.pod.Namespace = defaultNS
-			}
+	for _, interPodAffinityHostnameFastPathEnabled := range []bool{true, false} {
+		for _, test := range tests {
+			t.Run(fmt.Sprintf("%s/InterPodAffinityHostnameFastPath=%v", test.name, interPodAffinityHostnameFastPathEnabled), func(t *testing.T) {
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InterPodAffinityHostnameFastPath, interPodAffinityHostnameFastPathEnabled)
 
-			testPod, err := cs.CoreV1().Pods(test.pod.Namespace).Create(context.TODO(), test.pod, metav1.CreateOptions{})
-			if err != nil {
-				if !(test.errorType == "invalidPod" && apierrors.IsInvalid(err)) {
-					t.Fatalf("Error while creating pod: %v", err)
-				}
-			}
+				testCtx := initTest(t, "")
+				cs := testCtx.ClientSet
 
-			if test.fits {
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodScheduled(cs, testPod.Namespace, testPod.Name))
-			} else {
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, podUnschedulable(cs, testPod.Namespace, testPod.Name))
-			}
-			if err != nil {
-				t.Errorf("Error while trying to fit a pod: %v", err)
-			}
+				if _, err := createNode(cs, st.MakeNode().Name("testnode-0").Label("region", "r1").Label("zone", "z11").Label("node", "n1").Label(v1.LabelHostname, "testnode-0").Capacity(
+					map[v1.ResourceName]string{
+						v1.ResourceMemory: "1G",
+					},
+				).Obj()); err != nil {
+					t.Fatalf("failed to create node: %v", err)
+				}
 
-			err = cs.CoreV1().Pods(test.pod.Namespace).Delete(context.TODO(), test.pod.Name, *metav1.NewDeleteOptions(0))
-			if err != nil {
-				t.Errorf("Error while deleting pod: %v", err)
-			}
-			err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodDeleted(cs, testCtx.NS.Name, test.pod.Name))
-			if err != nil {
-				t.Errorf("Error while waiting for pod to get deleted: %v", err)
-			}
-			for _, pod := range test.pods {
-				err = cs.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, *metav1.NewDeleteOptions(0))
-				if err != nil {
-					t.Errorf("Error while deleting pod: %v", err)
+				// another test node has the same "region" and "zone" labels as testnode, but has a different "node" label.
+				if _, err := createNode(cs, st.MakeNode().Name("anothernode-0").Label("region", "r1").Label("zone", "z11").Label("node", "n2").Label(v1.LabelHostname, "anothernode-0").Capacity(
+					map[v1.ResourceName]string{
+						v1.ResourceMemory: "1G",
+					},
+				).Obj()); err != nil {
+					t.Fatalf("failed to create node: %v", err)
 				}
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodDeleted(cs, pod.Namespace, pod.Name))
-				if err != nil {
-					t.Errorf("Error while waiting for pod to get deleted: %v", err)
+
+				if err := createNamespacesWithLabels(cs, []string{"ns1", "ns2"}, map[string]string{"team": "team1"}); err != nil {
+					t.Fatal(err)
 				}
-			}
-		})
+				if err := createNamespacesWithLabels(cs, []string{"ns3"}, map[string]string{"team": "team2"}); err != nil {
+					t.Fatal(err)
+				}
+
+				var allPods []*v1.Pod
+				for _, pod := range test.pods {
+					if pod.Namespace == "" {
+						pod.Namespace = defaultNS
+					}
+					allPods = append(allPods, pod)
+					createdPod, err := cs.CoreV1().Pods(pod.Namespace).Create(testCtx.Ctx, pod, metav1.CreateOptions{})
+					if err != nil {
+						t.Fatalf("Error while creating pod: %v", err)
+					}
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+						testutils.PodScheduled(cs, createdPod.Namespace, createdPod.Name))
+					if err != nil {
+						t.Errorf("Error while creating pod: %v", err)
+					}
+				}
+				if test.incomingPod.Namespace == "" {
+					test.incomingPod.Namespace = defaultNS
+				}
+				allPods = append(allPods, test.incomingPod)
+				if test.nextPod != nil {
+					if test.nextPod.Namespace == "" {
+						test.nextPod.Namespace = defaultNS
+					}
+					allPods = append(allPods, test.nextPod)
+				}
+				defer testutils.CleanupPods(testCtx.Ctx, cs, t, allPods)
+
+				testPod, err := cs.CoreV1().Pods(test.incomingPod.Namespace).Create(testCtx.Ctx, test.incomingPod, metav1.CreateOptions{})
+				if err != nil {
+					if test.errorType != "invalidPod" || !apierrors.IsInvalid(err) {
+						t.Fatalf("Error while creating pod: %v", err)
+					}
+				}
+
+				if test.fits {
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+						testutils.PodScheduled(cs, testPod.Namespace, testPod.Name))
+				} else {
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+						podUnschedulable(cs, testPod.Namespace, testPod.Name))
+				}
+				if err != nil {
+					t.Errorf("Error while trying to fit a pod: %v", err)
+					return
+				}
+
+				if test.nextPod != nil {
+					testNextPod, err := cs.CoreV1().Pods(test.nextPod.Namespace).Create(testCtx.Ctx, test.nextPod, metav1.CreateOptions{})
+					if err != nil {
+						t.Fatalf("Error while creating nextPod: %v", err)
+					}
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+						testutils.PodScheduled(cs, testNextPod.Namespace, testNextPod.Name))
+					if err != nil {
+						t.Errorf("Error while trying to fit nextPod: %v", err)
+						return
+					}
+
+					// Ensure pod and nextPod are scheduled on the same node
+					scheduledPod1, err := cs.CoreV1().Pods(testPod.Namespace).Get(testCtx.Ctx, testPod.Name, metav1.GetOptions{})
+					if err != nil {
+						t.Fatalf("Error getting scheduled pod1: %v", err)
+					}
+					scheduledNextPod, err := cs.CoreV1().Pods(testNextPod.Namespace).Get(testCtx.Ctx, testNextPod.Name, metav1.GetOptions{})
+					if err != nil {
+						t.Fatalf("Error getting scheduled nextPod: %v", err)
+					}
+					if scheduledPod1.Spec.NodeName != scheduledNextPod.Spec.NodeName {
+						t.Errorf("Expected nextPod to be scheduled on the same node as incomingPod (%s), but got %s", scheduledPod1.Spec.NodeName, scheduledNextPod.Spec.NodeName)
+					}
+				}
+			})
+		}
+
 	}
 }
 
@@ -987,70 +1320,494 @@ func TestInterPodAffinityWithNamespaceSelector(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			testCtx := initTest(t, "")
-			defer testutils.CleanupTest(t, testCtx)
-
-			// Add a few nodes with labels
-			nodes, err := createAndWaitForNodesInCache(testCtx, "testnode", st.MakeNode().Label("region", "r1").Label("zone", "z11"), 2)
-			if err != nil {
-				t.Fatal(err)
+			configs := []struct {
+				name                                    string
+				interPodAffinityHostnameFastPathEnabled bool
+			}{
+				{name: "fastPathEnabled=true", interPodAffinityHostnameFastPathEnabled: true},
+				{name: "fastPathEnabled=false", interPodAffinityHostnameFastPathEnabled: false},
 			}
-			test.existingPod.Spec.NodeName = nodes[0].Name
 
+			for _, cfg := range configs {
+				t.Run(cfg.name, func(t *testing.T) {
+					featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InterPodAffinityHostnameFastPath, cfg.interPodAffinityHostnameFastPathEnabled)
+					testCtx := initTest(t, "")
+
+					// Add a few nodes with labels
+					nodes, err := createAndWaitForNodesInCache(testCtx, "testnode", st.MakeNode().Label("region", "r1").Label("zone", "z11"), 2)
+					if err != nil {
+						t.Fatal(err)
+					}
+					test.existingPod.Spec.NodeName = nodes[0].Name
+
+					cs := testCtx.ClientSet
+
+					if err := createNamespacesWithLabels(cs, []string{"ns1", "ns2"}, map[string]string{"team": "team1"}); err != nil {
+						t.Fatal(err)
+					}
+					if err := createNamespacesWithLabels(cs, []string{"ns3"}, map[string]string{"team": "team2"}); err != nil {
+						t.Fatal(err)
+					}
+					defaultNS := "ns1"
+
+					createdPod, err := cs.CoreV1().Pods(test.existingPod.Namespace).Create(testCtx.Ctx, test.existingPod, metav1.CreateOptions{})
+					if err != nil {
+						t.Fatalf("Error while creating pod: %v", err)
+					}
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+						testutils.PodScheduled(cs, createdPod.Namespace, createdPod.Name))
+					if err != nil {
+						t.Errorf("Error while creating pod: %v", err)
+					}
+
+					if test.pod.Namespace == "" {
+						test.pod.Namespace = defaultNS
+					}
+
+					testPod, err := cs.CoreV1().Pods(test.pod.Namespace).Create(testCtx.Ctx, test.pod, metav1.CreateOptions{})
+					if err != nil {
+						if test.errorType != "invalidPod" || !apierrors.IsInvalid(err) {
+							t.Fatalf("Error while creating pod: %v", err)
+						}
+					}
+
+					if test.fits {
+						err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+							testutils.PodScheduled(cs, testPod.Namespace, testPod.Name))
+					} else {
+						err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+							podUnschedulable(cs, testPod.Namespace, testPod.Name))
+					}
+					if err != nil {
+						t.Errorf("Error while trying to fit a pod: %v", err)
+					}
+					err = cs.CoreV1().Pods(test.pod.Namespace).Delete(testCtx.Ctx, test.pod.Name, *metav1.NewDeleteOptions(0))
+					if err != nil {
+						t.Errorf("Error while deleting pod: %v", err)
+					}
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, true,
+						testutils.PodDeleted(testCtx.Ctx, cs, testCtx.NS.Name, test.pod.Name))
+					if err != nil {
+						t.Errorf("Error while waiting for pod to get deleted: %v", err)
+					}
+					err = cs.CoreV1().Pods(test.existingPod.Namespace).Delete(testCtx.Ctx, test.existingPod.Name, *metav1.NewDeleteOptions(0))
+					if err != nil {
+						t.Errorf("Error while deleting pod: %v", err)
+					}
+					err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, true,
+						testutils.PodDeleted(testCtx.Ctx, cs, test.existingPod.Namespace, test.existingPod.Name))
+					if err != nil {
+						t.Errorf("Error while waiting for pod to get deleted: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTaintTolerationFilter(t *testing.T) {
+	pause := imageutils.GetPauseImageName()
+	tests := []struct {
+		name        string
+		nodes       []*v1.Node
+		incomingPod *v1.Pod
+		fit         bool
+	}{
+		{
+			name: "Pod tolerates node taint",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-1").
+					Taints([]v1.Taint{
+						{
+							Key:    "example.com/taint1",
+							Value:  "value1",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-1").
+				Tolerations([]v1.Toleration{
+					{
+						Key:    "example.com/taint1",
+						Value:  "value1",
+						Effect: v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod does not tolerate node taint",
+			nodes: []*v1.Node{st.MakeNode().Name("node-2").
+				Taints([]v1.Taint{
+					{
+						Key:    "example.com/taint1",
+						Value:  "value1",
+						Effect: v1.TaintEffectNoSchedule,
+					},
+				}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-2").Container(pause).Obj(),
+			fit:         false,
+		},
+		{
+			name: "Pod tolerates some but not all node taints",
+			nodes: []*v1.Node{st.MakeNode().Name("node-3").Taints([]v1.Taint{
+				{
+					Key:    "example.com/taint1",
+					Value:  "value1",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "example.com/taint2",
+					Value:  "value2",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+			}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-3").Tolerations([]v1.Toleration{
+				{
+					Key:    "example.com/taint1",
+					Value:  "value1",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+			}).Container(pause).
+				Obj(),
+			fit: false,
+		},
+		{
+			name: "Pod tolerates all node taints",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-4").Taints([]v1.Taint{
+					{
+						Key:    "example.com/taint1",
+						Value:  "value1",
+						Effect: v1.TaintEffectNoSchedule,
+					},
+					{
+						Key:    "example.com/taint2",
+						Value:  "value2",
+						Effect: v1.TaintEffectNoSchedule,
+					},
+				}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-4").Tolerations([]v1.Toleration{
+				{
+					Key:    "example.com/taint1",
+					Value:  "value1",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "example.com/taint2",
+					Value:  "value2",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+			}).Container(pause).Obj(),
+			fit: true,
+		},
+		{
+			name: "Node has one taint, pod has multiple tolerations and tolerates all node taints",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-1").
+					Taints([]v1.Taint{
+						{
+							Key:    "example.com/taint1",
+							Value:  "value1",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-5").Tolerations([]v1.Toleration{
+				{
+					Key:    "example.com/taint1",
+					Value:  "value1",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "example.com/taint2",
+					Value:  "value2",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+			}).Container(pause).Obj(),
+			fit: true,
+		},
+		{
+			name: "Node has no taint, pod has one toleration",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-6").Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-6").Tolerations([]v1.Toleration{
+				{
+					Key:    "example.com/taint1",
+					Value:  "value1",
+					Effect: v1.TaintEffectNoSchedule,
+				},
+			}).Container(pause).Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod with Gt toleration matches node taint with greater value",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-gt-1").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/priority-level",
+							Value:  "999",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-gt-1").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/priority-level",
+						Operator: v1.TolerationOpGt,
+						Value:    "900",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod with Gt toleration does not match node taint with lesser value",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-gt-2").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/priority-level",
+							Value:  "850",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-gt-2").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/priority-level",
+						Operator: v1.TolerationOpGt,
+						Value:    "900",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: false,
+		},
+		{
+			name: "Pod with Lt toleration matches node taint with lesser value",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-lt-1").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/error-rate",
+							Value:  "5",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-lt-1").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/error-rate",
+						Operator: v1.TolerationOpLt,
+						Value:    "10",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod with Lt toleration does not match node taint with greater value",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-lt-2").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/error-rate",
+							Value:  "15",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-lt-2").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/error-rate",
+						Operator: v1.TolerationOpLt,
+						Value:    "10",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: false,
+		},
+		{
+			name: "Pod with mixed tolerations including Gt operator",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-mixed").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/priority-level",
+							Value:  "950",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+						{
+							Key:    "node.example.com/zone",
+							Value:  "west",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-mixed").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/priority-level",
+						Operator: v1.TolerationOpGt,
+						Value:    "900",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+					{
+						Key:      "node.example.com/zone",
+						Operator: v1.TolerationOpEqual,
+						Value:    "west",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod with Gt toleration with negative values",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-negative").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/temperature",
+							Value:  "10",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-negative").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/temperature",
+						Operator: v1.TolerationOpGt,
+						Value:    "-20",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod with Lt toleration with zero values",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-zero").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/latency",
+							Value:  "0",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-zero").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/latency",
+						Operator: v1.TolerationOpLt,
+						Value:    "5",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true, // 0 < 5
+		},
+		{
+			name: "Pod with Gt toleration and empty Effect matches any taint effect",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-any-effect").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/priority-level",
+							Value:  "999",
+							Effect: v1.TaintEffectPreferNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-any-effect").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/priority-level",
+						Operator: v1.TolerationOpGt,
+						Value:    "900",
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+		{
+			name: "Pod with Lt toleration with large numbers",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-large").
+					Taints([]v1.Taint{
+						{
+							Key:    "node.example.com/memory",
+							Value:  "999999999",
+							Effect: v1.TaintEffectNoSchedule,
+						},
+					}).Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-large").
+				Tolerations([]v1.Toleration{
+					{
+						Key:      "node.example.com/memory",
+						Operator: v1.TolerationOpLt,
+						Value:    "1000000000",
+						Effect:   v1.TaintEffectNoSchedule,
+					},
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Enable the TaintTolerationComparisonOperators feature gate for Gt/Lt tests
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.TaintTolerationComparisonOperators, true)
+
+			testCtx := initTest(t, "taint-toleration-filter")
 			cs := testCtx.ClientSet
+			ns := testCtx.NS.Name
 
-			if err := createNamespacesWithLabels(cs, []string{"ns1", "ns2"}, map[string]string{"team": "team1"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := createNamespacesWithLabels(cs, []string{"ns3"}, map[string]string{"team": "team2"}); err != nil {
-				t.Fatal(err)
-			}
-			defaultNS := "ns1"
-
-			createdPod, err := cs.CoreV1().Pods(test.existingPod.Namespace).Create(context.TODO(), test.existingPod, metav1.CreateOptions{})
-			if err != nil {
-				t.Fatalf("Error while creating pod: %v", err)
-			}
-			err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodScheduled(cs, createdPod.Namespace, createdPod.Name))
-			if err != nil {
-				t.Errorf("Error while creating pod: %v", err)
-			}
-
-			if test.pod.Namespace == "" {
-				test.pod.Namespace = defaultNS
-			}
-
-			testPod, err := cs.CoreV1().Pods(test.pod.Namespace).Create(context.TODO(), test.pod, metav1.CreateOptions{})
-			if err != nil {
-				if !(test.errorType == "invalidPod" && apierrors.IsInvalid(err)) {
-					t.Fatalf("Error while creating pod: %v", err)
+			for i := range tt.nodes {
+				if _, err := createNode(cs, tt.nodes[i]); err != nil {
+					t.Fatalf("Failed to create node: %v", err)
 				}
 			}
 
-			if test.fits {
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodScheduled(cs, testPod.Namespace, testPod.Name))
-			} else {
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, podUnschedulable(cs, testPod.Namespace, testPod.Name))
-			}
+			// set namespace to pods
+			tt.incomingPod.SetNamespace(ns)
+			defer testutils.CleanupPods(testCtx.Ctx, cs, t, []*v1.Pod{tt.incomingPod})
+
+			testPod, err := cs.CoreV1().Pods(tt.incomingPod.Namespace).Create(testCtx.Ctx, tt.incomingPod, metav1.CreateOptions{})
 			if err != nil {
-				t.Errorf("Error while trying to fit a pod: %v", err)
+				t.Fatalf("Failed to create pod during test: %v", err)
 			}
 
-			err = cs.CoreV1().Pods(test.pod.Namespace).Delete(context.TODO(), test.pod.Name, *metav1.NewDeleteOptions(0))
-			if err != nil {
-				t.Errorf("Error while deleting pod: %v", err)
-			}
-			err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodDeleted(cs, testCtx.NS.Name, test.pod.Name))
-			if err != nil {
-				t.Errorf("Error while waiting for pod to get deleted: %v", err)
-			}
-			err = cs.CoreV1().Pods(test.existingPod.Namespace).Delete(context.TODO(), test.existingPod.Name, *metav1.NewDeleteOptions(0))
-			if err != nil {
-				t.Errorf("Error while deleting pod: %v", err)
-			}
-			err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodDeleted(cs, test.existingPod.Namespace, test.existingPod.Name))
-			if err != nil {
-				t.Errorf("Error while waiting for pod to get deleted: %v", err)
+			if tt.fit {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podScheduled(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be scheduled but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
+			} else {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podUnschedulable(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be unschedulable but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
 			}
 		})
 	}
@@ -1068,20 +1825,20 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                       string
-		incomingPod                *v1.Pod
-		existingPods               []*v1.Pod
-		fits                       bool
-		nodes                      []*v1.Node
-		candidateNodes             []string // nodes expected to schedule onto
-		enableMinDomains           bool
-		enableNodeInclustionPolicy bool
+		name                      string
+		incomingPod               *v1.Pod
+		existingPods              []*v1.Pod
+		fits                      bool
+		nodes                     []*v1.Node
+		candidateNodes            []string // nodes expected to schedule onto
+		enableNodeInclusionPolicy bool
+		enableMatchLabelKeys      bool
 	}{
 		// note: naming starts at index 0
 		{
 			name: "place pod on a 1/1/0/1 cluster with MaxSkew=1, node-2 is the only fit",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p0").Node("node-0").Label("foo", "").Container(pause).Obj(),
@@ -1095,7 +1852,7 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 		{
 			name: "place pod on a 2/0/0/1 cluster with MaxSkew=2, node-{1,2,3} are good fits",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				SpreadConstraint(2, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(2, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p0a").Node("node-0").Label("foo", "").Container(pause).Obj(),
@@ -1109,8 +1866,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 		{
 			name: "pod is required to be placed on zone0, so only node-1 fits",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				NodeAffinityIn("zone", []string{"zone-0"}).
-				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				NodeAffinityIn("zone", []string{"zone-0"}, st.NodeSelectorTypeMatchExpressions).
+				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p0").Node("node-0").Label("foo", "").Container(pause).Obj(),
@@ -1123,8 +1880,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 		{
 			name: "two constraints: pod can only be placed to zone-1/node-2",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				SpreadConstraint(1, "zone", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
-				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
+				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p0").Node("node-0").Label("foo", "").Container(pause).Obj(),
@@ -1140,8 +1897,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 			name: "pod cannot be placed onto any node",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
 				NodeAffinityNotIn("node", []string{"node-0"}). // mock a 3-node cluster
-				SpreadConstraint(1, "zone", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
-				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
+				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1157,8 +1914,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 			name: "high priority pod can preempt others",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).Priority(100).
 				NodeAffinityNotIn("node", []string{"node-0"}). // mock a 3-node cluster
-				SpreadConstraint(1, "zone", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
-				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
+				SpreadConstraint(1, "node", hardSpread, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().ZeroTerminationGracePeriod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1180,7 +1937,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 					"node",
 					hardSpread,
 					st.MakeLabelSelector().Exists("foo").Obj(),
-					pointer.Int32(4), // larger than the number of domains (= 3)
+					ptr.To[int32](4), // larger than the number of domains (= 3)
+					nil,
 					nil,
 					nil,
 				).
@@ -1192,10 +1950,9 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakePod().ZeroTerminationGracePeriod().Name("p2b").Node("node-2").Label("foo", "").Container(pause).Obj(),
 				st.MakePod().ZeroTerminationGracePeriod().Name("p3").Node("node-3").Label("foo", "").Container(pause).Obj(),
 			},
-			fits:             true,
-			nodes:            defaultNodes,
-			candidateNodes:   []string{"node-3"},
-			enableMinDomains: true,
+			fits:           true,
+			nodes:          defaultNodes,
+			candidateNodes: []string{"node-3"},
 		},
 		{
 			name: "pods spread across nodes as 2/2/1, maxSkew is 2, and the number of domains > minDomains, then the all nodes fit",
@@ -1206,7 +1963,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 					"node",
 					hardSpread,
 					st.MakeLabelSelector().Exists("foo").Obj(),
-					pointer.Int32(2), // smaller than the number of domains (= 3)
+					ptr.To[int32](2), // smaller than the number of domains (= 3)
+					nil,
 					nil,
 					nil,
 				).
@@ -1218,10 +1976,9 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakePod().ZeroTerminationGracePeriod().Name("p2b").Node("node-2").Label("foo", "").Container(pause).Obj(),
 				st.MakePod().ZeroTerminationGracePeriod().Name("p3").Node("node-3").Label("foo", "").Container(pause).Obj(),
 			},
-			fits:             true,
-			nodes:            defaultNodes,
-			candidateNodes:   []string{"node-1", "node-2", "node-3"},
-			enableMinDomains: true,
+			fits:           true,
+			nodes:          defaultNodes,
+			candidateNodes: []string{"node-1", "node-2", "node-3"},
 		},
 		{
 			name: "pods spread across zone as 2/1, maxSkew is 2 and the number of domains < minDomains, then the third and fourth nodes fit",
@@ -1231,7 +1988,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 					"zone",
 					v1.DoNotSchedule,
 					st.MakeLabelSelector().Exists("foo").Obj(),
-					pointer.Int32(3), // larger than the number of domains(2)
+					ptr.To[int32](3), // larger than the number of domains(2)
+					nil,
 					nil,
 					nil,
 				).Obj(),
@@ -1240,10 +1998,9 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakePod().Name("p2a").Node("node-1").Label("foo", "").Container(pause).Obj(),
 				st.MakePod().Name("p3a").Node("node-2").Label("foo", "").Container(pause).Obj(),
 			},
-			fits:             true,
-			nodes:            defaultNodes,
-			candidateNodes:   []string{"node-2", "node-3"},
-			enableMinDomains: true,
+			fits:           true,
+			nodes:          defaultNodes,
+			candidateNodes: []string{"node-2", "node-3"},
 		},
 		{
 			name: "pods spread across zone as 2/1, maxSkew is 2 and the number of domains < minDomains, then the all nodes fit",
@@ -1253,7 +2010,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 					"zone",
 					v1.DoNotSchedule,
 					st.MakeLabelSelector().Exists("foo").Obj(),
-					pointer.Int32(1), // smaller than the number of domains(2)
+					ptr.To[int32](1), // smaller than the number of domains(2)
+					nil,
 					nil,
 					nil,
 				).Obj(),
@@ -1262,16 +2020,15 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakePod().Name("p2a").Node("node-2").Label("foo", "").Container(pause).Obj(),
 				st.MakePod().Name("p3a").Node("node-3").Label("foo", "").Container(pause).Obj(),
 			},
-			fits:             true,
-			nodes:            defaultNodes,
-			candidateNodes:   []string{"node-0", "node-1", "node-2", "node-3"},
-			enableMinDomains: true,
+			fits:           true,
+			nodes:          defaultNodes,
+			candidateNodes: []string{"node-0", "node-1", "node-2", "node-3"},
 		},
 		{
 			name: "NodeAffinityPolicy honored with labelSelectors, pods spread across zone as 2/1",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
 				NodeSelector(map[string]string{"foo": ""}).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1286,14 +2043,14 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-4"}, // node-3 is filtered out by NodeAffinity plugin
-			enableNodeInclustionPolicy: true,
+			candidateNodes:            []string{"node-4"}, // node-3 is filtered out by NodeAffinity plugin
+			enableNodeInclusionPolicy: true,
 		},
 		{
 			name: "NodeAffinityPolicy ignored with nodeAffinity, pods spread across zone as 1/~2~",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				NodeAffinityIn("foo", []string{""}).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, &ignorePolicy, nil).
+				NodeAffinityIn("foo", []string{""}, st.NodeSelectorTypeMatchExpressions).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, &ignorePolicy, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1307,13 +2064,13 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-1", "node-2"},
-			enableNodeInclustionPolicy: true,
+			candidateNodes:            []string{"node-1", "node-2"},
+			enableNodeInclusionPolicy: true,
 		},
 		{
 			name: "NodeTaintsPolicy honored, pods spread across zone as 2/1",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, &honorPolicy).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, &honorPolicy, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1328,13 +2085,13 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Taints(taints).Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-4"}, // node-3 is filtered out by TaintToleration plugin
-			enableNodeInclustionPolicy: true,
+			candidateNodes:            []string{"node-4"}, // node-3 is filtered out by TaintToleration plugin
+			enableNodeInclusionPolicy: true,
 		},
 		{
 			name: "NodeTaintsPolicy ignored, pods spread across zone as 2/2",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1349,8 +2106,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Taints(taints).Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-1", "node-2", "node-4"}, // node-3 is filtered out by TaintToleration plugin
-			enableNodeInclustionPolicy: true,
+			candidateNodes:            []string{"node-1", "node-2", "node-4"}, // node-3 is filtered out by TaintToleration plugin
+			enableNodeInclusionPolicy: true,
 		},
 		{
 			// 1. to fulfil "zone" constraint, pods spread across zones as 2/1
@@ -1359,8 +2116,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 			name: "two node inclusion Constraints, zone: honor/ignore, node: honor/ignore",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
 				NodeSelector(map[string]string{"foo": ""}).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
-				SpreadConstraint(1, "node", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
+				SpreadConstraint(1, "node", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1375,8 +2132,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-4"},
-			enableNodeInclustionPolicy: true,
+			candidateNodes:            []string{"node-4"},
+			enableNodeInclusionPolicy: true,
 		},
 		{
 			// 1. to fulfil "zone" constraint, pods spread across zones as 2/1
@@ -1385,8 +2142,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 			name: "feature gate disabled, two node inclusion Constraints, zone: honor/ignore, node: honor/ignore",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
 				NodeSelector(map[string]string{"foo": ""}).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
-				SpreadConstraint(1, "node", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
+				SpreadConstraint(1, "node", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1401,8 +2158,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-4"},
-			enableNodeInclustionPolicy: false,
+			candidateNodes:            []string{"node-4"},
+			enableNodeInclusionPolicy: false,
 		},
 		{
 			// 1. to fulfil "zone" constraint, pods spread across zones as 2/2
@@ -1411,8 +2168,8 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 			name: "two node inclusion Constraints, zone: ignore/ignore, node: honor/honor",
 			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
 				NodeSelector(map[string]string{"foo": ""}).
-				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, &ignorePolicy, nil).
-				SpreadConstraint(1, "node", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, &honorPolicy).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, &ignorePolicy, nil, nil).
+				SpreadConstraint(1, "node", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, &honorPolicy, nil).
 				Obj(),
 			existingPods: []*v1.Pod{
 				st.MakePod().Name("p1a").Node("node-1").Label("foo", "").Container(pause).Obj(),
@@ -1427,19 +2184,67 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 				st.MakeNode().Name("node-3").Label("node", "node-3").Label("zone", "zone-2").Obj(),
 				st.MakeNode().Name("node-4").Label("node", "node-4").Label("zone", "zone-2").Label("foo", "").Obj(),
 			},
-			candidateNodes:             []string{"node-1", "node-4"},
-			enableNodeInclustionPolicy: true,
+			candidateNodes:            []string{"node-1", "node-4"},
+			enableNodeInclusionPolicy: true,
+		},
+		{
+			name: "matchLabelKeys ignored when feature gate disabled, pods spread across zone as 2/1",
+			incomingPod: st.MakePod().Name("p").Label("foo", "").Label("bar", "").Container(pause).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, []string{"bar"}).
+				Obj(),
+			existingPods: []*v1.Pod{
+				st.MakePod().Name("p1a").Node("node-0").Label("foo", "").Container(pause).Obj(),
+				st.MakePod().Name("p2a").Node("node-1").Label("foo", "").Container(pause).Obj(),
+				st.MakePod().Name("p3a").Node("node-2").Label("foo", "").Label("bar", "").Container(pause).Obj(),
+			},
+			fits:                 true,
+			nodes:                defaultNodes,
+			candidateNodes:       []string{"node-2", "node-3"},
+			enableMatchLabelKeys: false,
+		},
+		{
+			name: "matchLabelKeys ANDed with LabelSelector when LabelSelector isn't empty, pods spread across zone as 0/1",
+			incomingPod: st.MakePod().Name("p").Label("foo", "").Label("bar", "").Container(pause).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Exists("foo").Obj(), nil, nil, nil, []string{"bar"}).
+				Obj(),
+			existingPods: []*v1.Pod{
+				st.MakePod().Name("p1a").Node("node-0").Label("foo", "").Container(pause).Obj(),
+				st.MakePod().Name("p2a").Node("node-1").Label("foo", "").Container(pause).Obj(),
+				st.MakePod().Name("p3a").Node("node-2").Label("foo", "").Label("bar", "").Container(pause).Obj(),
+			},
+			fits:                 true,
+			nodes:                defaultNodes,
+			candidateNodes:       []string{"node-0", "node-1"},
+			enableMatchLabelKeys: true,
+		},
+		{
+			name: "matchLabelKeys ANDed with LabelSelector when LabelSelector is empty, pods spread across zone as 2/1",
+			incomingPod: st.MakePod().Name("p").Label("foo", "").Container(pause).
+				SpreadConstraint(1, "zone", v1.DoNotSchedule, st.MakeLabelSelector().Obj(), nil, nil, nil, []string{"foo"}).
+				Obj(),
+			existingPods: []*v1.Pod{
+				st.MakePod().Name("p1a").Node("node-0").Label("foo", "").Container(pause).Obj(),
+				st.MakePod().Name("p2a").Node("node-1").Label("foo", "").Container(pause).Obj(),
+				st.MakePod().Name("p3a").Node("node-2").Label("foo", "").Container(pause).Obj(),
+			},
+			fits:                 true,
+			nodes:                defaultNodes,
+			candidateNodes:       []string{"node-2", "node-3"},
+			enableMatchLabelKeys: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MinDomainsInPodTopologySpread, tt.enableMinDomains)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.NodeInclusionPolicyInPodTopologySpread, tt.enableNodeInclustionPolicy)()
+			if !tt.enableNodeInclusionPolicy {
+				// TODO: this will be removed in 1.36
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.32"))
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.NodeInclusionPolicyInPodTopologySpread, tt.enableNodeInclusionPolicy)
+			}
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MatchLabelKeysInPodTopologySpread, tt.enableMatchLabelKeys)
 
 			testCtx := initTest(t, "pts-predicate")
 			cs := testCtx.ClientSet
 			ns := testCtx.NS.Name
-			defer testutils.CleanupTest(t, testCtx)
 
 			for i := range tt.nodes {
 				if _, err := createNode(cs, tt.nodes[i]); err != nil {
@@ -1454,30 +2259,156 @@ func TestPodTopologySpreadFilter(t *testing.T) {
 			tt.incomingPod.SetNamespace(ns)
 
 			allPods := append(tt.existingPods, tt.incomingPod)
-			defer testutils.CleanupPods(cs, t, allPods)
+			defer testutils.CleanupPods(testCtx.Ctx, cs, t, allPods)
 
 			for _, pod := range tt.existingPods {
-				createdPod, err := cs.CoreV1().Pods(pod.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+				createdPod, err := cs.CoreV1().Pods(pod.Namespace).Create(testCtx.Ctx, pod, metav1.CreateOptions{})
 				if err != nil {
 					t.Fatalf("Error while creating pod during test: %v", err)
 				}
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, testutils.PodScheduled(cs, createdPod.Namespace, createdPod.Name))
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					testutils.PodScheduled(cs, createdPod.Namespace, createdPod.Name))
 				if err != nil {
 					t.Errorf("Error while waiting for pod during test: %v", err)
 				}
 			}
-			testPod, err := cs.CoreV1().Pods(tt.incomingPod.Namespace).Create(context.TODO(), tt.incomingPod, metav1.CreateOptions{})
-			if err != nil && !apierrors.IsInvalid(err) {
+			testPod, err := cs.CoreV1().Pods(tt.incomingPod.Namespace).Create(testCtx.Ctx, tt.incomingPod, metav1.CreateOptions{})
+			if err != nil {
 				t.Fatalf("Error while creating pod during test: %v", err)
 			}
 
 			if tt.fits {
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, podScheduledIn(cs, testPod.Namespace, testPod.Name, tt.candidateNodes))
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podScheduledIn(cs, testPod.Namespace, testPod.Name, tt.candidateNodes))
 			} else {
-				err = wait.Poll(pollInterval, wait.ForeverTestTimeout, podUnschedulable(cs, testPod.Namespace, testPod.Name))
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podUnschedulable(cs, testPod.Namespace, testPod.Name))
 			}
 			if err != nil {
 				t.Errorf("Test Failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestNodePortsFilter(t *testing.T) {
+	pause := imageutils.GetPauseImageName()
+	tests := []struct {
+		name         string
+		existingPods []*v1.Pod
+		incomingPod  *v1.Pod
+		fit          bool
+	}{
+		{
+			name: "Port Conflict on Node",
+			existingPods: []*v1.Pod{
+				st.MakePod().Name("test-1").
+					Containers([]v1.Container{st.MakeContainer().Name("test-1-container").Image(pause).
+						ContainerPort([]v1.ContainerPort{
+							{
+								HostIP:        "127.0.0.1",
+								ContainerPort: 8081,
+								HostPort:      8081,
+								Protocol:      "TCP",
+							},
+							{
+								HostIP:        "127.0.0.1",
+								ContainerPort: 8082,
+								HostPort:      8082,
+								Protocol:      "TCP",
+							},
+						}).Obj()}).
+					Obj(),
+			},
+			incomingPod: st.MakePod().Name("test-2").
+				Containers([]v1.Container{st.MakeContainer().Name("test-2-container").Image(pause).
+					ContainerPort([]v1.ContainerPort{
+						{
+							HostIP:        "127.0.0.1",
+							ContainerPort: 8081,
+							HostPort:      8081,
+							Protocol:      "TCP",
+						},
+					}).Obj()}).
+				Obj(),
+			fit: false,
+		},
+		{
+			name: "No Port Conflict on Node",
+			existingPods: []*v1.Pod{
+				st.MakePod().Name("test-1").
+					Containers([]v1.Container{st.MakeContainer().Name("test-1-container").Image(pause).
+						ContainerPort([]v1.ContainerPort{
+							{
+								HostIP:        "127.0.0.1",
+								HostPort:      8081,
+								ContainerPort: 8081,
+								Protocol:      "TCP",
+							},
+							{
+								HostIP:        "127.0.0.1",
+								HostPort:      8082,
+								ContainerPort: 8082,
+								Protocol:      "TCP",
+							},
+						}).Obj()}).
+					Obj(),
+			},
+			incomingPod: st.MakePod().Name("test-2").
+				Containers([]v1.Container{st.MakeContainer().Name("test-2-container").Image(pause).
+					ContainerPort([]v1.ContainerPort{
+						{
+							HostIP:        "127.0.0.1",
+							HostPort:      8080,
+							ContainerPort: 8080,
+							Protocol:      "TCP",
+						},
+					}).Obj()}).
+				Obj(),
+			fit: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCtx := initTest(t, "node-ports-filter")
+			cs := testCtx.ClientSet
+			ns := testCtx.NS.Name
+
+			if _, err := createNode(cs, st.MakeNode().Name("node-0").Obj()); err != nil {
+				t.Fatalf("Failed to create node: %v", err)
+			}
+
+			// set namespace to pods
+			tt.incomingPod.SetNamespace(ns)
+			for i := range tt.existingPods {
+				tt.existingPods[i].SetNamespace(ns)
+			}
+			allPods := append([]*v1.Pod{tt.incomingPod}, tt.existingPods...)
+			defer testutils.CleanupPods(testCtx.Ctx, cs, t, allPods)
+
+			for _, pod := range tt.existingPods {
+				if _, err := runPausePod(testCtx.ClientSet, pod); err != nil {
+					t.Fatalf("Failed to create existing pod: %v", err)
+				}
+			}
+
+			testPod, err := cs.CoreV1().Pods(tt.incomingPod.Namespace).Create(testCtx.Ctx, tt.incomingPod, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("Failed to create pod during test: %v", err)
+			}
+
+			if tt.fit {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podScheduled(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be scheduled but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
+			} else {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podUnschedulable(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be unschedulable but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
 			}
 		})
 	}
@@ -1636,11 +2567,179 @@ func TestUnschedulablePodBecomesSchedulable(t *testing.T) {
 				return nil
 			},
 		},
+		{
+			name: "scheduled pod uses read-write-once-pod pvc",
+			init: func(cs kubernetes.Interface, ns string) error {
+				_, err := createNode(cs, st.MakeNode().Name("node").Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create node: %v", err)
+				}
+
+				storage := v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceStorage: resource.MustParse("1Mi")}}
+				volType := v1.HostPathDirectoryOrCreate
+				pv, err := testutils.CreatePV(cs, st.MakePersistentVolume().
+					Name("pv-with-read-write-once-pod").
+					AccessModes([]v1.PersistentVolumeAccessMode{v1.ReadWriteOncePod}).
+					Capacity(storage.Requests).
+					HostPathVolumeSource(&v1.HostPathVolumeSource{Path: "/mnt", Type: &volType}).
+					Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create pv: %v", err)
+				}
+				pvc, err := testutils.CreatePVC(cs, st.MakePersistentVolumeClaim().
+					Name("pvc-with-read-write-once-pod").
+					Namespace(ns).
+					// Annotation and volume name required for PVC to be considered bound.
+					Annotation(volume.AnnBindCompleted, "true").
+					VolumeName(pv.Name).
+					AccessModes([]v1.PersistentVolumeAccessMode{v1.ReadWriteOncePod}).
+					Resources(storage).
+					Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create pvc: %v", err)
+				}
+
+				pod := initPausePod(&testutils.PausePodConfig{
+					Name:      "pod-to-be-deleted",
+					Namespace: ns,
+					Volumes: []v1.Volume{{
+						Name: "volume",
+						VolumeSource: v1.VolumeSource{
+							PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+								ClaimName: pvc.Name,
+							},
+						},
+					}},
+				})
+				if _, err := createPausePod(cs, pod); err != nil {
+					return fmt.Errorf("cannot create pod: %v", err)
+				}
+				return nil
+			},
+			pod: &testutils.PausePodConfig{
+				Name: "pod-to-take-over-pvc",
+				Volumes: []v1.Volume{{
+					Name: "volume",
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "pvc-with-read-write-once-pod",
+						},
+					},
+				}},
+			},
+			update: func(cs kubernetes.Interface, ns string) error {
+				return deletePod(cs, "pod-to-be-deleted", ns)
+			},
+		},
+		{
+			name: "pod with pvc has node-affinity to non-existent/illegal nodes",
+			init: func(cs kubernetes.Interface, ns string) error {
+				storage := v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceStorage: resource.MustParse("1Mi")}}
+				volType := v1.HostPathDirectoryOrCreate
+				pv, err := testutils.CreatePV(cs, st.MakePersistentVolume().
+					Name("pv-has-non-existent-nodes").
+					AccessModes([]v1.PersistentVolumeAccessMode{v1.ReadWriteOncePod}).
+					Capacity(storage.Requests).
+					HostPathVolumeSource(&v1.HostPathVolumeSource{Path: "/tmp", Type: &volType}).
+					NodeAffinityIn("kubernetes.io/hostname", []string{"node-available", "non-existing"}). // one node exist, one doesn't
+					Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create pv: %w", err)
+				}
+				_, err = testutils.CreatePVC(cs, st.MakePersistentVolumeClaim().
+					Name("pvc-has-non-existent-nodes").
+					Namespace(ns).
+					Annotation(volume.AnnBindCompleted, "true").
+					VolumeName(pv.Name).
+					AccessModes([]v1.PersistentVolumeAccessMode{v1.ReadWriteOncePod}).
+					Resources(storage).
+					Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create pvc: %w", err)
+				}
+				return nil
+			},
+			pod: &testutils.PausePodConfig{
+				Name: "pod-with-pvc-has-non-existent-nodes",
+				Volumes: []v1.Volume{{
+					Name: "volume",
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "pvc-has-non-existent-nodes",
+						},
+					},
+				}},
+			},
+			update: func(cs kubernetes.Interface, ns string) error {
+				_, err := createNode(cs, st.MakeNode().Label("kubernetes.io/hostname", "node-available").Name("node-available").Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create node: %w", err)
+				}
+				return nil
+			},
+		},
+		{
+			name: "pod with pvc got scheduled after node updated it's label",
+			init: func(cs kubernetes.Interface, ns string) error {
+				_, err := createNode(cs, st.MakeNode().Label("foo", "foo").Name("node-foo").Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create node: %w", err)
+				}
+				storage := v1.VolumeResourceRequirements{Requests: v1.ResourceList{v1.ResourceStorage: resource.MustParse("1Mi")}}
+				volType := v1.HostPathDirectoryOrCreate
+				pv, err := testutils.CreatePV(cs, st.MakePersistentVolume().
+					Name("pv-foo").
+					AccessModes([]v1.PersistentVolumeAccessMode{v1.ReadWriteOncePod}).
+					Capacity(storage.Requests).
+					HostPathVolumeSource(&v1.HostPathVolumeSource{Path: "/tmp", Type: &volType}).
+					NodeAffinityIn("foo", []string{"bar"}).
+					Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create pv: %w", err)
+				}
+				_, err = testutils.CreatePVC(cs, st.MakePersistentVolumeClaim().
+					Name("pvc-foo").
+					Namespace(ns).
+					Annotation(volume.AnnBindCompleted, "true").
+					VolumeName(pv.Name).
+					AccessModes([]v1.PersistentVolumeAccessMode{v1.ReadWriteOncePod}).
+					Resources(storage).
+					Obj())
+				if err != nil {
+					return fmt.Errorf("cannot create pvc: %w", err)
+				}
+				return nil
+			},
+			pod: &testutils.PausePodConfig{
+				Name: "pod-with-pvc-foo",
+				Volumes: []v1.Volume{{
+					Name: "volume",
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "pvc-foo",
+						},
+					},
+				}},
+			},
+			update: func(cs kubernetes.Interface, ns string) error {
+				_, err := updateNode(cs, &v1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "node-foo",
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+				})
+				if err != nil {
+					return fmt.Errorf("cannot update node: %w", err)
+				}
+				return nil
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			testCtx := initTest(t, "scheduler-informer")
-			defer testutils.CleanupTest(t, testCtx)
 
 			if tt.init != nil {
 				if err := tt.init(testCtx.ClientSet, testCtx.NS.Name); err != nil {
@@ -1652,19 +2751,590 @@ func TestUnschedulablePodBecomesSchedulable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := waitForPodUnschedulable(testCtx.ClientSet, pod); err != nil {
+			if err := waitForPodUnschedulable(testCtx.Ctx, testCtx.ClientSet, pod); err != nil {
 				t.Errorf("Pod %v got scheduled: %v", pod.Name, err)
 			}
 			if err := tt.update(testCtx.ClientSet, testCtx.NS.Name); err != nil {
 				t.Fatal(err)
 			}
-			if err := testutils.WaitForPodToSchedule(testCtx.ClientSet, pod); err != nil {
+			if err := testutils.WaitForPodToSchedule(testCtx.Ctx, testCtx.ClientSet, pod); err != nil {
 				t.Errorf("Pod %v was not scheduled: %v", pod.Name, err)
 			}
 			// Make sure pending queue is empty.
-			pendingPods := len(testCtx.Scheduler.SchedulingQueue.PendingPods())
-			if pendingPods != 0 {
-				t.Errorf("pending pods queue is not empty, size is: %d", pendingPods)
+			pendingPods, s := testCtx.Scheduler.SchedulingQueue.PendingPods()
+			if len(pendingPods) != 0 {
+				t.Errorf("pending pods queue is not empty, size is: %d, summary is: %s", len(pendingPods), s)
+			}
+		})
+	}
+}
+
+// TestPodAffinityMatchLabelKeyEnablement tests the Pod is correctly mutated by MatchLabelKeysInPodAffinity feature,
+// even if turing the feature gate enabled or disabled.
+func TestPodAffinityMatchLabelKeyEnablement(t *testing.T) {
+	featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.32"))
+
+	testCtx := initTest(t, "matchlabelkey")
+
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "test",
+			Namespace:    testCtx.NS.Name,
+			Labels:       map[string]string{"foo": "", "bar": "a"},
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name:  "container",
+					Image: imageutils.GetPauseImageName(),
+					Resources: v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceMemory: resource.MustParse("1G"),
+						},
+					},
+				},
+			},
+			Affinity: &v1.Affinity{
+				PodAffinity: &v1.PodAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+						{
+							TopologyKey: "node",
+							LabelSelector: &metav1.LabelSelector{
+								MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "foo",
+										Operator: metav1.LabelSelectorOpExists,
+									},
+								},
+							},
+							MatchLabelKeys: []string{"bar"},
+						},
+					},
+				},
+			},
+		},
+	}
+	expectedLabelSelector := &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      "foo",
+				Operator: metav1.LabelSelectorOpExists,
+			},
+			{
+				Key:      "bar",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{"a"},
+			},
+		},
+	}
+
+	p1, err := testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Create(testCtx.Ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Error while creating pod during test: %v", err)
+	}
+
+	// check the pod has the expected label selector.
+	gotpod, err := testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, p1.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Error while getting pod during test: %v", err)
+	}
+
+	// the label selector should be changed from the original one because the feature gate is enabled.
+	if d := cmp.Diff(gotpod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector, expectedLabelSelector); d != "" {
+		t.Fatalf("Pod %v has wrong label selector: diff = \n%v", p1.Name, d)
+	}
+
+	// disable the feature gate.
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MatchLabelKeysInPodAffinity, false)
+
+	p2, err := testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Create(testCtx.Ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Error while creating pod during test: %v", err)
+	}
+
+	// check the pod has the expected label selector.
+	gotpod, err = testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, p2.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Error while getting pod during test: %v", err)
+	}
+
+	// the label selector should be the same as the original one because the feature gate is disabled.
+	if d := cmp.Diff(gotpod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector, pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector); d != "" {
+		t.Fatalf("Pod %v has wrong label selector: diff = \n%v", p2.Name, d)
+	}
+
+	// check the pod, which was created when the feature gate is enabled, still has the expected label selector.
+	gotpod, err = testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, p1.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Error while getting pod during test: %v", err)
+	}
+
+	// the label selector should be changed from the original one because the feature gate is enabled.
+	if d := cmp.Diff(gotpod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector, expectedLabelSelector); d != "" {
+		t.Fatalf("Pod %v has wrong label selector: diff = \n%v", p1.Name, d)
+	}
+
+	// Again, enable the feature gate.
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MatchLabelKeysInPodAffinity, true)
+
+	p3, err := testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Create(testCtx.Ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Error while creating pod during test: %v", err)
+	}
+
+	// check the pod has the expected label selector.
+	gotpod, err = testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, p3.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Error while getting pod during test: %v", err)
+	}
+
+	// the label selector should be changed from the original one because the feature gate is enabled.
+	if d := cmp.Diff(gotpod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector, expectedLabelSelector); d != "" {
+		t.Fatalf("Pod %v has wrong label selector: diff = \n%v", p1.Name, d)
+	}
+
+	// check the pod has the expected label selector.
+	gotpod, err = testCtx.ClientSet.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, p2.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Error while getting pod during test: %v", err)
+	}
+
+	// the label selector shouldn't get changed because the feature gate was disabled at its creation.
+	// Even if the feature gate is enabled now, matchLabelKeys don't get applied to the pod.
+	// (it's only handled when the pod is created)
+	if d := cmp.Diff(gotpod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector, pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector); d != "" {
+		t.Fatalf("Pod %v has wrong label selector: diff = \n%v", p2.Name, d)
+	}
+
+}
+
+func TestNodeResourcesFilter(t *testing.T) {
+	pause := imageutils.GetPauseImageName()
+	tests := []struct {
+		name        string
+		node        *v1.Node
+		existingPod *v1.Pod
+		incomingPod *v1.Pod
+		fit         bool
+	}{
+		{
+			name: "pod does not fit due to insufficient node resources",
+			node: st.MakeNode().Name("insufficient-node").Capacity(
+				map[v1.ResourceName]string{
+					v1.ResourceCPU:    "3",
+					v1.ResourceMemory: "3G",
+				}).Obj(),
+			existingPod: st.MakePod().Name("insufficient-existing-pod").
+				Res(map[v1.ResourceName]string{
+					v1.ResourceCPU:    "2",
+					v1.ResourceMemory: "2G",
+				}).Container(pause).
+				Obj(),
+			incomingPod: st.MakePod().Name("insufficient-incoming-pod").
+				Res(map[v1.ResourceName]string{
+					v1.ResourceCPU:    "2",
+					v1.ResourceMemory: "2G",
+				}).Container(pause).
+				Obj(),
+			fit: false,
+		},
+		{
+			name: "pod fits with sufficient node resources",
+			node: st.MakeNode().Name("sufficient-node").Capacity(
+				map[v1.ResourceName]string{
+					v1.ResourceCPU:    "3",
+					v1.ResourceMemory: "3G",
+				}).Obj(),
+			existingPod: st.MakePod().Name("sufficient-existing-pod").
+				Res(map[v1.ResourceName]string{
+					v1.ResourceCPU:    "1",
+					v1.ResourceMemory: "1G",
+				}).Container(pause).
+				Obj(),
+			incomingPod: st.MakePod().Name("sufficient-incoming-pod").
+				Res(map[v1.ResourceName]string{
+					v1.ResourceCPU:    "1",
+					v1.ResourceMemory: "1G",
+				}).Container(pause).
+				Obj(),
+			fit: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCtx := initTest(t, "node-resources-filter")
+			cs := testCtx.ClientSet
+			ns := testCtx.NS.Name
+
+			if _, err := createNode(cs, tt.node); err != nil {
+				t.Fatalf("Failed to create node: %v", err)
+			}
+
+			// set namespace to pods
+			tt.incomingPod.SetNamespace(ns)
+			allPods := []*v1.Pod{tt.incomingPod}
+			if tt.existingPod != nil {
+				tt.existingPod.SetNamespace(ns)
+				allPods = append(allPods, tt.existingPod)
+			}
+			defer testutils.CleanupPods(testCtx.Ctx, cs, t, allPods)
+
+			if tt.existingPod != nil {
+				if _, err := runPausePod(testCtx.ClientSet, tt.existingPod); err != nil {
+					t.Fatalf("Failed to create existing pod: %v", err)
+				}
+			}
+
+			testPod, err := cs.CoreV1().Pods(tt.incomingPod.Namespace).Create(testCtx.Ctx, tt.incomingPod, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("Failed to create pod: %v", err)
+			}
+
+			if tt.fit {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podScheduled(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be scheduled but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
+			} else {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podUnschedulable(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be unschedulable but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeAffinityFilter(t *testing.T) {
+	pause := imageutils.GetPauseImageName()
+	tests := []struct {
+		name         string
+		nodes        []*v1.Node
+		incomingPod  *v1.Pod
+		expectedNode string
+	}{
+		{
+			name: "Pod fits when node matches label using In operator",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-ssd").Label("disktype", "ssd").Obj(),
+				st.MakeNode().Name("node-hdd").Label("disktype", "hdd").Obj(),
+			},
+			incomingPod: st.MakePod().Name("affinity-fitting-pod").
+				NodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "disktype",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"ssd"},
+									},
+								},
+							},
+						},
+					},
+				}).Container(pause).
+				Obj(),
+			expectedNode: "node-ssd",
+		},
+		{
+			name: "Pod not fit when node not match label using In operator",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-ssd").Label("disktype", "ssd").Obj(),
+			},
+			incomingPod: st.MakePod().Name("affinity-non-fitting-pod").
+				NodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "disktype",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"hdd"},
+									},
+								},
+							},
+						},
+					},
+				}).
+				Container(pause).
+				Obj(),
+			expectedNode: "",
+		},
+		{
+			name: "Pod not fit when node matches label using NotIn operator",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-hdd-1").Label("disktype", "hdd").Obj(),
+				st.MakeNode().Name("node-hdd-2").Label("disktype", "hdd").Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-avoid-hdd").
+				NodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "disktype",
+										Operator: v1.NodeSelectorOpNotIn,
+										Values:   []string{"hdd"},
+									},
+								},
+							},
+						},
+					},
+				}).Container(pause).
+				Obj(),
+			expectedNode: "",
+		},
+		{
+			name: "Pod fits when node matches label using Exists operator",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-with-disktype").Label("disktype", "ssd").Obj(),
+				st.MakeNode().Name("node-without-disktype").Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-requires-any-disktype").
+				NodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "disktype",
+										Operator: v1.NodeSelectorOpExists,
+									},
+								},
+							},
+						},
+					},
+				}).Container(pause).
+				Obj(),
+			expectedNode: "node-with-disktype",
+		},
+		{
+			name: "Pod not fit when node matches label using DoesNotExist operator",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-with-disktype-1").Label("disktype", "ssd").Obj(),
+				st.MakeNode().Name("node-with-disktype-2").Label("disktype", "ssd").Obj(),
+			},
+			incomingPod: st.MakePod().Name("pod-avoids-disktype").
+				NodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "disktype",
+										Operator: v1.NodeSelectorOpDoesNotExist,
+									},
+								},
+							},
+						},
+					},
+				}).Container(pause).
+				Obj(),
+			expectedNode: "",
+		},
+		{
+			name: "Pod fits both label and metadata.name using MatchExpressions and MatchFields",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("affinity-matching-node-1").Label("disktype", "ssd").Obj(),
+				st.MakeNode().Name("affinity-matching-node-2").Obj(),
+			},
+			incomingPod: st.MakePod().Name("affinity-fitting-pod").
+				NodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "disktype",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"ssd"},
+									},
+								},
+								MatchFields: []v1.NodeSelectorRequirement{
+									{
+										Key:      "metadata.name",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"affinity-matching-node-1"},
+									},
+								},
+							},
+						},
+					},
+				}).Container(pause).
+				Obj(),
+			expectedNode: "affinity-matching-node-1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCtx := initTest(t, "nodeaffinity-filter")
+			cs := testCtx.ClientSet
+			ns := testCtx.NS.Name
+
+			// Create node.
+			for _, node := range tt.nodes {
+				if _, err := cs.CoreV1().Nodes().Create(testCtx.Ctx, node, metav1.CreateOptions{}); err != nil {
+					t.Fatalf("Failed to create node: %v", err)
+				}
+			}
+
+			// Set namespace for pods and create them.
+			tt.incomingPod.SetNamespace(ns)
+			defer testutils.CleanupPods(testCtx.Ctx, cs, t, []*v1.Pod{tt.incomingPod})
+
+			// Attempt to schedule the incoming pod.
+			testPod, err := cs.CoreV1().Pods(tt.incomingPod.Namespace).Create(testCtx.Ctx, tt.incomingPod, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("Failed to create pod during test: %v", err)
+			}
+
+			if tt.expectedNode != "" {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podScheduled(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be scheduled but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
+				pod, err := cs.CoreV1().Pods(testPod.Namespace).Get(testCtx.Ctx, testPod.Name, metav1.GetOptions{})
+				if err != nil {
+					t.Fatalf("Failed to get pod after scheduling: %v", err)
+				}
+				if pod.Spec.NodeName != tt.expectedNode {
+					t.Errorf("Expected pod to be scheduled to %q, but was scheduled to %q", tt.expectedNode, pod.Spec.NodeName)
+				}
+			} else {
+				err = wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false,
+					podUnschedulable(cs, testPod.Namespace, testPod.Name))
+				if err != nil {
+					t.Errorf("Test Failed: Expected pod %s/%s to be unschedulable but got error: %v", testPod.Namespace, testPod.Name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeDeclaredFeaturesFilter(t *testing.T) {
+	// Helper to create a pod that requires the feature.
+	podRequiringFeatureA := st.MakePod().Name("pod-req-feature-a").
+		UID("pod-req-feature").
+		Containers([]v1.Container{{Name: "container-req-feature-a", Image: imageutils.GetPauseImageName()}}).Obj()
+
+	// Helper to create a pod that does NOT require the feature.
+	podWithoutRequirement := st.MakePod().Name("pod-no-req").UID("pod-no-req").
+		Containers([]v1.Container{{Name: "container-no-req", Image: imageutils.GetPauseImageName()}}).
+		Obj()
+
+	nodeWithFeatureA := st.MakeNode().Name("node-with-feature-a").DeclaredFeatures([]string{"FeatureA"}).Obj()
+
+	nodeWithFeatureB := st.MakeNode().Name("node-with-feature-b").DeclaredFeatures([]string{"FeatureB"}).Obj()
+	nodeWithFeatureB.Status.DeclaredFeatures = []string{"FeatureB"}
+
+	nodeWithoutFeatures := st.MakeNode().Name("node-without-features").Obj()
+	nodeWithoutFeatures.Status.DeclaredFeatures = []string{}
+
+	nodeWithMultipleFeatures := st.MakeNode().Name("node-with-multiple-features").DeclaredFeatures([]string{"FeatureA", "FeatureB"}).Obj()
+
+	mockFeature := ndftesting.NewMockFeature(t)
+	mockFeature.SetName("FeatureA")
+	mockFeature.SetInferForScheduling(func(podInfo *ndf.PodInfo) bool {
+		return podInfo.Spec.Containers[0].Name == "container-req-feature-a"
+	})
+	mockFeature.SetMaxVersion(nil)
+	mockFeature.SetInferForUpdate(func(_, _ *ndf.PodInfo) bool { return false })
+	mockFeature.SetDiscover(func(*ndf.NodeConfiguration) bool { return false })
+
+	ndfFramework := ndf.New([]ndf.Feature{mockFeature})
+	ndftesting.SetFrameworkDuringTest(t, *ndfFramework)
+
+	tests := []struct {
+		name           string
+		pod            *v1.Pod
+		nodes          []*v1.Node
+		featureEnabled bool
+		expectedNode   string
+	}{
+		{
+			name:           "Feature gate disabled",
+			pod:            podRequiringFeatureA.DeepCopy(),
+			nodes:          []*v1.Node{nodeWithoutFeatures},
+			featureEnabled: false,
+			expectedNode:   "node-without-features",
+		},
+		{
+			name:           "pod without feature requirement schedulable on node without features",
+			pod:            podWithoutRequirement.DeepCopy(),
+			nodes:          []*v1.Node{nodeWithoutFeatures},
+			featureEnabled: true,
+			expectedNode:   "node-without-features",
+		},
+		{
+			name:           "pod without feature requirement schedulable on node with features",
+			pod:            podWithoutRequirement.DeepCopy(),
+			nodes:          []*v1.Node{nodeWithFeatureA},
+			featureEnabled: true,
+			expectedNode:   "node-with-feature-a",
+		},
+		{
+			name:           "pod with feature requirement schedulable on node with the feature",
+			pod:            podRequiringFeatureA.DeepCopy(),
+			nodes:          []*v1.Node{nodeWithFeatureA, nodeWithFeatureB},
+			featureEnabled: true,
+			expectedNode:   "node-with-feature-a",
+		},
+		{
+			name:           "pod with feature requirement not schedulable on node without features",
+			pod:            podRequiringFeatureA.DeepCopy(),
+			nodes:          []*v1.Node{nodeWithFeatureB},
+			featureEnabled: true,
+			expectedNode:   "",
+		},
+		{
+			name:           "pod with feature requirement schedulable on node with multiple features",
+			pod:            podRequiringFeatureA.DeepCopy(),
+			nodes:          []*v1.Node{nodeWithMultipleFeatures, nodeWithoutFeatures},
+			featureEnabled: true,
+			expectedNode:   "node-with-multiple-features",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.featureEnabled {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.36"))
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.NodeDeclaredFeatures, false)
+			}
+			testCtx := testutils.InitTestSchedulerWithNS(t, "node-features-filter")
+			cs := testCtx.ClientSet
+			ns := testCtx.NS.Name
+			for _, node := range tt.nodes {
+				if _, err := testutils.CreateNode(testCtx.ClientSet, node); err != nil {
+					t.Fatalf("Failed to create node %v: %v", node.Name, err)
+				}
+			}
+			// Ensure nodes are present in scheduler cache.
+			if err := testutils.WaitForNodesInCache(testCtx.Ctx, testCtx.Scheduler, len(tt.nodes)); err != nil {
+				t.Fatalf("Failed to wait for nodes in cache: %v", err)
+			}
+
+			tt.pod.Namespace = ns
+			if _, err := cs.CoreV1().Pods(ns).Create(testCtx.Ctx, tt.pod, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("Failed to create pod %v: %v", tt.pod.Name, err)
+			}
+			if tt.expectedNode != "" {
+				err := wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false, testutils.PodScheduledIn(cs, tt.pod.Namespace, tt.pod.Name, []string{tt.expectedNode}))
+				if err != nil {
+					t.Errorf("Expected pod to be scheduled, but it was not: %v", err)
+				}
+			} else {
+				err := wait.PollUntilContextTimeout(testCtx.Ctx, pollInterval, wait.ForeverTestTimeout, false, testutils.PodUnschedulable(cs, tt.pod.Namespace, tt.pod.Name))
+				if err != nil {
+					t.Errorf("Expected pod to be unschedulable, but it was not: %v", err)
+				}
 			}
 		})
 	}

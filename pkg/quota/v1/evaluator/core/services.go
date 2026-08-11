@@ -67,6 +67,9 @@ func (p *serviceEvaluator) GroupResource() schema.GroupResource {
 
 // Handles returns true of the evaluator should handle the specified operation.
 func (p *serviceEvaluator) Handles(a admission.Attributes) bool {
+	if a.GetSubresource() != "" {
+		return false
+	}
 	operation := a.GetOperation()
 	// We handle create and update because a service type can change.
 	return admission.Create == operation || admission.Update == operation
@@ -161,7 +164,7 @@ func (p *serviceEvaluator) UsageStats(options quota.UsageStatsOptions) (quota.Us
 
 var _ quota.Evaluator = &serviceEvaluator{}
 
-//GetQuotaServiceType returns ServiceType if the service type is eligible to track against a quota, nor return ""
+// GetQuotaServiceType returns ServiceType if the service type is eligible to track against a quota, nor return ""
 func GetQuotaServiceType(service *corev1.Service) corev1.ServiceType {
 	switch service.Spec.Type {
 	case corev1.ServiceTypeNodePort:

@@ -18,12 +18,10 @@ package label
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
-	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/spf13/cobra"
-	"k8s.io/klog/v2"
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,11 +30,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/klog/v2"
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/tools/clientcmd"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util/completion"
@@ -48,6 +50,7 @@ const (
 	MsgNotLabeled = "not labeled"
 	MsgLabeled    = "labeled"
 	MsgUnLabeled  = "unlabeled"
+	MsgModified   = "modified"
 )
 
 // LabelOptions have the data required to perform the label operation
@@ -83,10 +86,9 @@ type LabelOptions struct {
 	enforceNamespace             bool
 	builder                      *resource.Builder
 	unstructuredClientForMapping func(mapping *meta.RESTMapping) (resource.RESTClient, error)
-	dryRunVerifier               *resource.QueryParamVerifier
 
 	// Common shared fields
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var (
@@ -119,7 +121,7 @@ var (
 		kubectl label pods foo bar-`))
 )
 
-func NewLabelOptions(ioStreams genericclioptions.IOStreams) *LabelOptions {
+func NewLabelOptions(ioStreams genericiooptions.IOStreams) *LabelOptions {
 	return &LabelOptions{
 		RecordFlags: genericclioptions.NewRecordFlags(),
 		Recorder:    genericclioptions.NoopRecorder{},
@@ -130,7 +132,7 @@ func NewLabelOptions(ioStreams genericclioptions.IOStreams) *LabelOptions {
 	}
 }
 
-func NewCmdLabel(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdLabel(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewLabelOptions(ioStreams)
 
 	cmd := &cobra.Command{
@@ -181,15 +183,11 @@ func (o *LabelOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.dryRunVerifier = resource.NewQueryParamVerifier(dynamicClient, f.OpenAPIGetter(), resource.QueryParamDryRun)
 
-	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
 	o.ToPrinter = func(operation string) (printers.ResourcePrinter, error) {
 		o.PrintFlags.NamePrintFlags.Operation = operation
+		// PrintFlagsWithDryRunStrategy must be done after NamePrintFlags.Operation is set
+		cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
 		return o.PrintFlags.ToPrinter()
 	}
 
@@ -208,7 +206,7 @@ func (o *LabelOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	}
 
 	o.namespace, o.enforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
+	if err != nil && !(o.local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	o.builder = f.NewBuilder()
@@ -299,15 +297,11 @@ func (o *LabelOptions) RunLabel() error {
 			return err
 		}
 		if o.dryRunStrategy == cmdutil.DryRunClient || o.local || o.list {
-			err = labelFunc(obj, o.overwrite, o.resourceVersion, o.newLabels, o.removeLabels)
+			added, removed, err := labelFunc(obj, o.overwrite, o.resourceVersion, o.newLabels, o.removeLabels)
 			if err != nil {
 				return err
 			}
-			newObj, err := json.Marshal(obj)
-			if err != nil {
-				return err
-			}
-			dataChangeMsg = updateDataChangeMsg(oldData, newObj, o.overwrite)
+			dataChangeMsg = updateDataChangeMsg(added, removed)
 			outputObj = info.Object
 		} else {
 			name, namespace := info.Name, info.Namespace
@@ -324,44 +318,45 @@ func (o *LabelOptions) RunLabel() error {
 				}
 			}
 
-			if err := labelFunc(obj, o.overwrite, o.resourceVersion, o.newLabels, o.removeLabels); err != nil {
+			added, removed, err := labelFunc(obj, o.overwrite, o.resourceVersion, o.newLabels, o.removeLabels)
+			if err != nil {
 				return err
 			}
+
+			dataChangeMsg = updateDataChangeMsg(added, removed)
+
 			if err := o.Recorder.Record(obj); err != nil {
 				klog.V(4).Infof("error recording current command: %v", err)
 			}
-			newObj, err := json.Marshal(obj)
-			if err != nil {
-				return err
-			}
-			dataChangeMsg = updateDataChangeMsg(oldData, newObj, o.overwrite)
-			patchBytes, err := jsonpatch.CreateMergePatch(oldData, newObj)
-			createdPatch := err == nil
-			if err != nil {
-				klog.V(2).Infof("couldn't compute patch: %v", err)
-			}
 
-			mapping := info.ResourceMapping()
-			if o.dryRunStrategy == cmdutil.DryRunServer {
-				if err := o.dryRunVerifier.HasSupport(mapping.GroupVersionKind); err != nil {
+			if added.Len() > 0 || removed.Len() > 0 {
+				newObj, err := json.Marshal(obj)
+				if err != nil {
 					return err
 				}
-			}
-			client, err := o.unstructuredClientForMapping(mapping)
-			if err != nil {
-				return err
-			}
-			helper := resource.NewHelper(client, mapping).
-				DryRun(o.dryRunStrategy == cmdutil.DryRunServer).
-				WithFieldManager(o.fieldManager)
+				patchBytes, err := jsonpatch.CreateMergePatch(oldData, newObj)
+				createdPatch := err == nil
+				if err != nil {
+					klog.V(2).Infof("couldn't compute patch: %v", err)
+				}
 
-			if createdPatch {
-				outputObj, err = helper.Patch(namespace, name, types.MergePatchType, patchBytes, nil)
-			} else {
-				outputObj, err = helper.Replace(namespace, name, false, obj)
-			}
-			if err != nil {
-				return err
+				mapping := info.ResourceMapping()
+				client, err := o.unstructuredClientForMapping(mapping)
+				if err != nil {
+					return err
+				}
+				helper := resource.NewHelper(client, mapping).
+					DryRun(o.dryRunStrategy == cmdutil.DryRunServer).
+					WithFieldManager(o.fieldManager)
+
+				if createdPatch {
+					outputObj, err = helper.Patch(namespace, name, types.MergePatchType, patchBytes, nil)
+				} else {
+					outputObj, err = helper.Replace(namespace, name, false, obj)
+				}
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -395,13 +390,15 @@ func (o *LabelOptions) RunLabel() error {
 	})
 }
 
-func updateDataChangeMsg(oldObj []byte, newObj []byte, overwrite bool) string {
+func updateDataChangeMsg(actuallyAdded, actuallyRemoved sets.Set[string]) string {
 	msg := MsgNotLabeled
-	if !reflect.DeepEqual(oldObj, newObj) {
+	switch {
+	case actuallyAdded.Len() > 0 && actuallyRemoved.Len() > 0:
+		msg = MsgModified
+	case actuallyAdded.Len() > 0:
 		msg = MsgLabeled
-		if !overwrite && len(newObj) < len(oldObj) {
-			msg = MsgUnLabeled
-		}
+	case actuallyRemoved.Len() > 0:
+		msg = MsgUnLabeled
 	}
 	return msg
 }
@@ -443,14 +440,14 @@ func parseLabels(spec []string) (map[string]string, []string, error) {
 	return labels, remove, nil
 }
 
-func labelFunc(obj runtime.Object, overwrite bool, resourceVersion string, labels map[string]string, remove []string) error {
+func labelFunc(obj runtime.Object, overwrite bool, resourceVersion string, labels map[string]string, remove []string) (sets.Set[string], sets.Set[string], error) {
 	accessor, err := meta.Accessor(obj)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if !overwrite {
 		if err := validateNoOverwrites(accessor, labels); err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
 
@@ -459,16 +456,25 @@ func labelFunc(obj runtime.Object, overwrite bool, resourceVersion string, label
 		objLabels = make(map[string]string)
 	}
 
+	added := sets.New[string]()
+	removed := sets.New[string]()
+
 	for key, value := range labels {
-		objLabels[key] = value
+		if currentValue, ok := objLabels[key]; !ok || currentValue != value {
+			objLabels[key] = value
+			added.Insert(key)
+		}
 	}
 	for _, label := range remove {
-		delete(objLabels, label)
+		if _, ok := objLabels[label]; ok {
+			delete(objLabels, label)
+			removed.Insert(label)
+		}
 	}
 	accessor.SetLabels(objLabels)
 
 	if len(resourceVersion) != 0 {
 		accessor.SetResourceVersion(resourceVersion)
 	}
-	return nil
+	return added, removed, nil
 }

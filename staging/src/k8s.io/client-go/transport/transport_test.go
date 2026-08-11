@@ -19,10 +19,15 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"testing"
+
+	clientgofeaturegate "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 )
 
 const (
@@ -94,6 +99,13 @@ stR0Yiw0buV6DL/moUO0HIM9Bjh96HJp+LxiIS6UCdIhMPp5HoQa
 )
 
 func TestNew(t *testing.T) {
+	globalGetCert := &GetCertHolder{
+		GetCert: func() (*tls.Certificate, error) { return nil, nil },
+	}
+	globalDial := &DialHolder{
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) { return nil, nil },
+	}
+
 	testCases := map[string]struct {
 		Config       *Config
 		Err          bool
@@ -209,9 +221,11 @@ func TestNew(t *testing.T) {
 			Config: &Config{
 				TLS: TLSConfig{
 					CAData: []byte(rootCACert),
-					GetCert: func() (*tls.Certificate, error) {
-						crt, err := tls.X509KeyPair([]byte(certData), []byte(keyData))
-						return &crt, err
+					GetCertHolder: &GetCertHolder{
+						GetCert: func() (*tls.Certificate, error) {
+							crt, err := tls.X509KeyPair([]byte(certData), []byte(keyData))
+							return &crt, err
+						},
 					},
 				},
 			},
@@ -223,8 +237,10 @@ func TestNew(t *testing.T) {
 			Config: &Config{
 				TLS: TLSConfig{
 					CAData: []byte(rootCACert),
-					GetCert: func() (*tls.Certificate, error) {
-						return nil, errors.New("GetCert failure")
+					GetCertHolder: &GetCertHolder{
+						GetCert: func() (*tls.Certificate, error) {
+							return nil, errors.New("GetCert failure")
+						},
 					},
 				},
 			},
@@ -235,8 +251,10 @@ func TestNew(t *testing.T) {
 			Config: &Config{
 				TLS: TLSConfig{
 					CAData: []byte(rootCACert),
-					GetCert: func() (*tls.Certificate, error) {
-						return nil, nil
+					GetCertHolder: &GetCertHolder{
+						GetCert: func() (*tls.Certificate, error) {
+							return nil, nil
+						},
 					},
 					CertData: []byte(certData),
 					KeyData:  []byte(keyData),
@@ -249,15 +267,109 @@ func TestNew(t *testing.T) {
 			Config: &Config{
 				TLS: TLSConfig{
 					CAData: []byte(rootCACert),
-					GetCert: func() (*tls.Certificate, error) {
-						return nil, nil
+					GetCertHolder: &GetCertHolder{
+						GetCert: func() (*tls.Certificate, error) {
+							return nil, nil
+						},
 					},
 				},
 			},
 		},
+		"nil holders": {
+			Config: &Config{
+				TLS: TLSConfig{
+					GetCertHolder: nil,
+				},
+				DialHolder: nil,
+			},
+			Err:          false,
+			TLS:          false,
+			TLSCert:      false,
+			TLSErr:       false,
+			Default:      true,
+			Insecure:     false,
+			DefaultRoots: false,
+		},
+		"non-nil dial holder and nil internal": {
+			Config: &Config{
+				TLS: TLSConfig{
+					GetCertHolder: nil,
+				},
+				DialHolder: &DialHolder{},
+			},
+			Err: true,
+		},
+		"non-nil cert holder and nil internal": {
+			Config: &Config{
+				TLS: TLSConfig{
+					GetCertHolder: &GetCertHolder{},
+				},
+				DialHolder: nil,
+			},
+			Err: true,
+		},
+		"non-nil dial holder+internal": {
+			Config: &Config{
+				TLS: TLSConfig{
+					GetCertHolder: nil,
+				},
+				DialHolder: &DialHolder{
+					Dial: func(ctx context.Context, network, address string) (net.Conn, error) { return nil, nil },
+				},
+			},
+			Err:          false,
+			TLS:          true,
+			TLSCert:      false,
+			TLSErr:       false,
+			Default:      false,
+			Insecure:     false,
+			DefaultRoots: true,
+		},
+		"non-nil cert holder+internal": {
+			Config: &Config{
+				TLS: TLSConfig{
+					GetCertHolder: &GetCertHolder{
+						GetCert: func() (*tls.Certificate, error) { return nil, nil },
+					},
+				},
+				DialHolder: nil,
+			},
+			Err:          false,
+			TLS:          true,
+			TLSCert:      true,
+			TLSErr:       false,
+			Default:      false,
+			Insecure:     false,
+			DefaultRoots: true,
+		},
+		"non-nil holders+internal with global address": {
+			Config: &Config{
+				TLS: TLSConfig{
+					GetCertHolder: globalGetCert,
+				},
+				DialHolder: globalDial,
+			},
+			Err:          false,
+			TLS:          true,
+			TLSCert:      true,
+			TLSErr:       false,
+			Default:      false,
+			Insecure:     false,
+			DefaultRoots: true,
+		},
 	}
 	for k, testCase := range testCases {
 		t.Run(k, func(t *testing.T) {
+			// The Close method of httptest Server mutates the
+			// `http.DefaultTransport` object, the 'TLSClientConfig'
+			// field mutates from nil to a non nil instance. This introduces flake
+			// and data race when running tests under transport package in parallel.
+			// To work around it we reset the TLSClientConfig field.
+			//
+			// See: https://github.com/golang/go/issues/65796
+			if testCase.Default {
+				http.DefaultTransport.(*http.Transport).TLSClientConfig = nil
+			}
 			rt, err := New(testCase.Config)
 			switch {
 			case testCase.Err && err == nil:
@@ -277,7 +389,10 @@ func TestNew(t *testing.T) {
 			}
 
 			// We only know how to check TLSConfig on http.Transports
-			transport := rt.(*http.Transport)
+			transport, ok := rt.(*http.Transport)
+			if !ok {
+				transport = rt.(*trackedTransport).rt.(*http.Transport)
+			}
 			switch {
 			case testCase.TLS && transport.TLSClientConfig == nil:
 				t.Fatalf("got %#v, expected TLSClientConfig", transport)
@@ -453,6 +568,54 @@ func Test_contextCanceller_RoundTrip(t *testing.T) {
 				}
 				if rt.Req != nil {
 					t.Errorf("want no nested call")
+				}
+			}
+		})
+	}
+}
+
+func TestRootCertPoolEmptyData(t *testing.T) {
+	testCases := []struct {
+		name               string
+		featureGateEnabled bool
+		expectNilPool      bool
+	}{
+		{
+			name:               "feature gate disabled returns nil (system roots)",
+			featureGateEnabled: false,
+			expectNilPool:      true,
+		},
+		{
+			name:               "feature gate enabled returns empty pool (trust nothing)",
+			featureGateEnabled: true,
+			expectNilPool:      false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set the feature gate according to the test case
+			clientfeaturestesting.SetFeatureDuringTest(t, clientgofeaturegate.ClientsAllowCARotation, tc.featureGateEnabled)
+
+			// Call the function with empty caData
+			pool, err := rootCertPool([]byte{})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+
+			if tc.expectNilPool {
+				if pool != nil {
+					t.Fatalf("Expected pool to be nil when feature gate is disabled, but got a populated pool")
+				}
+			} else {
+				if pool == nil {
+					t.Fatalf("Expected pool to be non-nil (empty pool) when feature gate is enabled, but got nil")
+				}
+
+				// Verify it is truly an empty pool
+				emptyPool := x509.NewCertPool()
+				if !pool.Equal(emptyPool) {
+					t.Fatalf("Expected the returned pool to be completely empty")
 				}
 			}
 		})

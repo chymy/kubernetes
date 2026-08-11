@@ -27,14 +27,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
 	certutil "k8s.io/client-go/util/cert"
 
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
-	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	certsphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/certs/renewal"
@@ -42,12 +42,13 @@ import (
 	etcdphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/etcd"
 	kubeconfigphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/kubeconfig"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
-	certstestutil "k8s.io/kubernetes/cmd/kubeadm/app/util/certs"
+	certstestutil "k8s.io/kubernetes/cmd/kubeadm/app/util/certs/testing"
 	configutil "k8s.io/kubernetes/cmd/kubeadm/app/util/config"
+	configtestutil "k8s.io/kubernetes/cmd/kubeadm/app/util/config/testing"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
 	etcdutil "k8s.io/kubernetes/cmd/kubeadm/app/util/etcd"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
 	pkiutiltesting "k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil/testing"
-	testutil "k8s.io/kubernetes/cmd/kubeadm/test"
 )
 
 const (
@@ -61,7 +62,6 @@ apiVersion: %s
 kind: InitConfiguration
 nodeRegistration:
   name: foo
-  criSocket: ""
 localAPIEndpoint:
   advertiseAddress: 192.168.2.2
   bindPort: 6443
@@ -99,19 +99,14 @@ func NewFakeStaticPodWaiter(errsToReturn map[string]error) apiclient.Waiter {
 	}
 }
 
-// WaitForAPI just returns a dummy nil, to indicate that the program should just proceed
-func (w *fakeWaiter) WaitForAPI() error {
+// WaitForControlPlaneComponents just returns a dummy nil, to indicate that the program should just proceed
+func (w *fakeWaiter) WaitForControlPlaneComponents(podsMap map[string]*v1.Pod, apiServerAddress string) error {
 	return nil
 }
 
 // WaitForPodsWithLabel just returns an error if set from errsToReturn
 func (w *fakeWaiter) WaitForPodsWithLabel(kvLabel string) error {
 	return w.errsToReturn[waitForPodsWithLabel]
-}
-
-// WaitForPodToDisappear just returns a dummy nil, to indicate that the program should just proceed
-func (w *fakeWaiter) WaitForPodToDisappear(podName string) error {
-	return nil
 }
 
 // SetTimeout is a no-op; we don't use it in this implementation
@@ -132,13 +127,8 @@ func (w *fakeWaiter) WaitForStaticPodHashChange(_, _, _ string) error {
 	return w.errsToReturn[waitForHashChange]
 }
 
-// WaitForHealthyKubelet returns a dummy nil just to implement the interface
-func (w *fakeWaiter) WaitForHealthyKubelet(_ time.Duration, _ string) error {
-	return nil
-}
-
-// WaitForKubeletAndFunc is a wrapper for WaitForHealthyKubelet that also blocks for a function
-func (w *fakeWaiter) WaitForKubeletAndFunc(f func() error) error {
+// WaitForHKubelet returns a dummy nil just to implement the interface
+func (w *fakeWaiter) WaitForKubelet(_ string, _ int32) error {
 	return nil
 }
 
@@ -251,8 +241,16 @@ func (c fakeTLSEtcdClient) ListMembers() ([]etcdutil.Member, error) {
 	return []etcdutil.Member{}, nil
 }
 
+func (c fakeTLSEtcdClient) AddMemberAsLearner(name string, peerAddrs string) ([]etcdutil.Member, error) {
+	return []etcdutil.Member{}, nil
+}
+
 func (c fakeTLSEtcdClient) AddMember(name string, peerAddrs string) ([]etcdutil.Member, error) {
 	return []etcdutil.Member{}, nil
+}
+
+func (c fakeTLSEtcdClient) MemberPromote(learnerID uint64) error {
+	return nil
 }
 
 func (c fakeTLSEtcdClient) GetMemberID(peerURL string) (uint64, error) {
@@ -286,8 +284,16 @@ func (c fakePodManifestEtcdClient) ListMembers() ([]etcdutil.Member, error) {
 	return []etcdutil.Member{}, nil
 }
 
+func (c fakePodManifestEtcdClient) AddMemberAsLearner(name string, peerAddrs string) ([]etcdutil.Member, error) {
+	return []etcdutil.Member{}, nil
+}
+
 func (c fakePodManifestEtcdClient) AddMember(name string, peerAddrs string) ([]etcdutil.Member, error) {
 	return []etcdutil.Member{}, nil
+}
+
+func (c fakePodManifestEtcdClient) MemberPromote(learnerID uint64) error {
+	return nil
 }
 
 func (c fakePodManifestEtcdClient) GetMemberID(peerURL string) (uint64, error) {
@@ -314,9 +320,7 @@ func TestStaticPodControlPlane(t *testing.T) {
 				waitForHashChange:    nil,
 				waitForPodsWithLabel: nil,
 			},
-			moveFileFunc: func(oldPath, newPath string) error {
-				return os.Rename(oldPath, newPath)
-			},
+			moveFileFunc:         os.Rename,
 			expectedErr:          false,
 			manifestShouldChange: true,
 		},
@@ -327,9 +331,7 @@ func TestStaticPodControlPlane(t *testing.T) {
 				waitForHashChange:    nil,
 				waitForPodsWithLabel: nil,
 			},
-			moveFileFunc: func(oldPath, newPath string) error {
-				return os.Rename(oldPath, newPath)
-			},
+			moveFileFunc:         os.Rename,
 			expectedErr:          true,
 			manifestShouldChange: false,
 		},
@@ -340,9 +342,7 @@ func TestStaticPodControlPlane(t *testing.T) {
 				waitForHashChange:    errors.New("boo! failed"),
 				waitForPodsWithLabel: nil,
 			},
-			moveFileFunc: func(oldPath, newPath string) error {
-				return os.Rename(oldPath, newPath)
-			},
+			moveFileFunc:         os.Rename,
 			expectedErr:          true,
 			manifestShouldChange: false,
 		},
@@ -353,9 +353,7 @@ func TestStaticPodControlPlane(t *testing.T) {
 				waitForHashChange:    nil,
 				waitForPodsWithLabel: errors.New("boo! failed"),
 			},
-			moveFileFunc: func(oldPath, newPath string) error {
-				return os.Rename(oldPath, newPath)
-			},
+			moveFileFunc:         os.Rename,
 			expectedErr:          true,
 			manifestShouldChange: false,
 		},
@@ -417,9 +415,7 @@ func TestStaticPodControlPlane(t *testing.T) {
 				waitForHashChange:    nil,
 				waitForPodsWithLabel: nil,
 			},
-			moveFileFunc: func(oldPath, newPath string) error {
-				return os.Rename(oldPath, newPath)
-			},
+			moveFileFunc:         os.Rename,
 			skipKubeConfig:       constants.SchedulerKubeConfigFileName,
 			expectedErr:          true,
 			manifestShouldChange: false,
@@ -431,12 +427,33 @@ func TestStaticPodControlPlane(t *testing.T) {
 				waitForHashChange:    nil,
 				waitForPodsWithLabel: nil,
 			},
-			moveFileFunc: func(oldPath, newPath string) error {
-				return os.Rename(oldPath, newPath)
-			},
+			moveFileFunc:         os.Rename,
 			skipKubeConfig:       constants.AdminKubeConfigFileName,
 			expectedErr:          true,
 			manifestShouldChange: false,
+		},
+		{
+			description: "super-admin.conf is renewed if it exists",
+			waitErrsToReturn: map[string]error{
+				waitForHashes:        nil,
+				waitForHashChange:    nil,
+				waitForPodsWithLabel: nil,
+			},
+			moveFileFunc:         os.Rename,
+			expectedErr:          false,
+			manifestShouldChange: true,
+		},
+		{
+			description: "no error is thrown if super-admin.conf does not exist",
+			waitErrsToReturn: map[string]error{
+				waitForHashes:        nil,
+				waitForHashChange:    nil,
+				waitForPodsWithLabel: nil,
+			},
+			moveFileFunc:         os.Rename,
+			skipKubeConfig:       constants.SuperAdminKubeConfigFileName,
+			expectedErr:          false,
+			manifestShouldChange: true,
 		},
 	}
 
@@ -479,6 +496,7 @@ func TestStaticPodControlPlane(t *testing.T) {
 
 			for _, kubeConfig := range []string{
 				constants.AdminKubeConfigFileName,
+				constants.SuperAdminKubeConfigFileName,
 				constants.SchedulerKubeConfigFileName,
 				constants.ControllerManagerKubeConfigFileName,
 			} {
@@ -584,7 +602,7 @@ func getConfig(version, certsDir, etcdDataDir string) (*kubeadmapi.InitConfigura
 	configBytes := []byte(fmt.Sprintf(testConfiguration, certsDir, etcdDataDir, version))
 
 	// Unmarshal the config
-	return configutil.BytesToInitConfiguration(configBytes)
+	return configutil.BytesToInitConfiguration(configBytes, true /* skipCRIDetect */)
 }
 
 func getTempDir(t *testing.T, name string) (string, func()) {
@@ -765,11 +783,10 @@ func TestRenewCertsByComponent(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			pkiutiltesting.Reset()
 
-			// Setup up basic requities
-			tmpDir := testutil.SetupTempDir(t)
-			defer os.RemoveAll(tmpDir)
+			// Setup up basic requisites
+			tmpDir := t.TempDir()
 
-			cfg := testutil.GetDefaultInternalConfig(t)
+			cfg := configtestutil.GetDefaultInternalConfig(t)
 			cfg.CertificatesDir = tmpDir
 
 			if err := pkiutil.WriteCertAndKey(tmpDir, constants.CACertAndKeyBaseName, caCert, caKey); err != nil {

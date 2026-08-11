@@ -19,17 +19,17 @@ package storage
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/pkg/apis/autoscaling"
 	api "k8s.io/kubernetes/pkg/apis/core"
+
 	// Ensure that autoscaling/v1 package is initialized.
 	_ "k8s.io/api/autoscaling/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -180,7 +180,8 @@ func TestUpdateStatus(t *testing.T) {
 	storage, statusStorage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewDefaultContext()
+	ctx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault)
+	statusCtx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault, "status")
 	key, _ := storage.KeyFunc(ctx, "foo")
 	autoscalerStart := validNewHorizontalPodAutoscaler("foo")
 	err := storage.Storage.Create(ctx, key, autoscalerStart, nil, 0, false)
@@ -200,7 +201,7 @@ func TestUpdateStatus(t *testing.T) {
 		},
 	}
 
-	_, _, err = statusStorage.Update(ctx, autoscalerIn.Name, rest.DefaultUpdatedObjectInfo(autoscalerIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	_, _, err = statusStorage.Update(statusCtx, autoscalerIn.Name, rest.DefaultUpdatedObjectInfo(autoscalerIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -211,6 +212,6 @@ func TestUpdateStatus(t *testing.T) {
 	autoscalerOut := obj.(*autoscaling.HorizontalPodAutoscaler)
 	// only compare the meaningful update b/c we can't compare due to metadata
 	if !apiequality.Semantic.DeepEqual(autoscalerIn.Status, autoscalerOut.Status) {
-		t.Errorf("unexpected object: %s", diff.ObjectDiff(autoscalerIn, autoscalerOut))
+		t.Errorf("unexpected object: %s", cmp.Diff(autoscalerIn, autoscalerOut))
 	}
 }

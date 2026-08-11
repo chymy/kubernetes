@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,11 +34,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/wait"
+	exampleinstall "k8s.io/apiserver/pkg/apis/example/install"
+	examplev1 "k8s.io/apiserver/pkg/apis/example/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	v1 "k8s.io/client-go/tools/clientcmd/api/v1"
@@ -47,7 +51,7 @@ import (
 )
 
 const (
-	errBadCertificate    = "Get .*: remote error: tls: bad certificate"
+	errBadCertificate    = "Get .*: remote error: tls: (bad certificate|unknown certificate authority)"
 	errNoConfiguration   = "invalid configuration: no configuration has been provided"
 	errMissingCertPath   = "invalid configuration: unable to read %s %s for %s due to open %s: .*"
 	errSignedByUnknownCA = "Get .*: x509: .*(unknown authority|not standards compliant|not trusted)"
@@ -407,14 +411,14 @@ func TestTLSConfig(t *testing.T) {
 			test:       "server cert with SHA1 signature",
 			clientCA:   caCert,
 			serverCert: append(append(sha1ServerCertInter, byte('\n')), caCertInter...), serverKey: serverKey,
-			errRegex:                         "x509: cannot verify signature: insecure algorithm SHA1-RSA \\(temporarily override with GODEBUG=x509sha1=1\\)",
+			errRegex:                         "x509: cannot verify signature: insecure algorithm SHA1-RSA",
 			increaseSHA1SignatureWarnCounter: true,
 		},
 		{
 			test:       "server cert signed by an intermediate CA with SHA1 signature",
 			clientCA:   caCert,
 			serverCert: append(append(serverCertInterSHA1, byte('\n')), caCertInterSHA1...), serverKey: serverKey,
-			errRegex:                         "x509: cannot verify signature: insecure algorithm SHA1-RSA \\(temporarily override with GODEBUG=x509sha1=1\\)",
+			errRegex:                         "x509: cannot verify signature: insecure algorithm SHA1-RSA",
 			increaseSHA1SignatureWarnCounter: true,
 		},
 	}
@@ -688,7 +692,7 @@ func TestWithExponentialBackoff(t *testing.T) {
 }
 
 func bootstrapTestDir(t *testing.T) string {
-	dir, err := ioutil.TempDir("", "")
+	dir, err := os.MkdirTemp("", "")
 
 	if err != nil {
 		t.Fatal(err)
@@ -703,7 +707,8 @@ func bootstrapTestDir(t *testing.T) string {
 
 	// Write the certificate files to disk or fail
 	for fileName, fileData := range files {
-		if err := ioutil.WriteFile(filepath.Join(dir, fileName), fileData, 0400); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, fileName), fileData, 0400); err != nil {
+			os.RemoveAll(dir)
 			t.Fatal(err)
 		}
 	}
@@ -712,7 +717,11 @@ func bootstrapTestDir(t *testing.T) string {
 }
 
 func newKubeConfigFile(config v1.Config) (string, error) {
-	configFile, err := ioutil.TempFile("", "")
+	configFile, err := os.CreateTemp("", "")
+	if err != nil {
+		return "", err
+	}
+	defer configFile.Close()
 
 	if err != nil {
 		return "", fmt.Errorf("unable to create the Kubernetes client config file: %v", err)
@@ -863,7 +872,7 @@ func TestWithExponentialBackoffParametersNotSet(t *testing.T) {
 
 	err := WithExponentialBackoff(context.TODO(), wait.Backoff{}, webhookFunc, alwaysRetry)
 
-	errExpected := fmt.Errorf("webhook call failed: %s", wait.ErrWaitTimeout)
+	errExpected := fmt.Errorf("webhook call failed: %s", wait.ErrorInterrupted(nil).Error())
 	if errExpected.Error() != err.Error() {
 		t.Errorf("expected error: %v, but got: %v", errExpected, err)
 	}
@@ -922,4 +931,58 @@ func getSingleCounterValueFromRegistry(t *testing.T, r metrics.Gatherer, name st
 	}
 
 	return -1
+}
+
+func TestRESTConfigContentType(t *testing.T) {
+	server, err := newTestServer(clientCert, clientKey, caCert, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Content-Type"); got != runtime.ContentTypeJSON {
+			t.Errorf("expected request content-type: want %q got %q", runtime.ContentTypeJSON, got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read request body: %v", err)
+			return
+		}
+		if err := json.Unmarshal(body, new(any)); err != nil {
+			switch {
+			case len(body) == 0:
+				t.Log("empty request body")
+			case utf8.Valid(body):
+				t.Logf("request body: %s", string(body))
+			default:
+				t.Logf("request body: 0x%x", body)
+			}
+			t.Errorf("failed to unmarshal request body as json: %v", err)
+		}
+	})
+	if err != nil {
+		t.Errorf("failed to create server: %v", err)
+		return
+	}
+	defer server.Close()
+
+	config := &rest.Config{
+		ContentConfig: rest.ContentConfig{
+			ContentType: "foo/bar",
+		},
+		Host: server.URL,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData:   caCert,
+			CertData: clientCert,
+			KeyData:  clientKey,
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	exampleinstall.Install(scheme)
+	codecs := serializer.NewCodecFactory(scheme)
+	groupVersions := []schema.GroupVersion{examplev1.SchemeGroupVersion}
+	wh, err := NewGenericWebhook(scheme, codecs, config, groupVersions, retryBackoff)
+	if err != nil {
+		t.Fatalf("failed to create the webhook: %v", err)
+	}
+
+	if err := wh.RestClient.Post().Body(&examplev1.Pod{}).Do(context.TODO()).Error(); err != nil {
+		t.Fatalf("failed to complete request: %v", err)
+	}
 }

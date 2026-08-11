@@ -17,18 +17,17 @@ limitations under the License.
 package clientcmd
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestMain(m *testing.M) {
-	tmp, err := ioutil.TempDir("", "testkubeconfig")
+	tmp, err := os.MkdirTemp("", "testkubeconfig")
 	if err != nil {
 		panic(err)
 	}
 	defer os.RemoveAll(tmp)
 	os.Setenv("KUBECONFIG", filepath.Join(tmp, "dummy-nonexistent-kubeconfig"))
-	os.Exit(m.Run())
+	m.Run()
 }

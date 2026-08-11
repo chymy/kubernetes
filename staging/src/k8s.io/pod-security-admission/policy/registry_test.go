@@ -43,7 +43,7 @@ func TestCheckRegistry(t *testing.T) {
 	multiOverride.Versions[1].OverrideCheckIDs = []CheckID{"d"}
 	checks = append(checks, multiOverride)
 
-	reg, err := NewEvaluator(checks)
+	reg, err := NewEvaluator(checks, nil)
 	require.NoError(t, err)
 
 	levelCases := []registryTestCase{
@@ -76,7 +76,7 @@ func TestCheckRegistry_NoBaseline(t *testing.T) {
 		withOverrides(generateCheck("h", api.LevelRestricted, []string{"v1.0"}), []CheckID{"b"}),
 	}
 
-	reg, err := NewEvaluator(checks)
+	reg, err := NewEvaluator(checks, nil)
 	require.NoError(t, err)
 
 	levelCases := []registryTestCase{
@@ -103,7 +103,7 @@ func TestCheckRegistry_NoRestricted(t *testing.T) {
 		generateCheck("d", api.LevelBaseline, []string{"v1.11", "v1.15", "v1.20"}),
 	}
 
-	reg, err := NewEvaluator(checks)
+	reg, err := NewEvaluator(checks, nil)
 	require.NoError(t, err)
 
 	levelCases := []registryTestCase{
@@ -124,7 +124,7 @@ func TestCheckRegistry_NoRestricted(t *testing.T) {
 }
 
 func TestCheckRegistry_Empty(t *testing.T) {
-	reg, err := NewEvaluator(nil)
+	reg, err := NewEvaluator(nil, nil)
 	require.NoError(t, err)
 
 	levelCases := []registryTestCase{
@@ -149,7 +149,7 @@ type registryTestCase struct {
 
 func (tc *registryTestCase) Run(t *testing.T, registry Evaluator) {
 	t.Run(fmt.Sprintf("%s:%s", tc.level, tc.version), func(t *testing.T) {
-		results := registry.EvaluatePod(api.LevelVersion{tc.level, versionOrPanic(tc.version)}, nil, nil)
+		results := registry.EvaluatePod(api.LevelVersion{Level: tc.level, Version: versionOrPanic(tc.version)}, nil, nil)
 
 		// Set extract the ForbiddenReasons from the results.
 		var actualReasons []string

@@ -20,7 +20,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/google/gofuzz"
+	"sigs.k8s.io/randfill"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
@@ -28,17 +28,18 @@ import (
 	"k8s.io/kubernetes/pkg/cluster/ports"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	kubeletconfigv1beta1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1beta1"
+	"k8s.io/kubernetes/pkg/kubelet/eviction"
 	"k8s.io/kubernetes/pkg/kubelet/qos"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 // Funcs returns the fuzzer functions for the kubeletconfig apis.
 func Funcs(codecs runtimeserializer.CodecFactory) []interface{} {
 	return []interface{}{
 		// provide non-empty values for fields with defaults, so the defaulter doesn't change values during round-trip
-		func(obj *kubeletconfig.KubeletConfiguration, c fuzz.Continue) {
-			c.FuzzNoCustom(obj)
+		func(obj *kubeletconfig.KubeletConfiguration, c randfill.Continue) {
+			c.FillNoCustom(obj)
 			obj.EnableServer = true
 			obj.Authentication.Anonymous.Enabled = true
 			obj.Authentication.Webhook.Enabled = false
@@ -54,13 +55,16 @@ func Funcs(codecs runtimeserializer.CodecFactory) []interface{} {
 			obj.EventRecordQPS = 5
 			obj.EnableControllerAttachDetach = true
 			obj.EnableDebuggingHandlers = true
+			obj.EnableSystemLogQuery = false
 			obj.FileCheckFrequency = metav1.Duration{Duration: 20 * time.Second}
 			obj.HealthzBindAddress = "127.0.0.1"
 			obj.HealthzPort = 10248
 			obj.HTTPCheckFrequency = metav1.Duration{Duration: 20 * time.Second}
 			obj.ImageMinimumGCAge = metav1.Duration{Duration: 2 * time.Minute}
+			obj.ImageMaximumGCAge = metav1.Duration{}
 			obj.ImageGCHighThresholdPercent = 85
 			obj.ImageGCLowThresholdPercent = 80
+			obj.ImagePullCredentialsVerificationPolicy = string(kubeletconfig.NeverVerifyPreloadedImages)
 			obj.KernelMemcgNotification = false
 			obj.MaxOpenFiles = 1000000
 			obj.MaxPods = 110
@@ -70,15 +74,17 @@ func Funcs(codecs runtimeserializer.CodecFactory) []interface{} {
 			obj.NodeStatusReportFrequency = metav1.Duration{Duration: time.Minute}
 			obj.NodeLeaseDurationSeconds = 40
 			obj.CPUManagerPolicy = "none"
-			obj.CPUManagerPolicyOptions = make(map[string]string)
+			obj.CPUManagerPolicyOptions = nil
 			obj.CPUManagerReconcilePeriod = obj.NodeStatusUpdateFrequency
 			obj.NodeStatusMaxImages = 50
 			obj.TopologyManagerPolicy = kubeletconfig.NoneTopologyManagerPolicy
 			obj.TopologyManagerScope = kubeletconfig.ContainerTopologyManagerScope
+			obj.TopologyManagerPolicyOptions = nil
 			obj.QOSReserved = map[string]string{
 				"memory": "50%",
 			}
 			obj.OOMScoreAdj = int32(qos.KubeletOOMScoreAdj)
+			obj.PodLogsDir = "/var/log/pods"
 			obj.Port = ports.KubeletPort
 			obj.ReadOnlyPort = ports.KubeletReadOnlyPort
 			obj.RegistryBurst = 10
@@ -88,28 +94,49 @@ func Funcs(codecs runtimeserializer.CodecFactory) []interface{} {
 			obj.StreamingConnectionIdleTimeout = metav1.Duration{Duration: 4 * time.Hour}
 			obj.SyncFrequency = metav1.Duration{Duration: 1 * time.Minute}
 			obj.ContentType = "application/vnd.kubernetes.protobuf"
-			obj.KubeAPIQPS = 5
-			obj.KubeAPIBurst = 10
+			obj.KubeAPIQPS = 50
+			obj.KubeAPIBurst = 100
 			obj.HairpinMode = v1beta1.PromiscuousBridge
-			obj.EvictionHard = kubeletconfigv1beta1.DefaultEvictionHard
+			obj.EvictionHard = eviction.DefaultEvictionHard
 			obj.EvictionPressureTransitionPeriod = metav1.Duration{Duration: 5 * time.Minute}
+			obj.MergeDefaultEvictionSettings = false
 			obj.MakeIPTablesUtilChains = true
 			obj.IPTablesMasqueradeBit = kubeletconfigv1beta1.DefaultIPTablesMasqueradeBit
 			obj.IPTablesDropBit = kubeletconfigv1beta1.DefaultIPTablesDropBit
 			obj.CgroupsPerQOS = true
 			obj.CgroupDriver = "cgroupfs"
 			obj.EnforceNodeAllocatable = kubeletconfigv1beta1.DefaultNodeAllocatableEnforcement
-			obj.StaticPodURLHeader = make(map[string][]string)
+			obj.StaticPodURLHeader = nil
+			obj.SingleProcessOOMKill = ptr.To(false)
 			obj.ContainerLogMaxFiles = 5
 			obj.ContainerLogMaxSize = "10Mi"
+			obj.ContainerLogMaxWorkers = 1
+			obj.ContainerLogMonitorInterval = metav1.Duration{Duration: 10 * time.Second}
 			obj.ConfigMapAndSecretChangeDetectionStrategy = "Watch"
-			obj.AllowedUnsafeSysctls = []string{}
+			obj.AllowedUnsafeSysctls = nil
 			obj.VolumePluginDir = kubeletconfigv1beta1.DefaultVolumePluginDir
+			obj.ContainerRuntimeEndpoint = "unix:///run/containerd/containerd.sock"
+
 			if obj.Logging.Format == "" {
 				obj.Logging.Format = "text"
 			}
 			obj.EnableSystemLogHandler = true
-			obj.MemoryThrottlingFactor = utilpointer.Float64Ptr(rand.Float64())
+			obj.MemoryThrottlingFactor = ptr.To(rand.Float64())
+			obj.MemoryReservationPolicy = kubeletconfig.NoneMemoryReservationPolicy
+			obj.LocalStorageCapacityIsolation = true
+			obj.FeatureGates = map[string]bool{
+				"AllAlpha": false,
+				"AllBeta":  true,
+			}
+			obj.CrashLoopBackOff = kubeletconfig.CrashLoopBackOffConfig{
+				MaxContainerRestartPeriod: &metav1.Duration{Duration: 5 * time.Minute},
+			}
+		},
+
+		// tokenAttributes field is only supported in v1 CredentialProvider
+		func(obj *kubeletconfig.CredentialProvider, c randfill.Continue) {
+			c.FillNoCustom(obj)
+			obj.TokenAttributes = nil
 		},
 	}
 }

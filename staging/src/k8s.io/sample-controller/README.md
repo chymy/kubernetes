@@ -1,3 +1,8 @@
+> ⚠️ **This is an automatically published [staged repository](https://git.k8s.io/kubernetes/staging#external-repository-staging-area) for Kubernetes**.   
+> Contributions, including issues and pull requests, should be made to the main Kubernetes repository: [https://github.com/kubernetes/kubernetes](https://github.com/kubernetes/kubernetes).  
+> This repository is read-only for importing, and not used for direct contributions.  
+> See [CONTRIBUTING.md](./CONTRIBUTING.md) for more details.
+
 # sample-controller
 
 This repository implements a simple controller for watching Foo resources as
@@ -33,28 +38,11 @@ explained [here](docs/controller-client-go.md).
 
 ## Fetch sample-controller and its dependencies
 
-Like the rest of Kubernetes, sample-controller has used
-[godep](https://github.com/tools/godep) and `$GOPATH` for years and is
-now adopting go 1.11 modules.  There are thus two alternative ways to
-go about fetching this demo and its dependencies.
-
-### Fetch with godep
-
-When NOT using go 1.11 modules, you can use the following commands.
+Issue the following commands --- starting in whatever working directory you
+like.
 
 ```sh
-go get -d k8s.io/sample-controller
-cd $GOPATH/src/k8s.io/sample-controller
-godep restore
-```
-
-### When using go 1.11 modules
-
-When using go 1.11 modules (`GO111MODULE=on`), issue the following
-commands --- starting in whatever working directory you like.
-
-```sh
-git clone https://github.com/kubernetes/sample-controller.git
+git clone https://github.com/kubernetes/sample-controller
 cd sample-controller
 ```
 
@@ -126,6 +114,8 @@ type User struct {
 }
 ```
 
+Note, the JSON tag `json:` is required on all user facing fields within your type. Typically API types contain only user facing fields. When the JSON tag is omitted from the field, Kubernetes generators consider the field to be internal and will not expose the field in their generated external output. For example, this means that the field would not be included in a generated CRD schema.
+
 ## Validation
 
 To validate custom resources, use the [`CustomResourceValidation`](https://kubernetes.io/docs/tasks/access-kubernetes-api/extend-api-custom-resource-definitions/#validation) feature. Validation in the form of a [structured schema](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#specifying-a-structural-schema) is mandatory to be provided for `apiextensions.k8s.io/v1`.
@@ -175,3 +165,6 @@ https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/sample-c
 Code changes are made in that location, merged into k8s.io/kubernetes and
 later synced here.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more information. Please note that [kubernetes/sample-controller](https://github.com/kubernetes/sample-controller/) is a readonly mirror repository, all development is done at [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes).

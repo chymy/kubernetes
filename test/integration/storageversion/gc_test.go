@@ -33,11 +33,12 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/klog/v2/ktesting"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/controller/storageversiongc"
-	"k8s.io/kubernetes/pkg/controlplane"
+	controlplaneapiserver "k8s.io/kubernetes/pkg/controlplane/apiserver"
 	"k8s.io/kubernetes/test/integration/framework"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -48,9 +49,13 @@ const (
 )
 
 func TestStorageVersionGarbageCollection(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.APIServerIdentity, true)()
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StorageVersionAPI, true)()
-	result := kubeapiservertesting.StartTestServerOrDie(t, nil, nil, framework.SharedEtcd())
+	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+		features.APIServerIdentity: true,
+		features.StorageVersionAPI: true,
+	})
+	flags := framework.DefaultTestServerFlags()
+	flags = append(flags, fmt.Sprintf("--runtime-config=%s=true", apiserverinternalv1alpha1.SchemeGroupVersion))
+	result := kubeapiservertesting.StartTestServerOrDie(t, nil, flags, framework.SharedEtcd())
 	defer result.TearDownFn()
 
 	kubeclient, err := kubernetes.NewForConfig(result.ClientConfig)
@@ -62,7 +67,8 @@ func TestStorageVersionGarbageCollection(t *testing.T) {
 	leaseInformer := informers.Coordination().V1().Leases()
 	storageVersionInformer := informers.Internal().V1alpha1().StorageVersions()
 
-	controller := storageversiongc.NewStorageVersionGC(kubeclient, leaseInformer, storageVersionInformer)
+	_, ctx := ktesting.NewTestContext(t)
+	controller := storageversiongc.NewStorageVersionGC(ctx, kubeclient, leaseInformer, storageVersionInformer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -95,7 +101,7 @@ func TestStorageVersionGarbageCollection(t *testing.T) {
 			t.Errorf("unexpected storage version entry id, expected %v, got: %v",
 				expectedID, sv.Status.StorageVersions[0].APIServerID)
 		}
-		assertCommonEncodingVersion(t, kubeclient, pointer.StringPtr(idToVersion(t, idA)))
+		assertCommonEncodingVersion(t, kubeclient, ptr.To(idToVersion(t, idA)))
 		if err := kubeclient.InternalV1alpha1().StorageVersions().Delete(
 			context.TODO(), svName, metav1.DeleteOptions{}); err != nil {
 			t.Fatalf("failed to cleanup valid storage version: %v", err)
@@ -108,7 +114,7 @@ func TestStorageVersionGarbageCollection(t *testing.T) {
 		assertCommonEncodingVersion(t, kubeclient, nil)
 		deleteTestAPIServerIdentityLease(t, kubeclient, idA)
 		assertStorageVersionEntries(t, kubeclient, 1, idB)
-		assertCommonEncodingVersion(t, kubeclient, pointer.StringPtr(idToVersion(t, idB)))
+		assertCommonEncodingVersion(t, kubeclient, ptr.To(idToVersion(t, idB)))
 	})
 
 	t.Run("deleting an id should delete a storage version object that it owns entirely", func(t *testing.T) {
@@ -135,7 +141,7 @@ func createTestStorageVersion(t *testing.T, client kubernetes.Interface, ids ...
 	// every id is unique and creates a different version. We know we have a common encoding
 	// version when there is only one id. Pick it
 	if len(ids) == 1 {
-		sv.Status.CommonEncodingVersion = pointer.StringPtr(sv.Status.StorageVersions[0].EncodingVersion)
+		sv.Status.CommonEncodingVersion = ptr.To(sv.Status.StorageVersions[0].EncodingVersion)
 	}
 
 	createdSV, err := client.InternalV1alpha1().StorageVersions().Create(context.TODO(), sv, metav1.CreateOptions{})
@@ -172,12 +178,12 @@ func createTestAPIServerIdentityLease(t *testing.T, client kubernetes.Interface,
 			Name:      name,
 			Namespace: metav1.NamespaceSystem,
 			Labels: map[string]string{
-				controlplane.IdentityLeaseComponentLabelKey: controlplane.KubeAPIServer,
+				controlplaneapiserver.IdentityLeaseComponentLabelKey: controlplaneapiserver.KubeAPIServer,
 			},
 		},
 		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       pointer.StringPtr(name),
-			LeaseDurationSeconds: pointer.Int32Ptr(3600),
+			HolderIdentity:       ptr.To(name),
+			LeaseDurationSeconds: ptr.To[int32](3600),
 			// create fresh leases
 			AcquireTime: &metav1.MicroTime{Time: time.Now()},
 			RenewTime:   &metav1.MicroTime{Time: time.Now()},
@@ -211,7 +217,7 @@ func assertStorageVersionEntries(t *testing.T, client kubernetes.Interface,
 			return false, nil
 		}
 		if sv.Status.StorageVersions[0].APIServerID != firstID {
-			lastErr = fmt.Errorf("unexpected fisrt storage version entry id, expected %v, got: %v",
+			lastErr = fmt.Errorf("unexpected first storage version entry id, expected %v, got: %v",
 				firstID, sv.Status.StorageVersions[0].APIServerID)
 			return false, nil
 		}

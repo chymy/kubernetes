@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 
@@ -32,7 +31,8 @@ import (
 
 const (
 	// NodePublishTimeOut_VolumeID is volume id that will result in NodePublish operation to timeout
-	NodePublishTimeOut_VolumeID = "node-publish-timeout"
+	NodePublishTimeOut_VolumeID    = "node-publish-timeout"
+	NodePublishFinalError_VolumeID = "node-publish-final-error"
 
 	// NodeStageTimeOut_VolumeID is a volume id that will result in NodeStage operation to timeout
 	NodeStageTimeOut_VolumeID = "node-stage-timeout"
@@ -41,11 +41,6 @@ const (
 // IdentityClient is a CSI identity client used for testing
 type IdentityClient struct {
 	nextErr error
-}
-
-// NewIdentityClient returns a new IdentityClient
-func NewIdentityClient() *IdentityClient {
-	return &IdentityClient{}
 }
 
 // SetNextError injects expected error
@@ -85,13 +80,18 @@ type NodeClient struct {
 	stageUnstageSet          bool
 	expansionSet             bool
 	volumeStatsSet           bool
-	volumeConditionSet       bool
+	volumeHealthSet          bool
+	storageHealthSet         bool
+	SetVolumeStats           bool
+	SetVolumeHealth          bool
+	SetStorageHealth         bool
 	singleNodeMultiWriterSet bool
 	volumeMountGroupSet      bool
 	nodeGetInfoResp          *csipb.NodeGetInfoResponse
 	nodeVolumeStatsResp      *csipb.NodeGetVolumeStatsResponse
 	FakeNodeExpansionRequest *csipb.NodeExpandVolumeRequest
 	nextErr                  error
+	getCapabilitiesErr       error
 }
 
 // NewNodeClient returns fake node client
@@ -116,13 +116,16 @@ func NewNodeClientWithExpansion(stageUnstageSet bool, expansionSet bool) *NodeCl
 func NewNodeClientWithVolumeStats(volumeStatsSet bool) *NodeClient {
 	return &NodeClient{
 		volumeStatsSet: volumeStatsSet,
+		SetVolumeStats: true,
 	}
 }
 
-func NewNodeClientWithVolumeStatsAndCondition(volumeStatsSet, volumeConditionSet bool) *NodeClient {
+func NewNodeClientWithVolumeStatsAndHealth(volumeStatsSet, volumeHealth, setVolumeStats, setVolumeHealth bool) *NodeClient {
 	return &NodeClient{
-		volumeStatsSet:     volumeStatsSet,
-		volumeConditionSet: volumeConditionSet,
+		volumeStatsSet:  volumeStatsSet,
+		volumeHealthSet: volumeHealth,
+		SetVolumeStats:  setVolumeStats,
+		SetVolumeHealth: setVolumeHealth,
 	}
 }
 
@@ -148,6 +151,10 @@ func NewNodeClientWithVolumeMountGroup(stageUnstageSet, volumeMountGroupSet bool
 // SetNextError injects next expected error
 func (f *NodeClient) SetNextError(err error) {
 	f.nextErr = err
+}
+
+func (f *NodeClient) SetGetCapabilitiesErr(err error) {
+	f.getCapabilitiesErr = err
 }
 
 func (f *NodeClient) SetNodeGetInfoResp(resp *csipb.NodeGetInfoResponse) {
@@ -207,10 +214,14 @@ func (f *NodeClient) NodePublishVolume(ctx context.Context, req *csipb.NodePubli
 		return nil, timeoutErr
 	}
 
+	if req.GetVolumeId() == NodePublishFinalError_VolumeID {
+		return nil, status.Errorf(codes.Internal, "final error")
+	}
+
 	// "Creation of target_path is the responsibility of the SP."
 	// Our plugin depends on it.
 	if req.VolumeCapability.GetBlock() != nil {
-		if err := ioutil.WriteFile(req.TargetPath, []byte{}, 0644); err != nil {
+		if err := os.WriteFile(req.TargetPath, []byte{}, 0644); err != nil {
 			return nil, fmt.Errorf("cannot create target path %s for block file: %s", req.TargetPath, err)
 		}
 	} else {
@@ -350,6 +361,10 @@ func (f *NodeClient) NodeGetCapabilities(ctx context.Context, in *csipb.NodeGetC
 	resp := &csipb.NodeGetCapabilitiesResponse{
 		Capabilities: []*csipb.NodeServiceCapability{},
 	}
+	if f.getCapabilitiesErr != nil {
+		return resp, f.getCapabilitiesErr
+	}
+
 	if f.stageUnstageSet {
 		resp.Capabilities = append(resp.Capabilities, &csipb.NodeServiceCapability{
 			Type: &csipb.NodeServiceCapability_Rpc{
@@ -379,11 +394,21 @@ func (f *NodeClient) NodeGetCapabilities(ctx context.Context, in *csipb.NodeGetC
 		})
 	}
 
-	if f.volumeConditionSet {
+	if f.volumeHealthSet {
 		resp.Capabilities = append(resp.Capabilities, &csipb.NodeServiceCapability{
 			Type: &csipb.NodeServiceCapability_Rpc{
 				Rpc: &csipb.NodeServiceCapability_RPC{
-					Type: csipb.NodeServiceCapability_RPC_VOLUME_CONDITION,
+					Type: csipb.NodeServiceCapability_RPC_GET_VOLUME_HEALTH,
+				},
+			},
+		})
+	}
+
+	if f.storageHealthSet {
+		resp.Capabilities = append(resp.Capabilities, &csipb.NodeServiceCapability{
+			Type: &csipb.NodeServiceCapability_Rpc{
+				Rpc: &csipb.NodeServiceCapability_RPC{
+					Type: csipb.NodeServiceCapability_RPC_GET_STORAGE_HEALTH,
 				},
 			},
 		})
@@ -435,15 +460,57 @@ func (f *NodeClient) NodeGetVolumeStats(ctx context.Context, req *csipb.NodeGetV
 	return &csipb.NodeGetVolumeStatsResponse{}, nil
 }
 
+// NodeGetVolumeHealth implements csi method
+func (f *NodeClient) NodeGetVolumeHealth(ctx context.Context, req *csipb.NodeGetVolumeHealthRequest, opts ...grpc.CallOption) (*csipb.NodeGetVolumeHealthResponse, error) {
+	if f.nextErr != nil {
+		return nil, f.nextErr
+	}
+	resp := &csipb.NodeGetVolumeHealthResponse{}
+	if f.SetVolumeHealth {
+		resp.VolumeHealth = &csipb.VolumeHealth{
+			VolumeId: req.GetVolumeId(),
+			HealthStatuses: []*csipb.VolumeHealth_VolumeHealthEntry{
+				{
+					Status:  csipb.VolumeHealthErrorType_DEGRADED,
+					Reason:  "FakeHealthIssue",
+					Message: "fake volume health issue",
+				},
+			},
+		}
+	}
+	return resp, nil
+}
+
+// NodeGetStorageHealth implements csi method
+func (f *NodeClient) NodeGetStorageHealth(ctx context.Context, req *csipb.NodeGetStorageHealthRequest, opts ...grpc.CallOption) (*csipb.NodeGetStorageHealthResponse, error) {
+	if f.nextErr != nil {
+		return nil, f.nextErr
+	}
+	resp := &csipb.NodeGetStorageHealthResponse{}
+	if f.SetStorageHealth {
+		resp.BackendHealth = []*csipb.NodeGetStorageHealthResponse_StorageBackendHealth{
+			{
+				Status:  csipb.StorageHealthErrorType_STORAGE_DEGRADED,
+				Reason:  "FakeStorageHealthIssue",
+				Message: "fake storage backend health issue",
+			},
+		}
+	}
+	return resp, nil
+}
+
+// NewNodeClientWithStorageHealth returns a fake node client with storage health capability.
+func NewNodeClientWithStorageHealth(storageHealth, setStorageHealth bool) *NodeClient {
+	return &NodeClient{
+		storageHealthSet: storageHealth,
+		SetStorageHealth: setStorageHealth,
+	}
+}
+
 // ControllerClient represents a CSI Controller client
 type ControllerClient struct {
 	nextCapabilities []*csipb.ControllerServiceCapability
 	nextErr          error
-}
-
-// NewControllerClient returns a ControllerClient
-func NewControllerClient() *ControllerClient {
-	return &ControllerClient{}
 }
 
 // SetNextError injects next expected error

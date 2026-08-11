@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,7 +37,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	volerr "k8s.io/cloud-provider/volume/errors"
 	storagehelpers "k8s.io/component-helpers/storage/volume"
-	csitrans "k8s.io/csi-translation-lib"
 	"k8s.io/klog/v2"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/features"
@@ -55,18 +55,6 @@ const (
 	VerifyControllerAttachedVolumeOpName string = "verify_controller_attached_volume"
 )
 
-// InTreeToCSITranslator contains methods required to check migratable status
-// and perform translations from InTree PVs and Inline to CSI
-type InTreeToCSITranslator interface {
-	IsPVMigratable(pv *v1.PersistentVolume) bool
-	IsInlineMigratable(vol *v1.Volume) bool
-	IsMigratableIntreePluginByName(inTreePluginName string) bool
-	GetInTreePluginNameFromSpec(pv *v1.PersistentVolume, vol *v1.Volume) (string, error)
-	GetCSINameFromInTreeName(pluginName string) (string, error)
-	TranslateInTreePVToCSI(pv *v1.PersistentVolume) (*v1.PersistentVolume, error)
-	TranslateInTreeInlineVolumeToCSI(volume *v1.Volume, podNamespace string) (*v1.PersistentVolume, error)
-}
-
 var _ OperationGenerator = &operationGenerator{}
 
 type operationGenerator struct {
@@ -83,8 +71,6 @@ type operationGenerator struct {
 
 	// blkUtil provides volume path related operations for block volume
 	blkUtil volumepathhandler.BlockVolumePathHandler
-
-	translator InTreeToCSITranslator
 }
 
 type inTreeResizeResponse struct {
@@ -103,12 +89,12 @@ func NewOperationGenerator(kubeClient clientset.Interface,
 	recorder record.EventRecorder,
 	blkUtil volumepathhandler.BlockVolumePathHandler) OperationGenerator {
 
+	util.RegisterMetrics()
 	return &operationGenerator{
 		kubeClient:      kubeClient,
 		volumePluginMgr: volumePluginMgr,
 		recorder:        recorder,
 		blkUtil:         blkUtil,
-		translator:      csitrans.New(),
 	}
 }
 
@@ -121,10 +107,10 @@ type OperationGenerator interface {
 	GenerateUnmountVolumeFunc(volumeToUnmount MountedVolume, actualStateOfWorld ActualStateOfWorldMounterUpdater, podsDir string) (volumetypes.GeneratedOperations, error)
 
 	// Generates the AttachVolume function needed to perform attach of a volume plugin
-	GenerateAttachVolumeFunc(volumeToAttach VolumeToAttach, actualStateOfWorld ActualStateOfWorldAttacherUpdater) volumetypes.GeneratedOperations
+	GenerateAttachVolumeFunc(logger klog.Logger, volumeToAttach VolumeToAttach, actualStateOfWorld ActualStateOfWorldAttacherUpdater) volumetypes.GeneratedOperations
 
 	// Generates the DetachVolume function needed to perform the detach of a volume plugin
-	GenerateDetachVolumeFunc(volumeToDetach AttachedVolume, verifySafeToDetach bool, actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error)
+	GenerateDetachVolumeFunc(logger klog.Logger, volumeToDetach AttachedVolume, verifySafeToDetach bool, actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error)
 
 	// Generates the VolumesAreAttached function needed to verify if volume plugins are attached
 	GenerateVolumesAreAttachedFunc(attachedVolumes []AttachedVolume, nodeName types.NodeName, actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error)
@@ -133,7 +119,7 @@ type OperationGenerator interface {
 	GenerateUnmountDeviceFunc(deviceToDetach AttachedVolume, actualStateOfWorld ActualStateOfWorldMounterUpdater, mounter hostutil.HostUtils) (volumetypes.GeneratedOperations, error)
 
 	// Generates the function needed to check if the attach_detach controller has attached the volume plugin
-	GenerateVerifyControllerAttachedVolumeFunc(volumeToMount VolumeToMount, nodeName types.NodeName, actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error)
+	GenerateVerifyControllerAttachedVolumeFunc(logger klog.Logger, volumeToMount VolumeToMount, nodeName types.NodeName, actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error)
 
 	// Generates the MapVolume function needed to perform the map of a volume plugin
 	GenerateMapVolumeFunc(waitForAttachTimeout time.Duration, volumeToMount VolumeToMount, actualStateOfWorldMounterUpdater ActualStateOfWorldMounterUpdater) (volumetypes.GeneratedOperations, error)
@@ -146,14 +132,6 @@ type OperationGenerator interface {
 
 	// GetVolumePluginMgr returns volume plugin manager
 	GetVolumePluginMgr() *volume.VolumePluginMgr
-
-	// GetCSITranslator returns the CSI Translation Library
-	GetCSITranslator() InTreeToCSITranslator
-
-	GenerateBulkVolumeVerifyFunc(
-		map[types.NodeName][]*volume.Spec,
-		string,
-		map[*volume.Spec]v1.UniqueVolumeName, ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error)
 
 	GenerateExpandVolumeFunc(*v1.PersistentVolumeClaim, *v1.PersistentVolume) (volumetypes.GeneratedOperations, error)
 
@@ -202,7 +180,7 @@ func (og *operationGenerator) GenerateVolumesAreAttachedFunc(
 		volumePlugin, err :=
 			og.volumePluginMgr.FindPluginBySpec(volumeAttached.VolumeSpec)
 		if err != nil || volumePlugin == nil {
-			klog.Errorf(volumeAttached.GenerateErrorDetailed("VolumesAreAttached.FindPluginBySpec failed", err).Error())
+			klog.Error(volumeAttached.GenerateErrorDetailed("VolumesAreAttached.FindPluginBySpec failed", err).Error())
 			continue
 		}
 		volumeSpecList, pluginExists := volumesPerPlugin[volumePlugin.GetPluginName()]
@@ -269,85 +247,8 @@ func (og *operationGenerator) GenerateVolumesAreAttachedFunc(
 	}, nil
 }
 
-func (og *operationGenerator) GenerateBulkVolumeVerifyFunc(
-	pluginNodeVolumes map[types.NodeName][]*volume.Spec,
-	pluginName string,
-	volumeSpecMap map[*volume.Spec]v1.UniqueVolumeName,
-	actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error) {
-
-	// Migration: All inputs already should be translated by caller for this
-	// function except volumeSpecMap which contains original volume names for
-	// use with actualStateOfWorld
-
-	bulkVolumeVerifyFunc := func() volumetypes.OperationContext {
-		attachableVolumePlugin, err :=
-			og.volumePluginMgr.FindAttachablePluginByName(pluginName)
-		if err != nil || attachableVolumePlugin == nil {
-			klog.Errorf(
-				"BulkVerifyVolume.FindAttachablePluginBySpec failed for plugin %q with: %v",
-				pluginName,
-				err)
-			return volumetypes.NewOperationContext(nil, nil, false)
-		}
-
-		volumeAttacher, newAttacherErr := attachableVolumePlugin.NewAttacher()
-
-		if newAttacherErr != nil {
-			klog.Errorf(
-				"BulkVerifyVolume.NewAttacher failed for getting plugin %q with: %v",
-				attachableVolumePlugin,
-				newAttacherErr)
-			return volumetypes.NewOperationContext(nil, nil, false)
-		}
-		bulkVolumeVerifier, ok := volumeAttacher.(volume.BulkVolumeVerifier)
-
-		if !ok {
-			klog.Errorf("BulkVerifyVolume failed to type assert attacher %q", bulkVolumeVerifier)
-			return volumetypes.NewOperationContext(nil, nil, false)
-		}
-
-		attached, bulkAttachErr := bulkVolumeVerifier.BulkVerifyVolumes(pluginNodeVolumes)
-		if bulkAttachErr != nil {
-			klog.Errorf("BulkVerifyVolume.BulkVerifyVolumes Error checking volumes are attached with %v", bulkAttachErr)
-			return volumetypes.NewOperationContext(nil, nil, false)
-		}
-
-		for nodeName, volumeSpecs := range pluginNodeVolumes {
-			for _, volumeSpec := range volumeSpecs {
-				nodeVolumeSpecs, nodeChecked := attached[nodeName]
-
-				if !nodeChecked {
-					klog.V(2).Infof("VerifyVolumesAreAttached.BulkVerifyVolumes failed for node %q and leaving volume %q as attached",
-						nodeName,
-						volumeSpec.Name())
-					continue
-				}
-
-				check := nodeVolumeSpecs[volumeSpec]
-
-				if !check {
-					klog.V(2).Infof("VerifyVolumesAreAttached.BulkVerifyVolumes failed for node %q and volume %q",
-						nodeName,
-						volumeSpec.Name())
-					actualStateOfWorld.MarkVolumeAsDetached(volumeSpecMap[volumeSpec], nodeName)
-				}
-			}
-		}
-
-		// It is hard to differentiate migrated status for all volumes for verify_volumes_are_attached
-		return volumetypes.NewOperationContext(nil, nil, false)
-	}
-
-	return volumetypes.GeneratedOperations{
-		OperationName:     "verify_volumes_are_attached",
-		OperationFunc:     bulkVolumeVerifyFunc,
-		CompleteFunc:      util.OperationCompleteHook(util.GetFullQualifiedPluginNameForVolume(pluginName, nil), "verify_volumes_are_attached"),
-		EventRecorderFunc: nil, // nil because we do not want to generate event on error
-	}, nil
-
-}
-
 func (og *operationGenerator) GenerateAttachVolumeFunc(
+	logger klog.Logger,
 	volumeToAttach VolumeToAttach,
 	actualStateOfWorld ActualStateOfWorldAttacherUpdater) volumetypes.GeneratedOperations {
 
@@ -378,6 +279,7 @@ func (og *operationGenerator) GenerateAttachVolumeFunc(
 				uncertainNode = derr.CurrentNode
 			}
 			addErr := actualStateOfWorld.MarkVolumeAsUncertain(
+				logger,
 				volumeToAttach.VolumeName,
 				volumeToAttach.VolumeSpec,
 				uncertainNode)
@@ -390,21 +292,21 @@ func (og *operationGenerator) GenerateAttachVolumeFunc(
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
 
-		// Successful attach event is useful for user debugging
-		simpleMsg, _ := volumeToAttach.GenerateMsg("AttachVolume.Attach succeeded", "")
-		for _, pod := range volumeToAttach.ScheduledPods {
-			og.recorder.Eventf(pod, v1.EventTypeNormal, kevents.SuccessfulAttachVolume, simpleMsg)
-		}
-		klog.Infof(volumeToAttach.GenerateMsgDetailed("AttachVolume.Attach succeeded", ""))
-
 		// Update actual state of world
 		addVolumeNodeErr := actualStateOfWorld.MarkVolumeAsAttached(
-			v1.UniqueVolumeName(""), volumeToAttach.VolumeSpec, volumeToAttach.NodeName, devicePath)
+			logger, volumeToAttach.VolumeName, volumeToAttach.VolumeSpec, volumeToAttach.NodeName, devicePath)
 		if addVolumeNodeErr != nil {
 			// On failure, return error. Caller will log and retry.
 			eventErr, detailedErr := volumeToAttach.GenerateError("AttachVolume.MarkVolumeAsAttached failed", addVolumeNodeErr)
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
+
+		// Successful attach event is useful for user debugging
+		simpleMsg, _ := volumeToAttach.GenerateMsg("AttachVolume.Attach succeeded", "")
+		for _, pod := range volumeToAttach.ScheduledPods {
+			og.recorder.Eventf(pod, v1.EventTypeNormal, kevents.SuccessfulAttachVolume, "%s", simpleMsg)
+		}
+		klog.Info(volumeToAttach.GenerateMsgDetailed("AttachVolume.Attach succeeded", ""))
 
 		return volumetypes.NewOperationContext(nil, nil, migrated)
 	}
@@ -412,7 +314,7 @@ func (og *operationGenerator) GenerateAttachVolumeFunc(
 	eventRecorderFunc := func(err *error) {
 		if *err != nil {
 			for _, pod := range volumeToAttach.ScheduledPods {
-				og.recorder.Eventf(pod, v1.EventTypeWarning, kevents.FailedAttachVolume, (*err).Error())
+				og.recorder.Eventf(pod, v1.EventTypeWarning, kevents.FailedAttachVolume, "%s", (*err).Error())
 			}
 		}
 	}
@@ -442,11 +344,8 @@ func (og *operationGenerator) GetVolumePluginMgr() *volume.VolumePluginMgr {
 	return og.volumePluginMgr
 }
 
-func (og *operationGenerator) GetCSITranslator() InTreeToCSITranslator {
-	return og.translator
-}
-
 func (og *operationGenerator) GenerateDetachVolumeFunc(
+	logger klog.Logger,
 	volumeToDetach AttachedVolume,
 	verifySafeToDetach bool,
 	actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error) {
@@ -503,14 +402,18 @@ func (og *operationGenerator) GenerateDetachVolumeFunc(
 		migrated := getMigratedStatusBySpec(volumeToDetach.VolumeSpec)
 
 		if err != nil {
-			// On failure, add volume back to ReportAsAttached list
-			actualStateOfWorld.AddVolumeToReportAsAttached(
-				volumeToDetach.VolumeName, volumeToDetach.NodeName)
+			// On failure, mark the volume as uncertain. Attach() must succeed before adding the volume back
+			// to node status as attached.
+			uncertainError := actualStateOfWorld.MarkVolumeAsUncertain(
+				logger, volumeToDetach.VolumeName, volumeToDetach.VolumeSpec, volumeToDetach.NodeName)
+			if uncertainError != nil {
+				klog.Errorf("DetachVolume.MarkVolumeAsUncertain failed to add the volume %q to actual state after detach error: %s", volumeToDetach.VolumeName, uncertainError)
+			}
 			eventErr, detailedErr := volumeToDetach.GenerateError("DetachVolume.Detach failed", err)
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
 
-		klog.Infof(volumeToDetach.GenerateMsgDetailed("DetachVolume.Detach succeeded", ""))
+		klog.Info(volumeToDetach.GenerateMsgDetailed("DetachVolume.Detach succeeded", ""))
 
 		// Update actual state of world
 		actualStateOfWorld.MarkVolumeAsDetached(
@@ -559,8 +462,7 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 
 		volumeMounter, newMounterErr := volumePlugin.NewMounter(
 			volumeToMount.VolumeSpec,
-			volumeToMount.Pod,
-			volume.VolumeOptions{})
+			volumeToMount.Pod)
 		if newMounterErr != nil {
 			eventErr, detailedErr := volumeToMount.GenerateError("MountVolume.NewMounter initialization failed", newMounterErr)
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
@@ -573,8 +475,7 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 		}
 
 		// Enforce ReadWriteOncePod access mode if it is the only one present. This is also enforced during scheduling.
-		if utilfeature.DefaultFeatureGate.Enabled(features.ReadWriteOncePod) &&
-			actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
+		if actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
 			// Because we do not know what access mode the pod intends to use if there are multiple.
 			len(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes) == 1 &&
 			v1helper.ContainsAccessMode(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes, v1.ReadWriteOncePod) {
@@ -641,11 +542,12 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 			}
 
 			// Mount device to global mount path
+			og.markVolumeMountAsAttempted(actualStateOfWorld, volumeToMount.PodName, volumeToMount.VolumeName)
 			err = volumeDeviceMounter.MountDevice(
 				volumeToMount.VolumeSpec,
 				devicePath,
 				deviceMountPath,
-				volume.DeviceMounterArgs{FsGroup: fsGroup},
+				volume.DeviceMounterArgs{FsGroup: fsGroup, SELinuxLabel: volumeToMount.SELinuxLabel},
 			)
 			if err != nil {
 				og.checkForFailedMount(volumeToMount, err)
@@ -659,7 +561,7 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 
 			// Update actual state of world to reflect volume is globally mounted
 			markDeviceMountedErr := actualStateOfWorld.MarkDeviceAsMounted(
-				volumeToMount.VolumeName, devicePath, deviceMountPath)
+				volumeToMount.VolumeName, devicePath, deviceMountPath, volumeToMount.SELinuxLabel)
 			if markDeviceMountedErr != nil {
 				// On failure, return error. Caller will log and retry.
 				eventErr, detailedErr := volumeToMount.GenerateError("MountVolume.MarkDeviceAsMounted failed", markDeviceMountedErr)
@@ -669,12 +571,27 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 			resizeOptions.DeviceStagePath = deviceMountPath
 		}
 
+		if volumeDeviceMounter != nil && resizeOptions.DeviceStagePath == "" {
+			deviceStagePath, err := volumeDeviceMounter.GetDeviceMountPath(volumeToMount.VolumeSpec)
+			if err != nil {
+				// On failure, return error. Caller will log and retry.
+				eventErr, detailedErr := volumeToMount.GenerateError("MountVolume.GetDeviceMountPath failed for expansion", err)
+				return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
+			}
+			resizeOptions.DeviceStagePath = deviceStagePath
+		}
+
 		// Execute mount
+		og.markVolumeMountAsAttempted(actualStateOfWorld, volumeToMount.PodName, volumeToMount.VolumeName)
 		mountErr := volumeMounter.SetUp(volume.MounterArgs{
 			FsUser:              util.FsUserFrom(volumeToMount.Pod),
 			FsGroup:             fsGroup,
 			DesiredSize:         volumeToMount.DesiredSizeLimit,
 			FSGroupChangePolicy: fsGroupChangePolicy,
+			Recorder:            og.recorder,
+			SELinuxLabel:        volumeToMount.SELinuxLabel,
+			ReconstructedVolume: actualStateOfWorld.IsVolumeReconstructed(volumeToMount.VolumeName, volumeToMount.PodName),
+			IsRemount:           isRemount,
 		})
 		// Update actual state of world
 		markOpts := MarkVolumeOpts{
@@ -682,10 +599,10 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 			PodUID:              volumeToMount.Pod.UID,
 			VolumeName:          volumeToMount.VolumeName,
 			Mounter:             volumeMounter,
-			OuterVolumeSpecName: volumeToMount.OuterVolumeSpecName,
-			VolumeGidVolume:     volumeToMount.VolumeGidValue,
+			VolumeGIDVolume:     volumeToMount.VolumeGIDValue,
 			VolumeSpec:          volumeToMount.VolumeSpec,
 			VolumeMountState:    VolumeMounted,
+			SELinuxMountContext: volumeToMount.SELinuxLabel,
 		}
 		if mountErr != nil {
 			og.checkForFailedMount(volumeToMount, mountErr)
@@ -710,10 +627,10 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 			// At this point, MountVolume.Setup already succeeded, we should add volume into actual state
 			// so that reconciler can clean up volume when needed. However, volume resize failed,
 			// we should not mark the volume as mounted to avoid pod starts using it.
-			// Considering the above situations, we mark volume as uncertain here so that reconciler will tigger
+			// Considering the above situations, we mark volume as uncertain here so that reconciler will trigger
 			// volume tear down when pod is deleted, and also makes sure pod will not start using it.
 			if err := actualStateOfWorld.MarkVolumeMountAsUncertain(markOpts); err != nil {
-				klog.Errorf(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeMountAsUncertain failed", err).Error())
+				klog.Error(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeMountAsUncertain failed", err).Error())
 			}
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
@@ -735,7 +652,7 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 
 	eventRecorderFunc := func(err *error) {
 		if *err != nil {
-			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMountVolume, (*err).Error())
+			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMountVolume, "%s", (*err).Error())
 		}
 	}
 
@@ -755,17 +672,29 @@ func (og *operationGenerator) checkForFailedMount(volumeToMount VolumeToMount, m
 
 	if volumetypes.IsFilesystemMismatchError(mountError) {
 		simpleMsg, _ := volumeToMount.GenerateMsg("MountVolume failed", mountError.Error())
-		og.recorder.Eventf(pv, v1.EventTypeWarning, kevents.FailedMountOnFilesystemMismatch, simpleMsg)
+		og.recorder.Eventf(pv, v1.EventTypeWarning, kevents.FailedMountOnFilesystemMismatch, "%s", simpleMsg)
+	}
+}
+
+func (og *operationGenerator) markVolumeMountAsAttempted(actualStateOfWorld ActualStateOfWorldMounterUpdater, podName volumetypes.UniquePodName, volumeName v1.UniqueVolumeName) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.CSIVolumeHealth) {
+		actualStateOfWorld.MarkVolumeAsMountAttempted(podName, volumeName)
 	}
 }
 
 func (og *operationGenerator) markDeviceErrorState(volumeToMount VolumeToMount, devicePath, deviceMountPath string, mountError error, actualStateOfWorld ActualStateOfWorldMounterUpdater) {
 	if volumetypes.IsOperationFinishedError(mountError) &&
 		actualStateOfWorld.GetDeviceMountState(volumeToMount.VolumeName) == DeviceMountUncertain {
+
+		if actualStateOfWorld.IsVolumeDeviceReconstructed(volumeToMount.VolumeName) {
+			klog.V(2).InfoS("MountVolume.markDeviceErrorState leaving volume uncertain", "volumeName", volumeToMount.VolumeName)
+			return
+		}
+
 		// Only devices which were uncertain can be marked as unmounted
 		markDeviceUnmountError := actualStateOfWorld.MarkDeviceAsUnmounted(volumeToMount.VolumeName)
 		if markDeviceUnmountError != nil {
-			klog.Errorf(volumeToMount.GenerateErrorDetailed("MountDevice.MarkDeviceAsUnmounted failed", markDeviceUnmountError).Error())
+			klog.Error(volumeToMount.GenerateErrorDetailed("MountDevice.MarkDeviceAsUnmounted failed", markDeviceUnmountError).Error())
 		}
 		return
 	}
@@ -774,9 +703,9 @@ func (og *operationGenerator) markDeviceErrorState(volumeToMount VolumeToMount, 
 		actualStateOfWorld.GetDeviceMountState(volumeToMount.VolumeName) == DeviceNotMounted {
 		// only devices which are not mounted can be marked as uncertain. We do not want to mark a device
 		// which was previously marked as mounted here as uncertain.
-		markDeviceUncertainError := actualStateOfWorld.MarkDeviceAsUncertain(volumeToMount.VolumeName, devicePath, deviceMountPath)
+		markDeviceUncertainError := actualStateOfWorld.MarkDeviceAsUncertain(volumeToMount.VolumeName, devicePath, deviceMountPath, volumeToMount.SELinuxLabel)
 		if markDeviceUncertainError != nil {
-			klog.Errorf(volumeToMount.GenerateErrorDetailed("MountDevice.MarkDeviceAsUncertain failed", markDeviceUncertainError).Error())
+			klog.Error(volumeToMount.GenerateErrorDetailed("MountDevice.MarkDeviceAsUncertain failed", markDeviceUncertainError).Error())
 		}
 	}
 
@@ -785,21 +714,28 @@ func (og *operationGenerator) markDeviceErrorState(volumeToMount VolumeToMount, 
 func (og *operationGenerator) markVolumeErrorState(volumeToMount VolumeToMount, markOpts MarkVolumeOpts, mountError error, actualStateOfWorld ActualStateOfWorldMounterUpdater) {
 	if volumetypes.IsOperationFinishedError(mountError) &&
 		actualStateOfWorld.GetVolumeMountState(volumeToMount.VolumeName, markOpts.PodName) == VolumeMountUncertain {
+		// if volume was previously reconstructed we are not going to change its state as unmounted even
+		// if mount operation fails.
+		if actualStateOfWorld.IsVolumeReconstructed(volumeToMount.VolumeName, volumeToMount.PodName) {
+			klog.V(3).InfoS("MountVolume.markVolumeErrorState leaving volume uncertain", "volumeName", volumeToMount.VolumeName)
+			return
+		}
+
 		t := actualStateOfWorld.MarkVolumeAsUnmounted(volumeToMount.PodName, volumeToMount.VolumeName)
 		if t != nil {
-			klog.Errorf(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeAsUnmounted failed", t).Error())
+			klog.Error(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeAsUnmounted failed", t).Error())
 		}
 		return
+
 	}
 
 	if volumetypes.IsUncertainProgressError(mountError) &&
 		actualStateOfWorld.GetVolumeMountState(volumeToMount.VolumeName, markOpts.PodName) == VolumeNotMounted {
 		t := actualStateOfWorld.MarkVolumeMountAsUncertain(markOpts)
 		if t != nil {
-			klog.Errorf(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeMountAsUncertain failed", t).Error())
+			klog.Error(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeMountAsUncertain failed", t).Error())
 		}
 	}
-
 }
 
 func (og *operationGenerator) GenerateUnmountVolumeFunc(
@@ -834,18 +770,17 @@ func (og *operationGenerator) GenerateUnmountVolumeFunc(
 		if unmountErr != nil {
 			// Mark the volume as uncertain, so SetUp is called for new pods. Teardown may be already in progress.
 			opts := MarkVolumeOpts{
-				PodName:             volumeToUnmount.PodName,
-				PodUID:              volumeToUnmount.PodUID,
-				VolumeName:          volumeToUnmount.VolumeName,
-				OuterVolumeSpecName: volumeToUnmount.OuterVolumeSpecName,
-				VolumeGidVolume:     volumeToUnmount.VolumeGidValue,
-				VolumeSpec:          volumeToUnmount.VolumeSpec,
-				VolumeMountState:    VolumeMountUncertain,
+				PodName:          volumeToUnmount.PodName,
+				PodUID:           volumeToUnmount.PodUID,
+				VolumeName:       volumeToUnmount.VolumeName,
+				VolumeGIDVolume:  volumeToUnmount.VolumeGIDValue,
+				VolumeSpec:       volumeToUnmount.VolumeSpec,
+				VolumeMountState: VolumeMountUncertain,
 			}
 			markMountUncertainErr := actualStateOfWorld.MarkVolumeMountAsUncertain(opts)
 			if markMountUncertainErr != nil {
 				// There is nothing else we can do. Hope that UnmountVolume will be re-tried shortly.
-				klog.Errorf(volumeToUnmount.GenerateErrorDetailed("UnmountVolume.MarkVolumeMountAsUncertain failed", markMountUncertainErr).Error())
+				klog.Error(volumeToUnmount.GenerateErrorDetailed("UnmountVolume.MarkVolumeMountAsUncertain failed", markMountUncertainErr).Error())
 			}
 
 			// On failure, return error. Caller will log and retry.
@@ -854,21 +789,20 @@ func (og *operationGenerator) GenerateUnmountVolumeFunc(
 		}
 
 		klog.Infof(
-			"UnmountVolume.TearDown succeeded for volume %q (OuterVolumeSpecName: %q) pod %q (UID: %q). InnerVolumeSpecName %q. PluginName %q, VolumeGidValue %q",
+			"UnmountVolume.TearDown succeeded for volume %q pod %q (UID: %q). InnerVolumeSpecName %q. PluginName %q, VolumeGIDValue %q",
 			volumeToUnmount.VolumeName,
-			volumeToUnmount.OuterVolumeSpecName,
 			volumeToUnmount.PodName,
 			volumeToUnmount.PodUID,
 			volumeToUnmount.InnerVolumeSpecName,
 			volumeToUnmount.PluginName,
-			volumeToUnmount.VolumeGidValue)
+			volumeToUnmount.VolumeGIDValue)
 
 		// Update actual state of world
 		markVolMountedErr := actualStateOfWorld.MarkVolumeAsUnmounted(
 			volumeToUnmount.PodName, volumeToUnmount.VolumeName)
 		if markVolMountedErr != nil {
 			// On failure, just log and exit
-			klog.Errorf(volumeToUnmount.GenerateErrorDetailed("UnmountVolume.MarkVolumeAsUnmounted failed", markVolMountedErr).Error())
+			klog.Error(volumeToUnmount.GenerateErrorDetailed("UnmountVolume.MarkVolumeAsUnmounted failed", markVolMountedErr).Error())
 		}
 
 		return volumetypes.NewOperationContext(nil, nil, migrated)
@@ -919,7 +853,7 @@ func (og *operationGenerator) GenerateUnmountDeviceFunc(
 			// If the mount path could not be found, don't fail the unmount, but instead log a warning and proceed,
 			// using the value from deviceToDetach.DeviceMountPath, so that the device can be marked as unmounted
 			deviceMountPath = deviceToDetach.DeviceMountPath
-			klog.Warningf(deviceToDetach.GenerateMsgDetailed(fmt.Sprintf(
+			klog.Warning(deviceToDetach.GenerateMsgDetailed(fmt.Sprintf(
 				"GetDeviceMountPath failed, but unmount operation will proceed using deviceMountPath=%s: %v", deviceMountPath, err), ""))
 		}
 		refs, err := deviceMountableVolumePlugin.GetDeviceMountRefs(deviceMountPath)
@@ -935,10 +869,10 @@ func (og *operationGenerator) GenerateUnmountDeviceFunc(
 		unmountDeviceErr := volumeDeviceUnmounter.UnmountDevice(deviceMountPath)
 		if unmountDeviceErr != nil {
 			// Mark the device as uncertain, so MountDevice is called for new pods. UnmountDevice may be already in progress.
-			markDeviceUncertainErr := actualStateOfWorld.MarkDeviceAsUncertain(deviceToDetach.VolumeName, deviceToDetach.DevicePath, deviceMountPath)
+			markDeviceUncertainErr := actualStateOfWorld.MarkDeviceAsUncertain(deviceToDetach.VolumeName, deviceToDetach.DevicePath, deviceMountPath, deviceToDetach.SELinuxMountContext)
 			if markDeviceUncertainErr != nil {
 				// There is nothing else we can do. Hope that UnmountDevice will be re-tried shortly.
-				klog.Errorf(deviceToDetach.GenerateErrorDetailed("UnmountDevice.MarkDeviceAsUncertain failed", markDeviceUncertainErr).Error())
+				klog.Error(deviceToDetach.GenerateErrorDetailed("UnmountDevice.MarkDeviceAsUncertain failed", markDeviceUncertainErr).Error())
 			}
 
 			// On failure, return error. Caller will log and retry.
@@ -956,10 +890,10 @@ func (og *operationGenerator) GenerateUnmountDeviceFunc(
 		// The device is still in use elsewhere. Caller will log and retry.
 		if deviceOpened {
 			// Mark the device as uncertain, so MountDevice is called for new pods.
-			markDeviceUncertainErr := actualStateOfWorld.MarkDeviceAsUncertain(deviceToDetach.VolumeName, deviceToDetach.DevicePath, deviceMountPath)
+			markDeviceUncertainErr := actualStateOfWorld.MarkDeviceAsUncertain(deviceToDetach.VolumeName, deviceToDetach.DevicePath, deviceMountPath, deviceToDetach.SELinuxMountContext)
 			if markDeviceUncertainErr != nil {
 				// There is nothing else we can do. Hope that UnmountDevice will be re-tried shortly.
-				klog.Errorf(deviceToDetach.GenerateErrorDetailed("UnmountDevice.MarkDeviceAsUncertain failed", markDeviceUncertainErr).Error())
+				klog.Error(deviceToDetach.GenerateErrorDetailed("UnmountDevice.MarkDeviceAsUncertain failed", markDeviceUncertainErr).Error())
 			}
 			eventErr, detailedErr := deviceToDetach.GenerateError(
 				"UnmountDevice failed",
@@ -1017,16 +951,15 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 	affinityErr := checkNodeAffinity(og, volumeToMount)
 	if affinityErr != nil {
 		eventErr, detailedErr := volumeToMount.GenerateError("MapVolume.NodeAffinity check failed", affinityErr)
-		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMountVolume, eventErr.Error())
+		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMountVolume, "%s", eventErr.Error())
 		return volumetypes.GeneratedOperations{}, detailedErr
 	}
 	blockVolumeMapper, newMapperErr := blockVolumePlugin.NewBlockVolumeMapper(
 		volumeToMount.VolumeSpec,
-		volumeToMount.Pod,
-		volume.VolumeOptions{})
+		volumeToMount.Pod)
 	if newMapperErr != nil {
 		eventErr, detailedErr := volumeToMount.GenerateError("MapVolume.NewBlockVolumeMapper initialization failed", newMapperErr)
-		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMapVolume, eventErr.Error())
+		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMapVolume, "%s", eventErr.Error())
 		return volumetypes.GeneratedOperations{}, detailedErr
 	}
 
@@ -1045,8 +978,7 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 		migrated := getMigratedStatusBySpec(volumeToMount.VolumeSpec)
 
 		// Enforce ReadWriteOncePod access mode. This is also enforced during scheduling.
-		if utilfeature.DefaultFeatureGate.Enabled(features.ReadWriteOncePod) &&
-			actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
+		if actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
 			// Because we do not know what access mode the pod intends to use if there are multiple.
 			len(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes) == 1 &&
 			v1helper.ContainsAccessMode(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes, v1.ReadWriteOncePod) {
@@ -1080,8 +1012,9 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 
 		}
 		// Call SetUpDevice if blockVolumeMapper implements CustomBlockVolumeMapper
-		if customBlockVolumeMapper, ok := blockVolumeMapper.(volume.CustomBlockVolumeMapper); ok {
+		if customBlockVolumeMapper, ok := blockVolumeMapper.(volume.CustomBlockVolumeMapper); ok && actualStateOfWorld.GetDeviceMountState(volumeToMount.VolumeName) != DeviceGloballyMounted {
 			var mapErr error
+			og.markVolumeMountAsAttempted(actualStateOfWorld, volumeToMount.PodName, volumeToMount.VolumeName)
 			stagingPath, mapErr = customBlockVolumeMapper.SetUpDevice()
 			if mapErr != nil {
 				og.markDeviceErrorState(volumeToMount, devicePath, globalMapPath, mapErr, actualStateOfWorld)
@@ -1094,7 +1027,7 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 		// Update actual state of world to reflect volume is globally mounted
 		markedDevicePath := devicePath
 		markDeviceMappedErr := actualStateOfWorld.MarkDeviceAsMounted(
-			volumeToMount.VolumeName, markedDevicePath, globalMapPath)
+			volumeToMount.VolumeName, markedDevicePath, globalMapPath, "")
 		if markDeviceMappedErr != nil {
 			// On failure, return error. Caller will log and retry.
 			eventErr, detailedErr := volumeToMount.GenerateError("MapVolume.MarkDeviceAsMounted failed", markDeviceMappedErr)
@@ -1102,14 +1035,13 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 		}
 
 		markVolumeOpts := MarkVolumeOpts{
-			PodName:             volumeToMount.PodName,
-			PodUID:              volumeToMount.Pod.UID,
-			VolumeName:          volumeToMount.VolumeName,
-			BlockVolumeMapper:   blockVolumeMapper,
-			OuterVolumeSpecName: volumeToMount.OuterVolumeSpecName,
-			VolumeGidVolume:     volumeToMount.VolumeGidValue,
-			VolumeSpec:          volumeToMount.VolumeSpec,
-			VolumeMountState:    VolumeMounted,
+			PodName:           volumeToMount.PodName,
+			PodUID:            volumeToMount.Pod.UID,
+			VolumeName:        volumeToMount.VolumeName,
+			BlockVolumeMapper: blockVolumeMapper,
+			VolumeGIDVolume:   volumeToMount.VolumeGIDValue,
+			VolumeSpec:        volumeToMount.VolumeSpec,
+			VolumeMountState:  VolumeMounted,
 		}
 
 		// Call MapPodDevice if blockVolumeMapper implements CustomBlockVolumeMapper
@@ -1124,7 +1056,7 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 			}
 
 			// From now on, the volume is mapped. Mark it as uncertain on error,
-			// so it is is unmapped when corresponding pod is deleted.
+			// so it is unmapped when corresponding pod is deleted.
 			defer func() {
 				if operationContext.EventErr != nil {
 					errText := operationContext.EventErr.Error()
@@ -1163,7 +1095,7 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 		// TODO: This can be improved after #82492 is merged and ASW has state.
 		if markedDevicePath != devicePath {
 			markDeviceMappedErr := actualStateOfWorld.MarkDeviceAsMounted(
-				volumeToMount.VolumeName, devicePath, globalMapPath)
+				volumeToMount.VolumeName, devicePath, globalMapPath, "")
 			if markDeviceMappedErr != nil {
 				// On failure, return error. Caller will log and retry.
 				eventErr, detailedErr := volumeToMount.GenerateError("MapVolume.MarkDeviceAsMounted failed", markDeviceMappedErr)
@@ -1183,13 +1115,13 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 		// Device mapping for global map path succeeded
 		simpleMsg, detailedMsg := volumeToMount.GenerateMsg("MapVolume.MapPodDevice succeeded", fmt.Sprintf("globalMapPath %q", globalMapPath))
 		verbosity := klog.Level(4)
-		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeNormal, kevents.SuccessfulMountVolume, simpleMsg)
+		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeNormal, kevents.SuccessfulMountVolume, "%s", simpleMsg)
 		klog.V(verbosity).InfoS(detailedMsg, "pod", klog.KObj(volumeToMount.Pod))
 
 		// Device mapping for pod device map path succeeded
 		simpleMsg, detailedMsg = volumeToMount.GenerateMsg("MapVolume.MapPodDevice succeeded", fmt.Sprintf("volumeMapPath %q", volumeMapPath))
 		verbosity = klog.Level(1)
-		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeNormal, kevents.SuccessfulMountVolume, simpleMsg)
+		og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeNormal, kevents.SuccessfulMountVolume, "%s", simpleMsg)
 		klog.V(verbosity).InfoS(detailedMsg, "pod", klog.KObj(volumeToMount.Pod))
 
 		resizeOptions := volume.NodeResizeOptions{
@@ -1203,10 +1135,10 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 			// At this point, MountVolume.Setup already succeeded, we should add volume into actual state
 			// so that reconciler can clean up volume when needed. However, if nodeExpandVolume failed,
 			// we should not mark the volume as mounted to avoid pod starts using it.
-			// Considering the above situations, we mark volume as uncertain here so that reconciler will tigger
+			// Considering the above situations, we mark volume as uncertain here so that reconciler will trigger
 			// volume tear down when pod is deleted, and also makes sure pod will not start using it.
 			if err := actualStateOfWorld.MarkVolumeMountAsUncertain(markVolumeOpts); err != nil {
-				klog.Errorf(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeMountAsUncertain failed", err).Error())
+				klog.Error(volumeToMount.GenerateErrorDetailed("MountVolume.MarkVolumeMountAsUncertain failed", err).Error())
 			}
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
@@ -1223,7 +1155,7 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 
 	eventRecorderFunc := func(err *error) {
 		if *err != nil {
-			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMapVolume, (*err).Error())
+			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FailedMapVolume, "%s", (*err).Error())
 		}
 	}
 
@@ -1265,19 +1197,23 @@ func (og *operationGenerator) GenerateUnmapVolumeFunc(
 		// pods/{podUid}/volumeDevices/{escapeQualifiedPluginName}/{volumeName}
 		podDeviceUnmapPath, volName := blockVolumeUnmapper.GetPodDeviceMapPath()
 		// plugins/kubernetes.io/{PluginName}/volumeDevices/{volumePluginDependentPath}/{podUID}
-		globalUnmapPath := volumeToUnmount.DeviceMountPath
+		globalUnmapPath, err := blockVolumeUnmapper.GetGlobalMapPath(volumeToUnmount.VolumeSpec)
+		if err != nil {
+			// On failure, return error. Caller will log and retry.
+			eventErr, detailedErr := volumeToUnmount.GenerateError("UnmapVolume.GetGlobalMapPath failed", err)
+			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
+		}
 
 		// Mark the device as uncertain to make sure kubelet calls UnmapDevice again in all the "return err"
 		// cases below. The volume is marked as fully un-mapped at the end of this function, when everything
 		// succeeds.
 		markVolumeOpts := MarkVolumeOpts{
-			PodName:             volumeToUnmount.PodName,
-			PodUID:              volumeToUnmount.PodUID,
-			VolumeName:          volumeToUnmount.VolumeName,
-			OuterVolumeSpecName: volumeToUnmount.OuterVolumeSpecName,
-			VolumeGidVolume:     volumeToUnmount.VolumeGidValue,
-			VolumeSpec:          volumeToUnmount.VolumeSpec,
-			VolumeMountState:    VolumeMountUncertain,
+			PodName:          volumeToUnmount.PodName,
+			PodUID:           volumeToUnmount.PodUID,
+			VolumeName:       volumeToUnmount.VolumeName,
+			VolumeGIDVolume:  volumeToUnmount.VolumeGIDValue,
+			VolumeSpec:       volumeToUnmount.VolumeSpec,
+			VolumeMountState: VolumeMountUncertain,
 		}
 		markVolumeUncertainErr := actualStateOfWorld.MarkVolumeMountAsUncertain(markVolumeOpts)
 		if markVolumeUncertainErr != nil {
@@ -1306,21 +1242,20 @@ func (og *operationGenerator) GenerateUnmapVolumeFunc(
 		}
 
 		klog.Infof(
-			"UnmapVolume succeeded for volume %q (OuterVolumeSpecName: %q) pod %q (UID: %q). InnerVolumeSpecName %q. PluginName %q, VolumeGidValue %q",
+			"UnmapVolume succeeded for volume %q pod %q (UID: %q). InnerVolumeSpecName %q. PluginName %q, VolumeGIDValue %q",
 			volumeToUnmount.VolumeName,
-			volumeToUnmount.OuterVolumeSpecName,
 			volumeToUnmount.PodName,
 			volumeToUnmount.PodUID,
 			volumeToUnmount.InnerVolumeSpecName,
 			volumeToUnmount.PluginName,
-			volumeToUnmount.VolumeGidValue)
+			volumeToUnmount.VolumeGIDValue)
 
 		// Update actual state of world
 		markVolUnmountedErr := actualStateOfWorld.MarkVolumeAsUnmounted(
 			volumeToUnmount.PodName, volumeToUnmount.VolumeName)
 		if markVolUnmountedErr != nil {
 			// On failure, just log and exit
-			klog.Errorf(volumeToUnmount.GenerateErrorDetailed("UnmapVolume.MarkVolumeAsUnmounted failed", markVolUnmountedErr).Error())
+			klog.Error(volumeToUnmount.GenerateErrorDetailed("UnmapVolume.MarkVolumeAsUnmounted failed", markVolUnmountedErr).Error())
 		}
 
 		return volumetypes.NewOperationContext(nil, nil, migrated)
@@ -1391,7 +1326,7 @@ func (og *operationGenerator) GenerateUnmapDeviceFunc(
 		// cases below. The volume is marked as fully un-mapped at the end of this function, when everything
 		// succeeds.
 		markDeviceUncertainErr := actualStateOfWorld.MarkDeviceAsUncertain(
-			deviceToDetach.VolumeName, deviceToDetach.DevicePath, globalMapPath)
+			deviceToDetach.VolumeName, deviceToDetach.DevicePath, globalMapPath, "" /* seLinuxMountContext */)
 		if markDeviceUncertainErr != nil {
 			// On failure, return error. Caller will log and retry.
 			eventErr, detailedErr := deviceToDetach.GenerateError("UnmapDevice.MarkDeviceAsUncertain failed", markDeviceUncertainErr)
@@ -1434,7 +1369,7 @@ func (og *operationGenerator) GenerateUnmapDeviceFunc(
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
 
-		klog.Infof(deviceToDetach.GenerateMsgDetailed("UnmapDevice succeeded", ""))
+		klog.Info(deviceToDetach.GenerateMsgDetailed("UnmapDevice succeeded", ""))
 
 		// Update actual state of world
 		markDeviceUnmountedErr := actualStateOfWorld.MarkDeviceAsUnmounted(
@@ -1457,6 +1392,7 @@ func (og *operationGenerator) GenerateUnmapDeviceFunc(
 }
 
 func (og *operationGenerator) GenerateVerifyControllerAttachedVolumeFunc(
+	logger klog.Logger,
 	volumeToMount VolumeToMount,
 	nodeName types.NodeName,
 	actualStateOfWorld ActualStateOfWorldAttacherUpdater) (volumetypes.GeneratedOperations, error) {
@@ -1485,7 +1421,7 @@ func (og *operationGenerator) GenerateVerifyControllerAttachedVolumeFunc(
 		claimSize := actualStateOfWorld.GetClaimSize(volumeToMount.VolumeName)
 
 		// only fetch claimSize if it was not set previously
-		if volumeToMount.VolumeSpec.PersistentVolume != nil && claimSize == nil && !volumeToMount.VolumeSpec.InlineVolumeSpecForCSIMigration {
+		if volumeToMount.VolumeSpec.PersistentVolume != nil && claimSize.IsZero() && !volumeToMount.VolumeSpec.InlineVolumeSpecForCSIMigration {
 			pv := volumeToMount.VolumeSpec.PersistentVolume
 			pvc, err := og.kubeClient.CoreV1().PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(context.TODO(), pv.Spec.ClaimRef.Name, metav1.GetOptions{})
 			if err != nil {
@@ -1494,7 +1430,7 @@ func (og *operationGenerator) GenerateVerifyControllerAttachedVolumeFunc(
 			}
 			pvcStatusSize := pvc.Status.Capacity.Storage()
 			if pvcStatusSize != nil {
-				claimSize = pvcStatusSize
+				claimSize = pvcStatusSize.DeepCopy()
 			}
 		}
 
@@ -1504,13 +1440,13 @@ func (og *operationGenerator) GenerateVerifyControllerAttachedVolumeFunc(
 			// updated accordingly.
 
 			addVolumeNodeErr := actualStateOfWorld.MarkVolumeAsAttached(
-				volumeToMount.VolumeName, volumeToMount.VolumeSpec, nodeName, "" /* devicePath */)
+				logger, volumeToMount.VolumeName, volumeToMount.VolumeSpec, nodeName, "" /* devicePath */)
 			if addVolumeNodeErr != nil {
 				// On failure, return error. Caller will log and retry.
 				eventErr, detailedErr := volumeToMount.GenerateError("VerifyControllerAttachedVolume.MarkVolumeAsAttachedByUniqueVolumeName failed", addVolumeNodeErr)
 				return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 			}
-			actualStateOfWorld.InitializeClaimSize(volumeToMount.VolumeName, claimSize)
+			actualStateOfWorld.InitializeClaimSize(logger, volumeToMount.VolumeName, claimSize)
 			return volumetypes.NewOperationContext(nil, nil, migrated)
 		}
 
@@ -1533,25 +1469,17 @@ func (og *operationGenerator) GenerateVerifyControllerAttachedVolumeFunc(
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
 
-		if node == nil {
-			// On failure, return error. Caller will log and retry.
-			eventErr, detailedErr := volumeToMount.GenerateError(
-				"VerifyControllerAttachedVolume failed",
-				fmt.Errorf("node object retrieved from API server is nil"))
-			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
-		}
-
 		for _, attachedVolume := range node.Status.VolumesAttached {
 			if attachedVolume.Name == volumeToMount.VolumeName {
 				addVolumeNodeErr := actualStateOfWorld.MarkVolumeAsAttached(
-					v1.UniqueVolumeName(""), volumeToMount.VolumeSpec, nodeName, attachedVolume.DevicePath)
+					logger, v1.UniqueVolumeName(""), volumeToMount.VolumeSpec, nodeName, attachedVolume.DevicePath)
 				klog.InfoS(volumeToMount.GenerateMsgDetailed("Controller attach succeeded", fmt.Sprintf("device path: %q", attachedVolume.DevicePath)), "pod", klog.KObj(volumeToMount.Pod))
 				if addVolumeNodeErr != nil {
 					// On failure, return error. Caller will log and retry.
 					eventErr, detailedErr := volumeToMount.GenerateError("VerifyControllerAttachedVolume.MarkVolumeAsAttached failed", addVolumeNodeErr)
 					return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 				}
-				actualStateOfWorld.InitializeClaimSize(volumeToMount.VolumeName, claimSize)
+				actualStateOfWorld.InitializeClaimSize(logger, volumeToMount.VolumeName, claimSize)
 				return volumetypes.NewOperationContext(nil, nil, migrated)
 			}
 		}
@@ -1576,7 +1504,7 @@ func (og *operationGenerator) verifyVolumeIsSafeToDetach(
 	node, fetchErr := og.kubeClient.CoreV1().Nodes().Get(context.TODO(), string(volumeToDetach.NodeName), metav1.GetOptions{})
 	if fetchErr != nil {
 		if errors.IsNotFound(fetchErr) {
-			klog.Warningf(volumeToDetach.GenerateMsgDetailed("Node not found on API server. DetachVolume will skip safe to detach check", ""))
+			klog.Warning(volumeToDetach.GenerateMsgDetailed("Node not found on API server. DetachVolume will skip safe to detach check", ""))
 			return nil
 		}
 
@@ -1584,23 +1512,14 @@ func (og *operationGenerator) verifyVolumeIsSafeToDetach(
 		return volumeToDetach.GenerateErrorDetailed("DetachVolume failed fetching node from API server", fetchErr)
 	}
 
-	if node == nil {
-		// On failure, return error. Caller will log and retry.
+	if slices.Contains(node.Status.VolumesInUse, volumeToDetach.VolumeName) {
 		return volumeToDetach.GenerateErrorDetailed(
-			"DetachVolume failed fetching node from API server",
-			fmt.Errorf("node object retrieved from API server is nil"))
-	}
-
-	for _, inUseVolume := range node.Status.VolumesInUse {
-		if inUseVolume == volumeToDetach.VolumeName {
-			return volumeToDetach.GenerateErrorDetailed(
-				"DetachVolume failed",
-				fmt.Errorf("volume is still in use by node, according to Node status"))
-		}
+			"DetachVolume failed",
+			fmt.Errorf("volume is still in use by node, according to Node status"))
 	}
 
 	// Volume is not marked as in use by node
-	klog.Infof(volumeToDetach.GenerateMsgDetailed("Verified volume is safe to detach", ""))
+	klog.Info(volumeToDetach.GenerateMsgDetailed("Verified volume is safe to detach", ""))
 	return nil
 }
 
@@ -1658,15 +1577,15 @@ func (og *operationGenerator) GenerateExpandVolumeFunc(
 			klog.V(4).Infof("Controller resizing done for PVC %s", util.GetPersistentVolumeClaimQualifiedName(pvc))
 			_, err := util.MarkResizeFinished(pvc, newSize, og.kubeClient)
 			if err != nil {
-				detailedErr := fmt.Errorf("error marking pvc %s as resized : %v", util.GetPersistentVolumeClaimQualifiedName(pvc), err)
+				detailedErr := fmt.Errorf("error marking pvc %s as resized: %w", util.GetPersistentVolumeClaimQualifiedName(pvc), err)
 				return volumetypes.NewOperationContext(detailedErr, detailedErr, migrated)
 			}
 			successMsg := fmt.Sprintf("ExpandVolume succeeded for volume %s", util.GetPersistentVolumeClaimQualifiedName(pvc))
-			og.recorder.Eventf(pvc, v1.EventTypeNormal, kevents.VolumeResizeSuccess, successMsg)
+			og.recorder.Eventf(pvc, v1.EventTypeNormal, kevents.VolumeResizeSuccess, "%s", successMsg)
 		} else {
 			_, err := util.MarkForFSResize(pvc, og.kubeClient)
 			if err != nil {
-				detailedErr := fmt.Errorf("error updating pvc %s condition for fs resize : %v", util.GetPersistentVolumeClaimQualifiedName(pvc), err)
+				detailedErr := fmt.Errorf("error updating pvc %s condition for fs resize: %w", util.GetPersistentVolumeClaimQualifiedName(pvc), err)
 				klog.Warning(detailedErr)
 				return volumetypes.NewOperationContext(nil, nil, migrated)
 			}
@@ -1684,7 +1603,7 @@ func (og *operationGenerator) GenerateExpandVolumeFunc(
 
 	eventRecorderFunc := func(err *error) {
 		if *err != nil {
-			og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.VolumeResizeFailed, (*err).Error())
+			og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.VolumeResizeFailed, "%s", (*err).Error())
 		}
 	}
 
@@ -1729,7 +1648,7 @@ func (og *operationGenerator) GenerateExpandAndRecoverVolumeFunc(
 
 	eventRecorderFunc := func(err *error) {
 		if *err != nil {
-			og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.VolumeResizeFailed, (*err).Error())
+			og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.VolumeResizeFailed, "%s", (*err).Error())
 		}
 	}
 
@@ -1741,6 +1660,8 @@ func (og *operationGenerator) GenerateExpandAndRecoverVolumeFunc(
 	}, nil
 }
 
+// Deprecated: This function should not be called by any controller code in future and should be removed
+// from kubernetes code
 func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOpts) inTreeResizeResponse {
 	pvc := resizeOpts.pvc
 	pv := resizeOpts.pv
@@ -1758,12 +1679,14 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		resizeCalled: false,
 	}
 
-	// by default we are expanding to full-fill size requested in pvc.Spec.Resources
+	// by default we are expanding to fulfill size requested in pvc.Spec.Resources
 	newSize := pvcSpecSize
-	resizeStatus := v1.PersistentVolumeClaimNoExpansionInProgress
-	if pvc.Status.ResizeStatus != nil {
-		resizeStatus = *pvc.Status.ResizeStatus
+
+	var resizeStatus v1.ClaimResourceStatus
+	if status, ok := pvc.Status.AllocatedResourceStatuses[v1.ResourceStorage]; ok {
+		resizeStatus = status
 	}
+
 	var allocatedSize *resource.Quantity
 	t, ok := pvc.Status.AllocatedResources[v1.ResourceStorage]
 	if ok {
@@ -1775,10 +1698,10 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		// pv is not of requested size yet and hence will require expanding
 
 		switch resizeStatus {
-		case v1.PersistentVolumeClaimControllerExpansionInProgress:
-		case v1.PersistentVolumeClaimNodeExpansionPending:
-		case v1.PersistentVolumeClaimNodeExpansionInProgress:
-		case v1.PersistentVolumeClaimNodeExpansionFailed:
+		case v1.PersistentVolumeClaimControllerResizeInProgress,
+			v1.PersistentVolumeClaimNodeResizePending,
+			v1.PersistentVolumeClaimNodeResizeInProgress,
+			v1.PersistentVolumeClaimNodeResizeInfeasible:
 			if allocatedSize != nil {
 				newSize = *allocatedSize
 			}
@@ -1797,30 +1720,29 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		//      safe to do so.
 		//   4. While expansion was still pending on the node, user reduced the pvc size.
 		switch resizeStatus {
-		case v1.PersistentVolumeClaimNodeExpansionInProgress:
-		case v1.PersistentVolumeClaimNodeExpansionPending:
+		case v1.PersistentVolumeClaimNodeResizeInProgress,
+			v1.PersistentVolumeClaimNodeResizePending:
 			// we don't need to do any work. We could be here because of a spurious update event.
 			// This is case #1
 			return resizeResponse
-		case v1.PersistentVolumeClaimNodeExpansionFailed:
+		case v1.PersistentVolumeClaimNodeResizeInfeasible:
 			// This is case#3
 			pvc, err = og.markForPendingNodeExpansion(pvc, pv)
 			resizeResponse.pvc = pvc
 			resizeResponse.err = err
 			return resizeResponse
-		case v1.PersistentVolumeClaimControllerExpansionInProgress:
-		case v1.PersistentVolumeClaimControllerExpansionFailed:
-		case v1.PersistentVolumeClaimNoExpansionInProgress:
+		case v1.PersistentVolumeClaimControllerResizeInProgress,
+			v1.PersistentVolumeClaimControllerResizeInfeasible:
 			// This is case#2 or it could also be case#4 when user manually shrunk the PVC
 			// after expanding it.
 			if allocatedSize != nil {
 				newSize = *allocatedSize
 			}
 		default:
-			// It is impossible for ResizeStatus to be nil and allocatedSize to be not nil but somehow
+			// It is impossible for ResizeStatus to be "" and allocatedSize to be not nil but somehow
 			// if we do end up in this state, it is safest to resume expansion to last recorded size in
 			// allocatedSize variable.
-			if pvc.Status.ResizeStatus == nil && allocatedSize != nil {
+			if resizeStatus == "" && allocatedSize != nil {
 				newSize = *allocatedSize
 			} else {
 				newSize = pvcSpecSize
@@ -1868,7 +1790,7 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		}
 		resizeResponse.pvc = pvc
 		successMsg := fmt.Sprintf("ExpandVolume succeeded for volume %s", util.GetPersistentVolumeClaimQualifiedName(pvc))
-		og.recorder.Eventf(pvc, v1.EventTypeNormal, kevents.VolumeResizeSuccess, successMsg)
+		og.recorder.Eventf(pvc, v1.EventTypeNormal, kevents.VolumeResizeSuccess, "%s", successMsg)
 	} else {
 		pvc, err = og.markForPendingNodeExpansion(pvc, pv)
 		resizeResponse.pvc = pvc
@@ -1915,7 +1837,7 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 		var eventErr, detailedErr error
 		migrated := false
 
-		if currentSize.IsZero() || volumeToMount.PersistentVolumeSize.IsZero() {
+		if currentSize.IsZero() || volumeToMount.DesiredPersistentVolumeSize.IsZero() {
 			err := fmt.Errorf("current or new size of the volume is not set")
 			eventErr, detailedErr = volumeToMount.GenerateError("NodeExpandvolume.expansion failed", err)
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
@@ -1925,7 +1847,7 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 			VolumeSpec: volumeToMount.VolumeSpec,
 			DevicePath: volumeToMount.DevicePath,
 			OldSize:    currentSize,
-			NewSize:    volumeToMount.PersistentVolumeSize,
+			NewSize:    volumeToMount.DesiredPersistentVolumeSize,
 		}
 		fsVolume, err := util.CheckVolumeModeFilesystem(volumeToMount.VolumeSpec)
 		if err != nil {
@@ -1936,8 +1858,7 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 		if fsVolume {
 			volumeMounter, newMounterErr := volumePlugin.NewMounter(
 				volumeToMount.VolumeSpec,
-				volumeToMount.Pod,
-				volume.VolumeOptions{})
+				volumeToMount.Pod)
 			if newMounterErr != nil {
 				eventErr, detailedErr = volumeToMount.GenerateError("NodeExpandVolume.NewMounter initialization failed", newMounterErr)
 				return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
@@ -1975,8 +1896,7 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 
 			blockVolumeMapper, newMapperErr := blockVolumePlugin.NewBlockVolumeMapper(
 				volumeToMount.VolumeSpec,
-				volumeToMount.Pod,
-				volume.VolumeOptions{})
+				volumeToMount.Pod)
 			if newMapperErr != nil {
 				eventErr, detailedErr = volumeToMount.GenerateError("MapVolume.NewBlockVolumeMapper initialization failed", newMapperErr)
 				return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
@@ -1996,15 +1916,13 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 		if resizeDone {
 			return volumetypes.NewOperationContext(nil, nil, migrated)
 		}
-		// This is a placeholder error - we should NEVER reach here.
-		err = fmt.Errorf("volume resizing failed for unknown reason")
-		eventErr, detailedErr = volumeToMount.GenerateError("NodeExpandVolume.NodeExpandVolume failed to resize volume", err)
-		return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
+		klog.InfoS("Waiting for volume to be expandable on the node", "volumeName", volumeToMount.VolumeName)
+		return volumetypes.NewOperationContext(nil, nil, migrated)
 	}
 
 	eventRecorderFunc := func(err *error) {
 		if *err != nil {
-			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.VolumeResizeFailed, (*err).Error())
+			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.VolumeResizeFailed, "%s", (*err).Error())
 		}
 	}
 
@@ -2020,14 +1938,14 @@ func (og *operationGenerator) doOnlineExpansion(volumeToMount VolumeToMount,
 	actualStateOfWorld ActualStateOfWorldMounterUpdater,
 	resizeOptions volume.NodeResizeOptions) (bool, error, error) {
 
-	resizeDone, err := og.nodeExpandVolume(volumeToMount, actualStateOfWorld, resizeOptions)
+	resizeDone, newSize, err := og.nodeExpandVolume(volumeToMount, actualStateOfWorld, resizeOptions)
 	if err != nil {
 		e1, e2 := volumeToMount.GenerateError("NodeExpandVolume.NodeExpandVolume failed", err)
-		klog.Errorf(e2.Error())
+		klog.Error(e2.Error())
 		return false, e1, e2
 	}
 	if resizeDone {
-		markingDone := actualStateOfWorld.MarkVolumeAsResized(volumeToMount.VolumeName, &resizeOptions.NewSize)
+		markingDone := actualStateOfWorld.MarkVolumeAsResized(volumeToMount.VolumeName, newSize)
 		if !markingDone {
 			// On failure, return error. Caller will log and retry.
 			genericFailureError := fmt.Errorf("unable to mark volume as resized")
@@ -2049,18 +1967,20 @@ func (og *operationGenerator) expandVolumeDuringMount(volumeToMount VolumeToMoun
 			return false, fmt.Errorf("mountVolume.NodeExpandVolume get PVC failed : %v", err)
 		}
 
-		if volumeToMount.VolumeSpec.ReadOnly {
-			simpleMsg, detailedMsg := volumeToMount.GenerateMsg("MountVolume.NodeExpandVolume failed", "requested read-only file system")
-			klog.Warningf(detailedMsg)
-			og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FileSystemResizeFailed, simpleMsg)
-			og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.FileSystemResizeFailed, simpleMsg)
-			return true, nil
-		}
 		pvcStatusCap := pvc.Status.Capacity[v1.ResourceStorage]
 		pvSpecCap := pv.Spec.Capacity[v1.ResourceStorage]
 		if pvcStatusCap.Cmp(pvSpecCap) < 0 {
+			if volumeToMount.VolumeSpec.ReadOnly {
+				simpleMsg, detailedMsg := volumeToMount.GenerateMsg("MountVolume.NodeExpandVolume failed", "requested read-only file system")
+				klog.Warning(detailedMsg)
+				og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FileSystemResizeFailed, "%s", simpleMsg)
+				og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.FileSystemResizeFailed, "%s", simpleMsg)
+				return true, nil
+			}
+
 			rsOpts.NewSize = pvSpecCap
 			rsOpts.OldSize = pvcStatusCap
+			rsOpts.VolumeSpec = volumeToMount.VolumeSpec
 			resizeOp := nodeResizeOperationOpts{
 				vmt:                volumeToMount,
 				pvc:                pvc,
@@ -2069,9 +1989,12 @@ func (og *operationGenerator) expandVolumeDuringMount(volumeToMount VolumeToMoun
 				volumePlugin:       expandablePlugin,
 				actualStateOfWorld: actualStateOfWorld,
 			}
-			if utilfeature.DefaultFeatureGate.Enabled(features.RecoverVolumeExpansionFailure) {
+			if og.checkForRecoveryFromExpansion(pvc, volumeToMount) {
+				// if recovery feature is enabled, we can use allocated size from PVC status as new size
+				rsOpts.NewSize = pvc.Status.AllocatedResources[v1.ResourceStorage]
+				resizeOp.pluginResizeOpts = rsOpts
 				nodeExpander := newNodeExpander(resizeOp, og.kubeClient, og.recorder)
-				resizeFinished, err, _ := nodeExpander.expandOnPlugin()
+				resizeFinished, _, err := nodeExpander.expandOnPlugin()
 				return resizeFinished, err
 			} else {
 				return og.legacyCallNodeExpandOnPlugin(resizeOp)
@@ -2102,7 +2025,7 @@ func (og *operationGenerator) checkIfSupportsNodeExpansion(volumeToMount VolumeT
 func (og *operationGenerator) nodeExpandVolume(
 	volumeToMount VolumeToMount,
 	actualStateOfWorld ActualStateOfWorldMounterUpdater,
-	rsOpts volume.NodeResizeOptions) (bool, error) {
+	rsOpts volume.NodeResizeOptions) (bool, resource.Quantity, error) {
 
 	supportsExpansion, expandableVolumePlugin := og.checkIfSupportsNodeExpansion(volumeToMount)
 
@@ -2111,17 +2034,18 @@ func (og *operationGenerator) nodeExpandVolume(
 		if rsOpts.NewSize.Cmp(rsOpts.OldSize) > 0 {
 			pv := volumeToMount.VolumeSpec.PersistentVolume
 			pvc, err := og.kubeClient.CoreV1().PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(context.TODO(), pv.Spec.ClaimRef.Name, metav1.GetOptions{})
+			currentSize := pvc.Status.Capacity.Storage()
 			if err != nil {
 				// Return error rather than leave the file system un-resized, caller will log and retry
-				return false, fmt.Errorf("mountVolume.NodeExpandVolume get PVC failed : %v", err)
+				return false, *currentSize, fmt.Errorf("mountVolume.NodeExpandVolume get PVC failed : %w", err)
 			}
 
 			if volumeToMount.VolumeSpec.ReadOnly {
 				simpleMsg, detailedMsg := volumeToMount.GenerateMsg("MountVolume.NodeExpandVolume failed", "requested read-only file system")
-				klog.Warningf(detailedMsg)
-				og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FileSystemResizeFailed, simpleMsg)
-				og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.FileSystemResizeFailed, simpleMsg)
-				return true, nil
+				klog.Warning(detailedMsg)
+				og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeWarning, kevents.FileSystemResizeFailed, "%s", simpleMsg)
+				og.recorder.Eventf(pvc, v1.EventTypeWarning, kevents.FileSystemResizeFailed, "%s", simpleMsg)
+				return true, *currentSize, nil
 			}
 			resizeOp := nodeResizeOperationOpts{
 				vmt:                volumeToMount,
@@ -2131,16 +2055,47 @@ func (og *operationGenerator) nodeExpandVolume(
 				volumePlugin:       expandableVolumePlugin,
 				actualStateOfWorld: actualStateOfWorld,
 			}
-			if utilfeature.DefaultFeatureGate.Enabled(features.RecoverVolumeExpansionFailure) {
+
+			if og.checkForRecoveryFromExpansion(pvc, volumeToMount) {
+				// if recovery feature is enabled, we can use allocated size from PVC status as new size
+				newSize := pvc.Status.AllocatedResources[v1.ResourceStorage]
+				rsOpts.NewSize = newSize
+				resizeOp.pluginResizeOpts.NewSize = newSize
 				nodeExpander := newNodeExpander(resizeOp, og.kubeClient, og.recorder)
-				resizeFinished, err, _ := nodeExpander.expandOnPlugin()
-				return resizeFinished, err
+				resizeFinished, newSize, err := nodeExpander.expandOnPlugin()
+				return resizeFinished, newSize, err
 			} else {
-				return og.legacyCallNodeExpandOnPlugin(resizeOp)
+				resizeFinished, err := og.legacyCallNodeExpandOnPlugin(resizeOp)
+				return resizeFinished, rsOpts.NewSize, err
 			}
 		}
 	}
-	return true, nil
+	return true, rsOpts.OldSize, nil
+}
+
+func (og *operationGenerator) checkForRecoveryFromExpansion(pvc *v1.PersistentVolumeClaim, volumeToMount VolumeToMount) bool {
+	resizeStatus := pvc.Status.AllocatedResourceStatuses[v1.ResourceStorage]
+	allocatedResource := pvc.Status.AllocatedResources
+	featureGateStatus := utilfeature.DefaultFeatureGate.Enabled(features.RecoverVolumeExpansionFailure)
+
+	if !featureGateStatus {
+		// even though RecoverVolumeExpansionFailure feature-gate is disabled, we should consider it enabled
+		// if resizeStatus is not empty or allocatedresources is set
+		if resizeStatus != "" || allocatedResource != nil {
+			return true
+		}
+		return false
+	}
+
+	// Even though RecoverVolumeExpansionFailure feature gate is enabled, it appears that we are running with older version
+	// of resize controller, which will not populate allocatedResource and resizeStatus. This can happen because of version skew
+	// and hence we are going to keep expanding using older logic.
+	if resizeStatus == "" && allocatedResource == nil {
+		_, detailedMsg := volumeToMount.GenerateMsg("MountVolume.NodeExpandVolume running with", "older external resize controller")
+		klog.Warning(detailedMsg)
+		return false
+	}
+	return true
 }
 
 // legacyCallNodeExpandOnPlugin is old version of calling node expansion on plugin, which does not support
@@ -2166,20 +2121,28 @@ func (og *operationGenerator) legacyCallNodeExpandOnPlugin(resizeOp nodeResizeOp
 
 	_, resizeErr := expandableVolumePlugin.NodeExpand(rsOpts)
 	if resizeErr != nil {
+		// This is a workaround for now, until RecoverFromVolumeExpansionFailure feature goes GA.
+		// If RecoverFromVolumeExpansionFailure feature is enabled, we will not ever hit this state, because
+		// we will wait for VolumeExpansionPendingOnNode before trying to expand volume in kubelet.
+		if volumetypes.IsOperationNotSupportedError(resizeErr) {
+			klog.V(4).InfoS(volumeToMount.GenerateMsgDetailed("MountVolume.NodeExpandVolume failed", "NodeExpandVolume not supported"), "pod", klog.KObj(volumeToMount.Pod))
+			return true, nil
+		}
+
 		// if driver returned FailedPrecondition error that means
 		// volume expansion should not be retried on this node but
 		// expansion operation should not block mounting
 		if volumetypes.IsFailedPreconditionError(resizeErr) {
 			actualStateOfWorld.MarkForInUseExpansionError(volumeToMount.VolumeName)
-			klog.Errorf(volumeToMount.GenerateErrorDetailed("MountVolume.NodeExapndVolume failed", resizeErr).Error())
+			klog.Error(volumeToMount.GenerateErrorDetailed("MountVolume.NodeExpandVolume failed", resizeErr).Error())
 			return true, nil
 		}
 		return false, resizeErr
 	}
 
 	simpleMsg, detailedMsg := volumeToMount.GenerateMsg("MountVolume.NodeExpandVolume succeeded", nodeName)
-	og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeNormal, kevents.FileSystemResizeSuccess, simpleMsg)
-	og.recorder.Eventf(pvc, v1.EventTypeNormal, kevents.FileSystemResizeSuccess, simpleMsg)
+	og.recorder.Eventf(volumeToMount.Pod, v1.EventTypeNormal, kevents.FileSystemResizeSuccess, "%s", simpleMsg)
+	og.recorder.Eventf(pvc, v1.EventTypeNormal, kevents.FileSystemResizeSuccess, "%s", simpleMsg)
 	klog.InfoS(detailedMsg, "pod", klog.KObj(volumeToMount.Pod))
 
 	// if PVC already has new size, there is no need to update it.
@@ -2230,7 +2193,7 @@ func isDeviceOpened(deviceToDetach AttachedVolume, hostUtil hostutil.HostUtils) 
 	if !isDevicePath && devicePathErr == nil ||
 		(devicePathErr != nil && strings.Contains(devicePathErr.Error(), "does not exist")) {
 		// not a device path or path doesn't exist
-		//TODO: refer to #36092
+		// TODO: refer to #36092
 		klog.V(3).Infof("The path isn't device path or doesn't exist. Skip checking device path: %s", deviceToDetach.DevicePath)
 		deviceOpened = false
 	} else if devicePathErr != nil {

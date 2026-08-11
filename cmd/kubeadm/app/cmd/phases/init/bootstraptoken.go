@@ -19,13 +19,12 @@ package phases
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
-
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/workflow"
 	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
 	clusterinfophase "k8s.io/kubernetes/cmd/kubeadm/app/phases/bootstraptoken/clusterinfo"
 	nodebootstraptokenphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/bootstraptoken/node"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
 )
 
 var (
@@ -56,6 +55,7 @@ func NewBootstrapTokenPhase() workflow.Phase {
 			options.CfgPath,
 			options.KubeconfigPath,
 			options.SkipTokenPrint,
+			options.DryRun,
 		},
 		Run: runBootstrapToken,
 	}
@@ -68,6 +68,10 @@ func runBootstrapToken(c workflow.RunData) error {
 	}
 
 	client, err := data.Client()
+	if err != nil {
+		return err
+	}
+	kubeconfig, err := data.KubeConfigOriginal()
 	if err != nil {
 		return err
 	}
@@ -87,7 +91,7 @@ func runBootstrapToken(c workflow.RunData) error {
 		return errors.Wrap(err, "error updating or creating token")
 	}
 	// Create RBAC rules that makes the bootstrap tokens able to get nodes
-	if err := nodebootstraptokenphase.AllowBoostrapTokensToGetNodes(client); err != nil {
+	if err := nodebootstraptokenphase.AllowBootstrapTokensToGetNodes(client); err != nil {
 		return errors.Wrap(err, "error allowing bootstrap tokens to get Nodes")
 	}
 	// Create RBAC rules that makes the bootstrap tokens able to post CSRs
@@ -104,8 +108,13 @@ func runBootstrapToken(c workflow.RunData) error {
 		return err
 	}
 
+	// Create RBAC rules that allow the API server kubelet client to access the kubelet API
+	if err := nodebootstraptokenphase.AllowAPIServerToAccessKubeletAPI(client); err != nil {
+		return errors.Wrap(err, "error allowing API server to access kubelet API")
+	}
+
 	// Create the cluster-info ConfigMap with the associated RBAC rules
-	if err := clusterinfophase.CreateBootstrapConfigMapIfNotExists(client, data.KubeConfigPath()); err != nil {
+	if err := clusterinfophase.CreateBootstrapConfigMapIfNotExists(client, kubeconfig); err != nil {
 		return errors.Wrap(err, "error creating bootstrap ConfigMap")
 	}
 	if err := clusterinfophase.CreateClusterInfoRBACRules(client); err != nil {

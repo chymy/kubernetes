@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/discovery"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -34,11 +35,11 @@ import (
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 	metricsapi "k8s.io/metrics/pkg/apis/metrics"
+	metricsv1api "k8s.io/metrics/pkg/apis/metrics/v1"
 	metricsv1beta1api "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"github.com/spf13/cobra"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/klog/v2"
 )
 
@@ -53,13 +54,14 @@ type TopPodOptions struct {
 	NoHeaders          bool
 	UseProtocolBuffers bool
 	Sum                bool
+	ShowSwap           bool
 
 	PodClient       corev1client.PodsGetter
 	Printer         *metricsutil.TopCmdPrinter
 	DiscoveryClient discovery.DiscoveryInterface
 	MetricsClient   metricsclientset.Interface
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 const metricsCreationDelay = 2 * time.Minute
@@ -87,7 +89,7 @@ var (
 		kubectl top pod -l name=myLabel`))
 )
 
-func NewCmdTopPod(f cmdutil.Factory, o *TopPodOptions, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdTopPod(f cmdutil.Factory, o *TopPodOptions, streams genericiooptions.IOStreams) *cobra.Command {
 	if o == nil {
 		o = &TopPodOptions{
 			IOStreams:          streams,
@@ -117,6 +119,7 @@ func NewCmdTopPod(f cmdutil.Factory, o *TopPodOptions, streams genericclioptions
 	cmd.Flags().BoolVar(&o.NoHeaders, "no-headers", o.NoHeaders, "If present, print output without headers.")
 	cmd.Flags().BoolVar(&o.UseProtocolBuffers, "use-protocol-buffers", o.UseProtocolBuffers, "Enables using protocol-buffers to access Metrics API.")
 	cmd.Flags().BoolVar(&o.Sum, "sum", o.Sum, "Print the sum of the resource usage")
+	cmd.Flags().BoolVar(&o.ShowSwap, "show-swap", o.ShowSwap, "Print pod resources related to swap memory.")
 	return cmd
 }
 
@@ -152,7 +155,7 @@ func (o *TopPodOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []s
 
 	o.PodClient = clientset.CoreV1()
 
-	o.Printer = metricsutil.NewTopCmdPrinter(o.Out)
+	o.Printer = metricsutil.NewTopCmdPrinter(o.Out, o.ShowSwap)
 	return nil
 }
 
@@ -192,12 +195,19 @@ func (o TopPodOptions) RunTopPod() error {
 
 	metricsAPIAvailable := SupportedMetricsAPIVersionAvailable(apiGroups)
 
-	if !metricsAPIAvailable {
+	if metricsAPIAvailable == "" {
 		return errors.New("Metrics API not available")
 	}
-	metrics, err := getMetricsFromMetricsAPI(o.MetricsClient, o.Namespace, o.ResourceName, o.AllNamespaces, labelSelector, fieldSelector)
+	metrics, err := getMetricsFromMetricsAPI(o.MetricsClient, o.Namespace, o.ResourceName, o.AllNamespaces, labelSelector, metricsAPIAvailable)
 	if err != nil {
 		return err
+	}
+
+	if len(metrics.Items) != 0 && len(o.FieldSelector) > 0 {
+		metrics, err = filterPodMetricsByFieldSelector(o, metrics, labelSelector, fieldSelector)
+		if err != nil {
+			return err
+		}
 	}
 
 	// First we check why no metrics have been received.
@@ -220,12 +230,34 @@ func (o TopPodOptions) RunTopPod() error {
 	return o.Printer.PrintPodMetrics(metrics.Items, o.PrintContainers, o.AllNamespaces, o.NoHeaders, o.SortBy, o.Sum)
 }
 
-func getMetricsFromMetricsAPI(metricsClient metricsclientset.Interface, namespace, resourceName string, allNamespaces bool, labelSelector labels.Selector, fieldSelector fields.Selector) (*metricsapi.PodMetricsList, error) {
+func getMetricsFromMetricsAPI(metricsClient metricsclientset.Interface, namespace, resourceName string, allNamespaces bool, labelSelector labels.Selector, metricsAPIAvailable string) (*metricsapi.PodMetricsList, error) {
 	var err error
 	ns := metav1.NamespaceAll
 	if !allNamespaces {
 		ns = namespace
 	}
+	if metricsAPIAvailable == "v1" {
+		versionedMetrics := &metricsv1api.PodMetricsList{}
+		if resourceName != "" {
+			m, err := metricsClient.MetricsV1().PodMetricses(ns).Get(context.TODO(), resourceName, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			versionedMetrics.Items = []metricsv1api.PodMetrics{*m}
+		} else {
+			versionedMetrics, err = metricsClient.MetricsV1().PodMetricses(ns).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String()})
+			if err != nil {
+				return nil, err
+			}
+		}
+		metrics := &metricsapi.PodMetricsList{}
+		err = metricsv1api.Convert_v1_PodMetricsList_To_metrics_PodMetricsList(versionedMetrics, metrics, nil)
+		if err != nil {
+			return nil, err
+		}
+		return metrics, nil
+	}
+	// fallback to metric v1beta1
 	versionedMetrics := &metricsv1beta1api.PodMetricsList{}
 	if resourceName != "" {
 		m, err := metricsClient.MetricsV1beta1().PodMetricses(ns).Get(context.TODO(), resourceName, metav1.GetOptions{})
@@ -234,7 +266,7 @@ func getMetricsFromMetricsAPI(metricsClient metricsclientset.Interface, namespac
 		}
 		versionedMetrics.Items = []metricsv1beta1api.PodMetrics{*m}
 	} else {
-		versionedMetrics, err = metricsClient.MetricsV1beta1().PodMetricses(ns).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String(), FieldSelector: fieldSelector.String()})
+		versionedMetrics, err = metricsClient.MetricsV1beta1().PodMetricses(ns).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String()})
 		if err != nil {
 			return nil, err
 		}
@@ -285,4 +317,34 @@ func checkPodAge(pod *corev1.Pod) error {
 		klog.V(2).Infof("Metrics not yet available for pod %s/%s, age: %s", pod.Namespace, pod.Name, age.String())
 		return nil
 	}
+}
+
+func filterPodMetricsByFieldSelector(o TopPodOptions, metrics *metricsapi.PodMetricsList, labelSelector labels.Selector, fieldSelector fields.Selector) (*metricsapi.PodMetricsList, error) {
+	ns := metav1.NamespaceAll
+	if !o.AllNamespaces {
+		ns = o.Namespace
+	}
+
+	pods, err := o.PodClient.Pods(ns).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: labelSelector.String(),
+		FieldSelector: fieldSelector.String(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	selectedPods := make(map[string]struct{}, len(pods.Items))
+	for _, pod := range pods.Items {
+		selectedPods[pod.Namespace+"/"+pod.Name] = struct{}{}
+	}
+
+	filtered := make([]metricsapi.PodMetrics, 0, len(metrics.Items))
+	for _, metric := range metrics.Items {
+		if _, ok := selectedPods[metric.Namespace+"/"+metric.Name]; ok {
+			filtered = append(filtered, metric)
+		}
+	}
+
+	metrics.Items = filtered
+	return metrics, nil
 }

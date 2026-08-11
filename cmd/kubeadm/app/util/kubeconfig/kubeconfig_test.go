@@ -18,50 +18,20 @@ package kubeconfig
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-const (
-	configOut1 = `apiVersion: v1
-clusters:
-- cluster:
-    server: ""
-  name: k8s
-contexts:
-- context:
-    cluster: k8s
-    user: user1
-  name: user1@k8s
-current-context: user1@k8s
-kind: Config
-preferences: {}
-users:
-- name: user1
-  user:
-    token: abc
-`
-	configOut2 = `apiVersion: v1
-clusters:
-- cluster:
-    server: localhost:8080
-  name: kubernetes
-contexts:
-- context:
-    cluster: kubernetes
-    user: user2
-  name: user2@kubernetes
-current-context: user2@kubernetes
-kind: Config
-preferences: {}
-users:
-- name: user2
-  user:
-    token: cba
-`
+var (
+	//go:embed testdata/user1.yaml
+	configOut1 string
+	//go:embed testdata/user2.yaml
+	configOut2 string
 )
 
 type configClient struct {
@@ -313,6 +283,24 @@ func TestHasCredentials(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "exec authentication credentials",
+			config: &clientcmdapi.Config{
+				CurrentContext: "kubernetes",
+				Contexts:       map[string]*clientcmdapi.Context{"kubernetes": {AuthInfo: "kubernetes"}},
+				AuthInfos:      map[string]*clientcmdapi.AuthInfo{"kubernetes": {Exec: &clientcmdapi.ExecConfig{Command: "command"}}},
+			},
+			expected: true,
+		},
+		{
+			name: "authprovider authentication credentials",
+			config: &clientcmdapi.Config{
+				CurrentContext: "kubernetes",
+				Contexts:       map[string]*clientcmdapi.Context{"kubernetes": {AuthInfo: "kubernetes"}},
+				AuthInfos:      map[string]*clientcmdapi.AuthInfo{"kubernetes": {AuthProvider: &clientcmdapi.AuthProviderConfig{Name: "A"}}},
+			},
+			expected: true,
+		},
 	}
 	for _, rt := range testCases {
 		t.Run(rt.name, func(t *testing.T) {
@@ -323,6 +311,208 @@ func TestHasCredentials(t *testing.T) {
 					rt.expected,
 					r,
 				)
+			}
+		})
+	}
+}
+
+func TestGetClusterFromKubeConfig(t *testing.T) {
+	tests := []struct {
+		name                string
+		config              *clientcmdapi.Config
+		expectedClusterName string
+		expectedCluster     *clientcmdapi.Cluster
+		expectedError       bool
+	}{
+		{
+			name: "an existing cluster with an empty name is returned directly",
+			config: &clientcmdapi.Config{
+				Clusters: map[string]*clientcmdapi.Cluster{
+					"": {Server: "http://foo:8080"},
+				},
+			},
+			expectedClusterName: "",
+			expectedCluster: &clientcmdapi.Cluster{
+				Server: "http://foo:8080",
+			},
+		},
+		{
+			name: "the current context is invalid",
+			config: &clientcmdapi.Config{
+				CurrentContext: "foo",
+				Contexts: map[string]*clientcmdapi.Context{
+					"bar": {AuthInfo: "bar", Cluster: "bar"},
+				},
+			},
+			expectedClusterName: "",
+			expectedCluster:     nil,
+			expectedError:       true,
+		},
+		{
+			name: "no matching cluster for the current context",
+			config: &clientcmdapi.Config{
+				CurrentContext: "foo",
+				Contexts: map[string]*clientcmdapi.Context{
+					"foo": {AuthInfo: "bar", Cluster: "bar"},
+				},
+				Clusters: map[string]*clientcmdapi.Cluster{
+					"baz": {Server: "https://bar:16443"},
+				},
+			},
+			expectedClusterName: "",
+			expectedCluster:     nil,
+			expectedError:       true,
+		},
+		{
+			name: "valid current context and cluster",
+			config: &clientcmdapi.Config{
+				CurrentContext: "foo",
+				Contexts: map[string]*clientcmdapi.Context{
+					"foo": {AuthInfo: "foo", Cluster: "foo"},
+					"bar": {AuthInfo: "bar", Cluster: "bar"},
+				},
+				Clusters: map[string]*clientcmdapi.Cluster{
+					"foo": {Server: "http://foo:8080"},
+					"bar": {Server: "https://bar:16443"},
+				},
+			},
+			expectedClusterName: "foo",
+			expectedCluster: &clientcmdapi.Cluster{
+				Server: "http://foo:8080",
+			},
+		},
+	}
+	for _, rt := range tests {
+		t.Run(rt.name, func(t *testing.T) {
+			clusterName, cluster, err := GetClusterFromKubeConfig(rt.config)
+			if clusterName != rt.expectedClusterName {
+				t.Errorf("got cluster name = %s, expected %s", clusterName, rt.expectedClusterName)
+			}
+			if !reflect.DeepEqual(cluster, rt.expectedCluster) {
+				t.Errorf("got cluster = %+v, expected %+v", cluster, rt.expectedCluster)
+			}
+			if (err != nil) != rt.expectedError {
+				t.Errorf("expected error: %v, got: %v, error: %v",
+					rt.expectedError, err != nil, err)
+			}
+		})
+	}
+}
+
+func TestEnsureAuthenticationInfoAreEmbedded(t *testing.T) {
+	file, err := os.CreateTemp("", t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+
+	tests := []struct {
+		name    string
+		config  *clientcmdapi.Config
+		wantErr bool
+	}{
+		{
+			name: "get data from file",
+			config: &clientcmdapi.Config{
+				CurrentContext: "kubernetes",
+				Contexts:       map[string]*clientcmdapi.Context{"kubernetes": {AuthInfo: "kubernetes"}},
+				AuthInfos: map[string]*clientcmdapi.AuthInfo{"kubernetes": {
+					ClientCertificate: file.Name(),
+					ClientKey:         file.Name(),
+					TokenFile:         file.Name(),
+				},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "get data from config",
+			config: &clientcmdapi.Config{
+				CurrentContext: "kubernetes",
+				Contexts:       map[string]*clientcmdapi.Context{"kubernetes": {AuthInfo: "kubernetes"}},
+				AuthInfos: map[string]*clientcmdapi.AuthInfo{"kubernetes": {
+					ClientCertificateData: []byte{'f', 'o', 'o'},
+					ClientKeyData:         []byte{'b', 'a', 'r'},
+					Token:                 "k8s",
+				},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "invalid authInfo: no authInfo",
+			config:  nil,
+			wantErr: true,
+		},
+		{
+			name: "get data from file but the file doesn't exist",
+			config: &clientcmdapi.Config{
+				CurrentContext: "kubernetes",
+				Contexts:       map[string]*clientcmdapi.Context{"kubernetes": {AuthInfo: "kubernetes"}},
+				AuthInfos: map[string]*clientcmdapi.AuthInfo{"kubernetes": {
+					ClientCertificate: "unknownfile",
+					ClientKey:         "unknownfile",
+					TokenFile:         "unknownfile",
+				},
+				},
+			},
+			wantErr: true,
+		},
+	}
+	for _, rt := range tests {
+		t.Run(rt.name, func(t *testing.T) {
+			if err := EnsureAuthenticationInfoAreEmbedded(rt.config); (err != nil) != rt.wantErr {
+				t.Errorf("error = %v, wantErr %v", err, rt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEnsureCertificateAuthorityIsEmbedded(t *testing.T) {
+	file, err := os.CreateTemp("", t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+
+	tests := []struct {
+		name    string
+		cluster *clientcmdapi.Cluster
+		wantErr bool
+	}{
+		{
+			name: "get data from file",
+			cluster: &clientcmdapi.Cluster{
+				CertificateAuthority: file.Name(),
+			},
+			wantErr: false,
+		},
+		{
+			name: "get data from config",
+			cluster: &clientcmdapi.Cluster{
+				CertificateAuthorityData: []byte{'f', 'o', 'o'},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "cluster is nil",
+			cluster: nil,
+			wantErr: true,
+		},
+		{
+			name: "get data from file but the file doesn't exist",
+			cluster: &clientcmdapi.Cluster{
+				CertificateAuthority: "unknownfile",
+			},
+			wantErr: true,
+		},
+	}
+	for _, rt := range tests {
+		t.Run(rt.name, func(t *testing.T) {
+			if err := EnsureCertificateAuthorityIsEmbedded(rt.cluster); (err != nil) != rt.wantErr {
+				t.Errorf("error = %v, wantErr %v", err, rt.wantErr)
 			}
 		})
 	}

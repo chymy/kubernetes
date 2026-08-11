@@ -18,7 +18,9 @@ limitations under the License.
 // +k8s:conversion-gen-external-types=k8s.io/api/events/v1
 // +k8s:defaulter-gen=TypeMeta
 // +k8s:defaulter-gen-input=k8s.io/api/events/v1
+// +k8s:validation-gen=TypesWithField=TypeMeta
+// +k8s:validation-gen-input=k8s.io/api/events/v1
 
 // +groupName=events.k8s.io
 
-package v1 // import "k8s.io/kubernetes/pkg/apis/events/v1"
+package v1

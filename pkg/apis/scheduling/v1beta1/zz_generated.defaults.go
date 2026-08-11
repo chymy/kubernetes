@@ -22,7 +22,9 @@ limitations under the License.
 package v1beta1
 
 import (
-	v1beta1 "k8s.io/api/scheduling/v1beta1"
+	json "encoding/json"
+
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -30,16 +32,34 @@ import (
 // Public to allow building arbitrary schemes.
 // All generated defaulters are covering - they call all nested defaulters.
 func RegisterDefaults(scheme *runtime.Scheme) error {
-	scheme.AddTypeDefaultingFunc(&v1beta1.PriorityClass{}, func(obj interface{}) { SetObjectDefaults_PriorityClass(obj.(*v1beta1.PriorityClass)) })
-	scheme.AddTypeDefaultingFunc(&v1beta1.PriorityClassList{}, func(obj interface{}) { SetObjectDefaults_PriorityClassList(obj.(*v1beta1.PriorityClassList)) })
+	scheme.AddTypeDefaultingFunc(&schedulingv1beta1.PodGroup{}, func(obj interface{}) { SetObjectDefaults_PodGroup(obj.(*schedulingv1beta1.PodGroup)) })
+	scheme.AddTypeDefaultingFunc(&schedulingv1beta1.PodGroupList{}, func(obj interface{}) { SetObjectDefaults_PodGroupList(obj.(*schedulingv1beta1.PodGroupList)) })
+	scheme.AddTypeDefaultingFunc(&schedulingv1beta1.PriorityClass{}, func(obj interface{}) { SetObjectDefaults_PriorityClass(obj.(*schedulingv1beta1.PriorityClass)) })
+	scheme.AddTypeDefaultingFunc(&schedulingv1beta1.PriorityClassList{}, func(obj interface{}) { SetObjectDefaults_PriorityClassList(obj.(*schedulingv1beta1.PriorityClassList)) })
 	return nil
 }
 
-func SetObjectDefaults_PriorityClass(in *v1beta1.PriorityClass) {
+func SetObjectDefaults_PodGroup(in *schedulingv1beta1.PodGroup) {
+	SetDefaults_PodGroup(in)
+	if in.Spec.DisruptionMode == nil {
+		if err := json.Unmarshal([]byte(`{"single": {}}`), &in.Spec.DisruptionMode); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func SetObjectDefaults_PodGroupList(in *schedulingv1beta1.PodGroupList) {
+	for i := range in.Items {
+		a := &in.Items[i]
+		SetObjectDefaults_PodGroup(a)
+	}
+}
+
+func SetObjectDefaults_PriorityClass(in *schedulingv1beta1.PriorityClass) {
 	SetDefaults_PriorityClass(in)
 }
 
-func SetObjectDefaults_PriorityClassList(in *v1beta1.PriorityClassList) {
+func SetObjectDefaults_PriorityClassList(in *schedulingv1beta1.PriorityClassList) {
 	for i := range in.Items {
 		a := &in.Items[i]
 		SetObjectDefaults_PriorityClass(a)

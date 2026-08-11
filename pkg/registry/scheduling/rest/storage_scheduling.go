@@ -31,11 +31,18 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	serverstorage "k8s.io/apiserver/pkg/server/storage"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	schedulingclient "k8s.io/client-go/kubernetes/typed/scheduling/v1"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/scheduling"
 	schedulingapiv1 "k8s.io/kubernetes/pkg/apis/scheduling/v1"
+	schedulingapiv1alpha3 "k8s.io/kubernetes/pkg/apis/scheduling/v1alpha3"
+	schedulingapiv1beta1 "k8s.io/kubernetes/pkg/apis/scheduling/v1beta1"
+	"k8s.io/kubernetes/pkg/features"
+	compositepodgroupstore "k8s.io/kubernetes/pkg/registry/scheduling/compositepodgroup/storage"
+	podgroupstore "k8s.io/kubernetes/pkg/registry/scheduling/podgroup/storage"
 	priorityclassstore "k8s.io/kubernetes/pkg/registry/scheduling/priorityclass/storage"
+	workloadstore "k8s.io/kubernetes/pkg/registry/scheduling/workload/storage"
 )
 
 const PostStartHookName = "scheduling/bootstrap-system-priority-classes"
@@ -53,6 +60,18 @@ func (p RESTStorageProvider) NewRESTStorage(apiResourceConfigSource serverstorag
 		apiGroupInfo.VersionedResourcesStorageMap[schedulingapiv1.SchemeGroupVersion.Version] = storageMap
 	}
 
+	if storageMap, err := p.v1beta1Storage(apiResourceConfigSource, restOptionsGetter); err != nil {
+		return genericapiserver.APIGroupInfo{}, err
+	} else if len(storageMap) > 0 {
+		apiGroupInfo.VersionedResourcesStorageMap[schedulingapiv1beta1.SchemeGroupVersion.Version] = storageMap
+	}
+
+	if storageMap, err := p.v1alpha3Storage(apiResourceConfigSource, restOptionsGetter); err != nil {
+		return genericapiserver.APIGroupInfo{}, err
+	} else if len(storageMap) > 0 {
+		apiGroupInfo.VersionedResourcesStorageMap[schedulingapiv1alpha3.SchemeGroupVersion.Version] = storageMap
+	}
+
 	return apiGroupInfo, nil
 }
 
@@ -65,6 +84,81 @@ func (p RESTStorageProvider) v1Storage(apiResourceConfigSource serverstorage.API
 			return nil, err
 		} else {
 			storage[resource] = priorityClassStorage
+		}
+	}
+
+	return storage, nil
+}
+
+func (p RESTStorageProvider) v1beta1Storage(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter) (map[string]rest.Storage, error) {
+	storage := map[string]rest.Storage{}
+
+	if resource := "workloads"; apiResourceConfigSource.ResourceEnabled(schedulingapiv1beta1.SchemeGroupVersion.WithResource(resource)) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload) {
+			workloadStorage, err := workloadstore.NewREST(restOptionsGetter)
+			if err != nil {
+				return nil, err
+			}
+			storage[resource] = workloadStorage
+		} else {
+			klog.Warning("Workload storage is disabled because the GenericWorkload feature gate is disabled")
+		}
+	}
+
+	if resource := "podgroups"; apiResourceConfigSource.ResourceEnabled(schedulingapiv1beta1.SchemeGroupVersion.WithResource(resource)) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload) {
+			podGroupStorage, podGroupStatusStorage, err := podgroupstore.NewREST(restOptionsGetter)
+			if err != nil {
+				return nil, err
+			}
+			storage[resource] = podGroupStorage
+			storage[resource+"/status"] = podGroupStatusStorage
+		} else {
+			klog.Warning("PodGroup storage is disabled because the GenericWorkload feature gate is disabled")
+		}
+	}
+
+	return storage, nil
+}
+
+func (p RESTStorageProvider) v1alpha3Storage(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter) (map[string]rest.Storage, error) {
+	storage := map[string]rest.Storage{}
+
+	if resource := "workloads"; apiResourceConfigSource.ResourceEnabled(schedulingapiv1alpha3.SchemeGroupVersion.WithResource(resource)) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload) {
+			workloadStorage, err := workloadstore.NewREST(restOptionsGetter)
+			if err != nil {
+				return nil, err
+			}
+			storage[resource] = workloadStorage
+		} else {
+			klog.Warning("Workload storage is disabled because the GenericWorkload feature gate is disabled")
+		}
+	}
+
+	if resource := "podgroups"; apiResourceConfigSource.ResourceEnabled(schedulingapiv1alpha3.SchemeGroupVersion.WithResource(resource)) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload) {
+			podGroupStorage, podGroupStatusStorage, err := podgroupstore.NewREST(restOptionsGetter)
+			if err != nil {
+				return nil, err
+			}
+			storage[resource] = podGroupStorage
+			storage[resource+"/status"] = podGroupStatusStorage
+		} else {
+			klog.Warning("PodGroup storage is disabled because the GenericWorkload feature gate is disabled")
+		}
+	}
+
+	if resource := "compositepodgroups"; apiResourceConfigSource.ResourceEnabled(schedulingapiv1alpha3.SchemeGroupVersion.WithResource(resource)) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup) {
+			cpgStorage, cpgStatusStorage, err := compositepodgroupstore.NewREST(restOptionsGetter)
+			if err != nil {
+				return nil, err
+			}
+			storage[resource] = cpgStorage
+			storage[resource+"/status"] = cpgStatusStorage
+		} else {
+			klog.Warning("CompositePodGroup storage is disabled because the CompositePodGroup feature gate is disabled")
 		}
 	}
 

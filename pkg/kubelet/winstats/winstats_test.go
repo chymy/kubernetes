@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 /*
 Copyright 2017 The Kubernetes Authors.
@@ -20,19 +19,22 @@ limitations under the License.
 package winstats
 
 import (
+	"os"
 	"testing"
 	"time"
 
-	cadvisorapi "github.com/google/cadvisor/info/v1"
-	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
+	cadvisorapi "github.com/google/cadvisor/lib/model"
 	"github.com/stretchr/testify/assert"
+
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/ktesting"
 )
 
 var timeStamp = time.Now()
 
 type fakeWinNodeStatsClient struct{}
 
-func (f fakeWinNodeStatsClient) startMonitoring() error {
+func (f fakeWinNodeStatsClient) startMonitoring(logger klog.Logger) error {
 	return nil
 }
 
@@ -52,7 +54,7 @@ func (f fakeWinNodeStatsClient) getNodeInfo() nodeInfo {
 		memoryPhysicalCapacityBytes: 1.6e+10,
 	}
 }
-func (f fakeWinNodeStatsClient) getMachineInfo() (*cadvisorapi.MachineInfo, error) {
+func (f fakeWinNodeStatsClient) getMachineInfo(logger klog.Logger) (*cadvisorapi.MachineInfo, error) {
 	return &cadvisorapi.MachineInfo{
 		NumCores:       4,
 		MemoryCapacity: 1.6e+10,
@@ -73,16 +75,16 @@ func TestWinContainerInfos(t *testing.T) {
 	actualRootInfos, err := c.WinContainerInfos()
 	assert.NoError(t, err)
 
-	var stats []*cadvisorapiv2.ContainerStats
-	stats = append(stats, &cadvisorapiv2.ContainerStats{
+	var stats []*cadvisorapi.ContainerStats
+	stats = append(stats, &cadvisorapi.ContainerStats{
 		Timestamp: timeStamp,
 		Cpu: &cadvisorapi.CpuStats{
 			Usage: cadvisorapi.CpuUsage{
 				Total: 123,
 			},
 		},
-		CpuInst: &cadvisorapiv2.CpuInstStats{
-			Usage: cadvisorapiv2.CpuInstUsage{
+		CpuInst: &cadvisorapi.CpuInstStats{
+			Usage: cadvisorapi.CpuInstUsage{
 				Total: 23,
 			},
 		},
@@ -91,13 +93,13 @@ func TestWinContainerInfos(t *testing.T) {
 			Usage:      12345,
 		},
 	})
-	infos := make(map[string]cadvisorapiv2.ContainerInfo)
-	infos["/"] = cadvisorapiv2.ContainerInfo{
-		Spec: cadvisorapiv2.ContainerSpec{
+	infos := make(map[string]cadvisorapi.ContainerInfo)
+	infos["/"] = cadvisorapi.ContainerInfo{
+		Spec: cadvisorapi.ContainerSpec{
 			HasCpu:     true,
 			HasMemory:  true,
 			HasNetwork: true,
-			Memory: cadvisorapiv2.MemorySpec{
+			Memory: cadvisorapi.MemorySpec{
 				Limit: 1.6e+10,
 			},
 		},
@@ -113,9 +115,10 @@ func TestWinContainerInfos(t *testing.T) {
 }
 
 func TestWinMachineInfo(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	c := getClient(t)
 
-	machineInfo, err := c.WinMachineInfo()
+	machineInfo, err := c.WinMachineInfo(logger)
 	assert.NoError(t, err)
 	assert.Equal(t, machineInfo, &cadvisorapi.MachineInfo{
 		NumCores:       4,
@@ -133,49 +136,30 @@ func TestWinVersionInfo(t *testing.T) {
 		KernelVersion: "v42"})
 }
 
-func TestConvertCPUValue(t *testing.T) {
-	testCases := []struct {
-		cpuValue uint64
-		expected uint64
-	}{
-		{cpuValue: uint64(50), expected: uint64(2000000000)},
-		{cpuValue: uint64(0), expected: uint64(0)},
-		{cpuValue: uint64(100), expected: uint64(4000000000)},
-	}
-	var cpuCores = 4
+func TestGetDirFsInfo(t *testing.T) {
+	c := getClient(t)
 
-	for _, tc := range testCases {
-		p := perfCounterNodeStatsClient{}
-		newValue := p.convertCPUValue(cpuCores, tc.cpuValue)
-		assert.Equal(t, newValue, tc.expected)
-	}
-}
-
-func TestGetCPUUsageNanoCores(t *testing.T) {
-	testCases := []struct {
-		latestValue   uint64
-		previousValue uint64
-		expected      uint64
-	}{
-		{latestValue: uint64(0), previousValue: uint64(0), expected: uint64(0)},
-		{latestValue: uint64(2000000000), previousValue: uint64(0), expected: uint64(200000000)},
-		{latestValue: uint64(5000000000), previousValue: uint64(2000000000), expected: uint64(300000000)},
+	// Try with a non-existent path.
+	_, err := c.GetDirFsInfo("foo/lish")
+	expectedErrMsg := "The system cannot find the path specified."
+	if err == nil || err.Error() != expectedErrMsg {
+		t.Fatalf("expected error message `%s` but got `%v`", expectedErrMsg, err)
 	}
 
-	for _, tc := range testCases {
-		p := perfCounterNodeStatsClient{}
-		p.cpuUsageCoreNanoSecondsCache = cpuUsageCoreNanoSecondsCache{
-			latestValue:   tc.latestValue,
-			previousValue: tc.previousValue,
-		}
-		cpuUsageNanoCores := p.getCPUUsageNanoCores()
-		assert.Equal(t, cpuUsageNanoCores, tc.expected)
-	}
+	dir, err := os.MkdirTemp("", "fsinfo")
+	assert.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	fsInfo, err := c.GetDirFsInfo(dir)
+	assert.NoError(t, err)
+	assert.NotZero(t, fsInfo.Capacity)
+	assert.NotZero(t, fsInfo.Available)
 }
 
 func getClient(t *testing.T) Client {
+	logger, _ := ktesting.NewTestContext(t)
 	f := fakeWinNodeStatsClient{}
-	c, err := newClient(f)
+	c, err := newClient(logger, f)
 	assert.NoError(t, err)
 	assert.NotNil(t, c)
 	return c

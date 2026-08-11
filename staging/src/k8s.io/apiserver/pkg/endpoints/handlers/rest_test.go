@@ -20,14 +20,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	jsonpatch "github.com/evanphx/json-patch"
-	fuzz "github.com/google/gofuzz"
+	"github.com/google/go-cmp/cmp"
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,18 +39,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/apis/example"
 	examplev1 "k8s.io/apiserver/pkg/apis/example/v1"
+	"k8s.io/apiserver/pkg/endpoints/handlers/metrics"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	utiltrace "k8s.io/utils/trace"
+	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/component-base/metrics/testutil"
+	"sigs.k8s.io/randfill"
 )
 
 var (
@@ -63,9 +68,9 @@ func init() {
 }
 
 type testPatchType struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 
-	TestPatchSubType `json:",inline"`
+	TestPatchSubType `json:""`
 }
 
 // We explicitly make it public as private types doesn't
@@ -104,6 +109,95 @@ func TestPatchAnonymousField(t *testing.T) {
 	}
 	if !apiequality.Semantic.DeepEqual(actual, expected) {
 		t.Errorf("expected %#v, got %#v", expected, actual)
+	}
+}
+
+func TestLimitedReadBody(t *testing.T) {
+	defer legacyregistry.Reset()
+	legacyregistry.Register(metrics.RequestBodySizes)
+
+	testcases := []struct {
+		desc            string
+		requestBody     io.Reader
+		limit           int64
+		expectedMetrics string
+		expectedErr     bool
+	}{
+		{
+			desc:            "aaaa with limit 1",
+			requestBody:     strings.NewReader("aaaa"),
+			limit:           1,
+			expectedMetrics: "",
+			expectedErr:     true,
+		},
+		{
+			desc:        "aaaa with limit 5",
+			requestBody: strings.NewReader("aaaa"),
+			limit:       5,
+			expectedMetrics: `
+        # HELP apiserver_request_body_size_bytes [ALPHA] Apiserver request body size in bytes broken out by resource and verb.
+        # TYPE apiserver_request_body_size_bytes histogram
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="50000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="150000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="250000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="350000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="450000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="550000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="650000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="750000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="850000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="950000"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.05e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.15e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.25e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.35e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.45e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.55e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.65e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.75e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.85e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="1.95e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.05e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.15e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.25e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.35e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.45e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.55e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.65e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.75e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.85e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="2.95e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="3.05e+06"} 1
+        apiserver_request_body_size_bytes_bucket{group="group",resource="resource",verb="create",le="+Inf"} 1
+        apiserver_request_body_size_bytes_sum{group="group",resource="resource",verb="create"} 4
+        apiserver_request_body_size_bytes_count{group="group",resource="resource",verb="create"} 1
+`,
+			expectedErr: false,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.desc, func(t *testing.T) {
+			ctx := t.Context()
+			// reset metrics
+			defer metrics.RequestBodySizes.Reset()
+			defer legacyregistry.Reset()
+
+			req, err := http.NewRequestWithContext(ctx, request.MethodPost, "/", tc.requestBody)
+			if err != nil {
+				t.Errorf("err not expected: got %v", err)
+			}
+			_, err = limitedReadBodyWithRecordMetric(context.Background(), req, tc.limit, schema.GroupResource{Group: "group", Resource: "resource"}, metrics.Create)
+			if tc.expectedErr {
+				if err == nil {
+					t.Errorf("err expected: got nil")
+				}
+				return
+			}
+			if err = testutil.GatherAndCompare(legacyregistry.DefaultGatherer, strings.NewReader(tc.expectedMetrics), "apiserver_request_body_size_bytes"); err != nil {
+				t.Errorf("unexpected err: %v", err)
+			}
+		})
 	}
 }
 
@@ -152,6 +246,19 @@ func TestJSONPatch(t *testing.T) {
 			expectedError:     "the server rejected our request due to an error in our request",
 			expectedErrorType: metav1.StatusReasonInvalid,
 		},
+		{
+			name:  "valid-negative-index-patch",
+			patch: `[{"op": "test", "value": "foo", "path": "/metadata/finalizers/-1"}]`,
+		},
+		// This demonstrates out-of-spec behavior json-patch v4 allows,
+		// which Kubernetes clients may depend on, and which updating to json-patch v5 currently breaks
+		{
+			name: "replace-missing-path-allowed",
+			patch: `[
+				{"op":"replace", "path":"/metadata/path", "value":"foo"},
+				{"op":"test", "path":"/metadata/path", "value":"foo"}
+			]`,
+		},
 	} {
 		p := &patcher{
 			patchType:  types.JSONPatchType,
@@ -161,6 +268,7 @@ func TestJSONPatch(t *testing.T) {
 		codec := codecs.LegacyCodec(examplev1.SchemeGroupVersion)
 		pod := &examplev1.Pod{}
 		pod.Name = "podA"
+		pod.ObjectMeta.Finalizers = []string{"foo"}
 		versionedJS, err := runtime.Encode(codec, pod)
 		if err != nil {
 			t.Errorf("%s: unexpected error: %v", test.name, err)
@@ -213,6 +321,25 @@ func TestPatchCustomResource(t *testing.T) {
 	if err.Error() != expectedError {
 		t.Errorf("expected %#v, got %#v", expectedError, err.Error())
 	}
+}
+
+type testTimeoutPatcher struct {
+	t *testing.T
+}
+
+func (p *testTimeoutPatcher) New() runtime.Object {
+	return &example.Pod{}
+}
+
+func (p *testTimeoutPatcher) Update(ctx context.Context, _ string, _ rest.UpdatedObjectInfo, _ rest.ValidateObjectFunc, _ rest.ValidateObjectUpdateFunc, _ bool, _ *metav1.UpdateOptions) (runtime.Object, bool, error) {
+	// Block until the context is canceled to simulate a timeout scenario.
+	<-ctx.Done()
+	return nil, false, apierrors.NewTimeoutError("test reason", 10)
+}
+
+func (p *testTimeoutPatcher) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
+	p.t.Fatal("unexpected call to testPatcher.Get")
+	return nil, errors.New("unexpected call to testPatcher.Get")
 }
 
 type testPatcher struct {
@@ -324,6 +451,9 @@ type patchTestCase struct {
 	expectedError string
 	// if set, indicates the number of times patching was expected to be attempted
 	expectedTries int
+
+	// isTimeout for this test case
+	isTimeout bool
 }
 
 func (tc *patchTestCase) Run(t *testing.T) {
@@ -360,6 +490,13 @@ func (tc *patchTestCase) Run(t *testing.T) {
 	schemaReferenceObj := &examplev1.Pod{}
 	hubVersion := example.SchemeGroupVersion
 
+	fieldmanager, err := managedfields.NewDefaultFieldManager(
+		managedfields.NewDeducedTypeConverter(),
+		convertor, defaulter, creater, kind, hubVersion, "", nil)
+
+	if err != nil {
+		t.Fatalf("failed to create field manager: %v", err)
+	}
 	for _, patchType := range []types.PatchType{types.JSONPatchType, types.MergePatchType, types.StrategicMergePatchType} {
 		// This needs to be reset on each iteration.
 		testPatcher := &testPatcher{
@@ -445,17 +582,33 @@ func (tc *patchTestCase) Run(t *testing.T) {
 			name:        name,
 			patchType:   patchType,
 			patchBytes:  patch,
-
-			trace: utiltrace.New("Patch", utiltrace.Field{"name", name}),
+			options: &metav1.PatchOptions{
+				FieldManager: "test-manager",
+			},
 		}
-
-		ctx, cancel := context.WithTimeout(ctx, time.Second)
-		resultObj, _, err := p.patchResource(ctx, &RequestScope{})
+		var timeout time.Duration
+		if tc.isTimeout {
+			// Simulate timeout by using a zero-duration timeout and the timeout patcher
+			// replace testPatcher with the timeout simulator
+			timeout = 0
+			p.restPatcher = &testTimeoutPatcher{t: t}
+		} else {
+			timeout = time.Second
+		}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		resultObj, _, err := p.patchResource(ctx, &RequestScope{
+			FieldManager: fieldmanager,
+		})
 		cancel()
 
 		if len(tc.expectedError) != 0 {
 			if err == nil || err.Error() != tc.expectedError {
 				t.Errorf("%s: expected error %v, but got %v", tc.name, tc.expectedError, err)
+				continue
+			}
+		} else if tc.isTimeout {
+			if !apierrors.IsTimeout(err) {
+				t.Errorf("%s: expected timeout error, but got: %v", tc.name, err)
 				continue
 			}
 		} else {
@@ -494,7 +647,7 @@ func (tc *patchTestCase) Run(t *testing.T) {
 		reallyExpectedPod := expectedObj.(*example.Pod)
 
 		if !reflect.DeepEqual(*reallyExpectedPod, *resultPod) {
-			t.Errorf("%s mismatch: %v\n", tc.name, diff.ObjectGoPrintDiff(reallyExpectedPod, resultPod))
+			t.Errorf("%s mismatch: %v\n", tc.name, cmp.Diff(reallyExpectedPod, resultPod))
 			continue
 		}
 	}
@@ -557,6 +710,19 @@ func TestPatchResourceNumberConversion(t *testing.T) {
 	setTcPod(tc.updatePod, name, namespace, uid, "2", examplev1.SchemeGroupVersion.String(), &thirty, "anywhere")
 
 	setTcPod(tc.expectedPod, name, namespace, uid, "2", "", &thirty, "anywhere")
+
+	tc.Run(t)
+}
+
+func TestPatchResourceTimeout(t *testing.T) {
+	tc := &patchTestCase{
+		name:        "TestPatchResourceTimeout",
+		startingPod: &example.Pod{},
+		changedPod:  &example.Pod{},
+		updatePod:   &example.Pod{},
+		expectedPod: nil,
+		isTimeout:   true,
+	}
 
 	tc.Run(t)
 }
@@ -884,11 +1050,11 @@ func (alwaysErrorTyper) Recognizes(gvk schema.GroupVersionKind) bool {
 }
 
 func TestUpdateToCreateOptions(t *testing.T) {
-	f := fuzz.New()
+	f := randfill.New()
 	for i := 0; i < 100; i++ {
 		t.Run(fmt.Sprintf("Run %d/100", i), func(t *testing.T) {
 			update := &metav1.UpdateOptions{}
-			f.Fuzz(update)
+			f.Fill(update)
 			create := updateToCreateOptions(update)
 
 			b, err := json.Marshal(create)
@@ -931,13 +1097,13 @@ func TestPatchToUpdateOptions(t *testing.T) {
 		},
 	}
 
-	f := fuzz.New()
+	f := randfill.New()
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				t.Run(fmt.Sprintf("Run %d/100", i), func(t *testing.T) {
 					patch := &metav1.PatchOptions{}
-					f.Fuzz(patch)
+					f.Fill(patch)
 					converted := test.converterFn(patch)
 
 					b, err := json.Marshal(converted)
@@ -1190,7 +1356,7 @@ func TestDedupOwnerReferences(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			deduped, _ := dedupOwnerReferences(tc.ownerReferences)
 			if !apiequality.Semantic.DeepEqual(deduped, tc.expected) {
-				t.Errorf("diff: %v", diff.ObjectReflectDiff(deduped, tc.expected))
+				t.Errorf("diff: %v", cmp.Diff(deduped, tc.expected))
 			}
 		})
 	}

@@ -16,7 +16,11 @@ limitations under the License.
 
 package policy
 
-import "strings"
+import (
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 func joinQuote(items []string) string {
 	if len(items) == 0 {
@@ -30,4 +34,10 @@ func pluralize(singular, plural string, count int) string {
 		return singular
 	}
 	return plural
+}
+
+// relaxPolicyForUserNamespacePod returns true if a policy should be relaxed
+// because of enabled user namespaces in the provided pod spec.
+func relaxPolicyForUserNamespacePod(podSpec *corev1.PodSpec) bool {
+	return podSpec != nil && podSpec.HostUsers != nil && !*podSpec.HostUsers
 }

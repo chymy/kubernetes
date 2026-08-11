@@ -25,6 +25,8 @@ import (
 	cronjobconfig "k8s.io/kubernetes/pkg/controller/cronjob/config"
 	daemonconfig "k8s.io/kubernetes/pkg/controller/daemon/config"
 	deploymentconfig "k8s.io/kubernetes/pkg/controller/deployment/config"
+	devicetaintevictionconfig "k8s.io/kubernetes/pkg/controller/devicetainteviction/config"
+	disruptionconfig "k8s.io/kubernetes/pkg/controller/disruption/config"
 	endpointconfig "k8s.io/kubernetes/pkg/controller/endpoint/config"
 	endpointsliceconfig "k8s.io/kubernetes/pkg/controller/endpointslice/config"
 	endpointslicemirroringconfig "k8s.io/kubernetes/pkg/controller/endpointslicemirroring/config"
@@ -37,10 +39,12 @@ import (
 	podgcconfig "k8s.io/kubernetes/pkg/controller/podgc/config"
 	replicasetconfig "k8s.io/kubernetes/pkg/controller/replicaset/config"
 	replicationconfig "k8s.io/kubernetes/pkg/controller/replication/config"
+	resourceclaimconfig "k8s.io/kubernetes/pkg/controller/resourceclaim/config"
 	resourcequotaconfig "k8s.io/kubernetes/pkg/controller/resourcequota/config"
 	serviceaccountconfig "k8s.io/kubernetes/pkg/controller/serviceaccount/config"
 	statefulsetconfig "k8s.io/kubernetes/pkg/controller/statefulset/config"
 	ttlafterfinishedconfig "k8s.io/kubernetes/pkg/controller/ttlafterfinished/config"
+	validatingadmissionpolicystatusconfig "k8s.io/kubernetes/pkg/controller/validatingadmissionpolicystatus/config"
 	attachdetachconfig "k8s.io/kubernetes/pkg/controller/volume/attachdetach/config"
 	ephemeralvolumeconfig "k8s.io/kubernetes/pkg/controller/volume/ephemeral/config"
 	persistentvolumeconfig "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/config"
@@ -61,6 +65,9 @@ type KubeControllerManagerConfiguration struct {
 	// AttachDetachControllerConfiguration holds configuration for
 	// AttachDetachController related features.
 	AttachDetachController attachdetachconfig.AttachDetachControllerConfiguration
+	// CronJobControllerConfiguration holds configuration for CronJobController
+	// related features.
+	CronJobController cronjobconfig.CronJobControllerConfiguration
 	// CSRSigningControllerConfiguration holds configuration for
 	// CSRSigningController related features.
 	CSRSigningController csrsigningconfig.CSRSigningControllerConfiguration
@@ -70,9 +77,11 @@ type KubeControllerManagerConfiguration struct {
 	// DeploymentControllerConfiguration holds configuration for
 	// DeploymentController related features.
 	DeploymentController deploymentconfig.DeploymentControllerConfiguration
-	// StatefulSetControllerConfiguration holds configuration for
-	// StatefulSetController related features.
-	StatefulSetController statefulsetconfig.StatefulSetControllerConfiguration
+	// DisruptionControllerConfiguration holds configuration for
+	// DisruptionController related features.
+	DisruptionController disruptionconfig.DisruptionControllerConfiguration
+	// DeviceTaintEvictionControllerConfiguration contains elements configuring the device taint eviction controller.
+	DeviceTaintEvictionController devicetaintevictionconfig.DeviceTaintEvictionControllerConfiguration
 	// DeprecatedControllerConfiguration holds configuration for some deprecated
 	// features.
 	DeprecatedController DeprecatedControllerConfiguration
@@ -95,9 +104,8 @@ type KubeControllerManagerConfiguration struct {
 	HPAController poautosclerconfig.HPAControllerConfiguration
 	// JobControllerConfiguration holds configuration for JobController related features.
 	JobController jobconfig.JobControllerConfiguration
-	// CronJobControllerConfiguration holds configuration for CronJobController
-	// related features.
-	CronJobController cronjobconfig.CronJobControllerConfiguration
+	// LegacySATokenCleanerConfiguration holds configuration for LegacySATokenCleaner related features.
+	LegacySATokenCleaner serviceaccountconfig.LegacySATokenCleanerConfiguration
 	// NamespaceControllerConfiguration holds configuration for NamespaceController
 	// related features.
 	NamespaceController namespaceconfig.NamespaceControllerConfiguration
@@ -127,9 +135,17 @@ type KubeControllerManagerConfiguration struct {
 	// ServiceControllerConfiguration holds configuration for ServiceController
 	// related features.
 	ServiceController serviceconfig.ServiceControllerConfiguration
+	// StatefulSetControllerConfiguration holds configuration for
+	// StatefulSetController related features.
+	StatefulSetController statefulsetconfig.StatefulSetControllerConfiguration
 	// TTLAfterFinishedControllerConfiguration holds configuration for
 	// TTLAfterFinishedController related features.
 	TTLAfterFinishedController ttlafterfinishedconfig.TTLAfterFinishedControllerConfiguration
+	// ValidatingAdmissionPolicyStatusControllerConfiguration holds configuration for
+	// ValidatingAdmissionPolicyStatusController related features.
+	ValidatingAdmissionPolicyStatusController validatingadmissionpolicystatusconfig.ValidatingAdmissionPolicyStatusControllerConfiguration
+	// ResourceClaimControllerConfiguration contains elements configuring the resource claim controller.
+	ResourceClaimController resourceclaimconfig.ResourceClaimControllerConfiguration
 }
 
 // DeprecatedControllerConfiguration contains elements be deprecated.

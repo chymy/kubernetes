@@ -22,7 +22,7 @@ import (
 	"k8s.io/klog/v2"
 
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
-	kubeadmapiv1beta2 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta2"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
 )
@@ -49,7 +49,7 @@ func GetDNSImage(cfg *kubeadmapi.ClusterConfiguration) string {
 		dnsImageRepository = cfg.DNS.ImageRepository
 	}
 	// Handle the renaming of the official image from "registry.k8s.io/coredns" to "registry.k8s.io/coredns/coredns
-	if dnsImageRepository == kubeadmapiv1beta2.DefaultImageRepository {
+	if dnsImageRepository == kubeadmapiv1.DefaultImageRepository {
 		dnsImageRepository = fmt.Sprintf("%s/coredns", dnsImageRepository)
 	}
 	// DNS uses an imageTag that corresponds to the DNS version matching the Kubernetes version
@@ -63,51 +63,66 @@ func GetDNSImage(cfg *kubeadmapi.ClusterConfiguration) string {
 }
 
 // GetEtcdImage generates and returns the image for etcd
-func GetEtcdImage(cfg *kubeadmapi.ClusterConfiguration) string {
+func GetEtcdImage(cfg *kubeadmapi.ClusterConfiguration, supportedEtcdVersion map[uint8]string) string {
 	// Etcd uses default image repository by default
 	etcdImageRepository := cfg.ImageRepository
 	// unless an override is specified
 	if cfg.Etcd.Local != nil && cfg.Etcd.Local.ImageRepository != "" {
 		etcdImageRepository = cfg.Etcd.Local.ImageRepository
 	}
+	etcdImageTag := GetEtcdImageTag(cfg, supportedEtcdVersion)
+	return GetGenericImage(etcdImageRepository, constants.Etcd, etcdImageTag)
+}
+
+// GetEtcdImageTag generates and returns the image tag for etcd
+func GetEtcdImageTag(cfg *kubeadmapi.ClusterConfiguration, supportedEtcdVersion map[uint8]string) string {
 	// Etcd uses an imageTag that corresponds to the etcd version matching the Kubernetes version
 	etcdImageTag := constants.DefaultEtcdVersion
-	etcdVersion, warning, err := constants.EtcdSupportedVersion(constants.SupportedEtcdVersion, cfg.KubernetesVersion)
+	etcdVersion, warning, err := constants.EtcdSupportedVersion(supportedEtcdVersion, cfg.KubernetesVersion)
 	if err == nil {
 		etcdImageTag = etcdVersion.String()
 	}
 	if warning != nil {
-		klog.Warningln(warning)
+		klog.V(1).Infof("WARNING: %v", warning)
 	}
 	// unless an override is specified
 	if cfg.Etcd.Local != nil && cfg.Etcd.Local.ImageTag != "" {
 		etcdImageTag = cfg.Etcd.Local.ImageTag
 	}
-	return GetGenericImage(etcdImageRepository, constants.Etcd, etcdImageTag)
+	return etcdImageTag
 }
 
 // GetControlPlaneImages returns a list of container images kubeadm expects to use on a control plane node
 func GetControlPlaneImages(cfg *kubeadmapi.ClusterConfiguration) []string {
-	imgs := []string{}
+	images := make([]string, 0)
 
 	// start with core kubernetes images
-	imgs = append(imgs, GetKubernetesImage(constants.KubeAPIServer, cfg))
-	imgs = append(imgs, GetKubernetesImage(constants.KubeControllerManager, cfg))
-	imgs = append(imgs, GetKubernetesImage(constants.KubeScheduler, cfg))
-	imgs = append(imgs, GetKubernetesImage(constants.KubeProxy, cfg))
+	images = append(images, GetKubernetesImage(constants.KubeAPIServer, cfg))
+	images = append(images, GetKubernetesImage(constants.KubeControllerManager, cfg))
+	images = append(images, GetKubernetesImage(constants.KubeScheduler, cfg))
+
+	// if Proxy addon is not disable then add the image
+	if cfg.Proxy.Disabled {
+		klog.V(1).Infof("skipping the kube-proxy image pull since the bundled addon is disabled")
+	} else {
+		images = append(images, GetKubernetesImage(constants.KubeProxy, cfg))
+	}
+	// if DNS addon is not disable then add the image
+	if cfg.DNS.Disabled {
+		klog.V(1).Infof("skipping the CoreDNS image pull since the bundled addon is disabled")
+	} else {
+		images = append(images, GetDNSImage(cfg))
+	}
 
 	// pause is not available on the ci image repository so use the default image repository.
-	imgs = append(imgs, GetPauseImage(cfg))
+	images = append(images, GetPauseImage(cfg))
 
 	// if etcd is not external then add the image as it will be required
 	if cfg.Etcd.Local != nil {
-		imgs = append(imgs, GetEtcdImage(cfg))
+		images = append(images, GetEtcdImage(cfg, constants.SupportedEtcdVersion))
 	}
 
-	// Append the appropriate DNS images
-	imgs = append(imgs, GetDNSImage(cfg))
-
-	return imgs
+	return images
 }
 
 // GetPauseImage returns the image for the "pause" container

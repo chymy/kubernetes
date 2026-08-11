@@ -35,13 +35,13 @@ import (
 
 // strategy implements behavior for ConfigMap objects
 type strategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Strategy is the default logic that applies when creating and updating ConfigMap
 // objects via the REST API.
-var Strategy = strategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = strategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 // Strategy should implement rest.RESTCreateStrategy
 var _ rest.RESTCreateStrategy = Strategy
@@ -71,7 +71,7 @@ func (strategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []stri
 func (strategy) Canonicalize(obj runtime.Object) {
 }
 
-func (strategy) AllowCreateOnUpdate() bool {
+func (strategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return false
 }
 
@@ -93,7 +93,7 @@ func (strategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) [
 func dropDisabledFields(configMap *api.ConfigMap, oldConfigMap *api.ConfigMap) {
 }
 
-func (strategy) AllowUnconditionalUpdate() bool {
+func (strategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return true
 }
 
@@ -109,16 +109,10 @@ func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 // Matcher returns a selection predicate for a given label and field selector.
 func Matcher(label labels.Selector, field fields.Selector) pkgstorage.SelectionPredicate {
 	return pkgstorage.SelectionPredicate{
-		Label:       label,
-		Field:       field,
-		GetAttrs:    GetAttrs,
-		IndexFields: []string{"metadata.name"},
+		Label:    label,
+		Field:    field,
+		GetAttrs: GetAttrs,
 	}
-}
-
-// NameTriggerFunc returns value metadata.namespace of given object.
-func NameTriggerFunc(obj runtime.Object) string {
-	return obj.(*api.ConfigMap).ObjectMeta.Name
 }
 
 // SelectableFields returns a field set that can be used for filter selection

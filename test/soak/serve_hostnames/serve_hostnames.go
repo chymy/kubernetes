@@ -17,7 +17,7 @@ limitations under the License.
 /*
 This soak tests places a specified number of pods on each node and then
 repeatedly sends queries to a service running on these pods via
-a serivce
+a service
 */
 
 package main
@@ -39,8 +39,8 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
-	e2e "k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/framework/service"
+	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"k8s.io/klog/v2"
 )
@@ -126,7 +126,7 @@ func main() {
 			klog.Warningf("Failed to delete namespace %s: %v", ns, err)
 		} else {
 			// wait until the namespace disappears
-			for i := 0; i < int(namespaceDeleteTimeout/time.Second); i++ {
+			for range int(namespaceDeleteTimeout / time.Second) {
 				if _, err := client.CoreV1().Namespaces().Get(context.TODO(), ns, metav1.GetOptions{}); err != nil {
 					if apierrors.IsNotFound(err) {
 						return
@@ -155,7 +155,7 @@ func main() {
 				Ports: []v1.ServicePort{{
 					Protocol:   "TCP",
 					Port:       9376,
-					TargetPort: intstr.FromInt(9376),
+					TargetPort: intstr.FromInt32(9376),
 				}},
 				Selector: map[string]string{
 					"name": "serve-hostname",
@@ -205,7 +205,7 @@ func main() {
 						Containers: []v1.Container{
 							{
 								Name:  "serve-hostname",
-								Image: e2e.ServeHostnameImage,
+								Image: imageutils.GetE2EImage(imageutils.Agnhost),
 								Ports: []v1.ContainerPort{{ContainerPort: 9376}},
 							},
 						},
@@ -297,7 +297,7 @@ func main() {
 		// of in-flight requests to avoid overloading the service.
 		inFlight := make(chan struct{}, *maxPar)
 		start := time.Now()
-		for q := 0; q < queries; q++ {
+		for q := range queries {
 			go func(i int, query int) {
 				inFlight <- struct{}{}
 				t := time.Now()
@@ -319,7 +319,7 @@ func main() {
 		}
 		responses := make(map[string]int, *podsPerNode*len(nodes.Items))
 		missing := 0
-		for q := 0; q < queries; q++ {
+		for range queries {
 			r := <-responseChan
 			klog.V(4).Infof("Got response from %s", r)
 			responses[r]++

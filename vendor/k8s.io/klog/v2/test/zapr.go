@@ -18,11 +18,6 @@ package test
 
 // ZaprOutputMappingDirect provides a mapping from klog output to the
 // corresponding zapr output when zapr is called directly.
-//
-// Experimental
-//
-// Notice: This package is EXPERIMENTAL and may be changed or removed in a
-// later release.
 func ZaprOutputMappingDirect() map[string]string {
 	return map[string]string{
 		`I output.go:<LINE>] "test" akey="<&>"
@@ -37,7 +32,15 @@ func ZaprOutputMappingDirect() map[string]string {
 `: `{"caller":"test/output.go:<LINE>","msg":"helper","v":0,"akey":"avalue"}
 `,
 
-		`I output.go:<LINE>] "hello/world: test" akey="avalue"
+		`I output.go:<LINE>] "test-arguments" akey="avalue2"
+`: `{"caller":"test/output.go:<LINE>","msg":"test-arguments","v":0,"akey":"avalue","akey":"avalue2"}
+`,
+
+		`I output.go:<LINE>] "test-with-values" akey="avalue2"
+`: `{"caller":"test/output.go:<LINE>","msg":"test-with-values","akey":"avalue","v":0,"akey":"avalue2"}
+`,
+
+		`I output.go:<LINE>] "test" logger="hello.world" akey="avalue"
 `: `{"logger":"hello.world","caller":"test/output.go:<LINE>","msg":"test","v":0,"akey":"avalue"}
 `,
 
@@ -65,15 +68,35 @@ func ZaprOutputMappingDirect() map[string]string {
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pod":{"name":"pod-1","namespace":"kube-system"}}
 `,
 
-		`I output.go:<LINE>] "test" pods=[kube-system/pod-1 kube-system/pod-2]
-`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]}
+		`I output.go:<LINE>] "KObjs" pods=[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]
+`: `{"caller":"test/output.go:<LINE>","msg":"KObjs","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]}
+`,
+
+		`I output.go:<LINE>] "KObjSlice" pods=["kube-system/pod-1","kube-system/pod-2"]
+`: `{"caller":"test/output.go:<LINE>","msg":"KObjSlice","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]}
+`,
+
+		`I output.go:<LINE>] "test" pods=null
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":null}
+`,
+
+		`I output.go:<LINE>] "test" pods="<KObjSlice needs a slice, got type int>"
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":"<KObjSlice needs a slice, got type int>"}
+`,
+
+		`I output.go:<LINE>] "test" ints=["<KObjSlice needs a slice of values implementing KMetadata, got type int>"]
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"ints":"<KObjSlice needs a slice of values implementing KMetadata, got type int>"}
+`,
+
+		`I output.go:<LINE>] "test" pods=["kube-system/pod-1",null]
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},null]}
 `,
 
 		`I output.go:<LINE>] "test" akey="avalue"
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"akey":"avalue"}
 `,
 
-		`I output.go:<LINE>] "me: test" akey="avalue"
+		`I output.go:<LINE>] "test" logger="me" akey="avalue"
 `: `{"logger":"me","caller":"test/output.go:<LINE>","msg":"test","v":0,"akey":"avalue"}
 `,
 
@@ -116,7 +139,7 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 {"caller":"test/output.go:<LINE>","msg":"both odd","basekey1":"basevar1","v":0,"akey":"avalue"}
 `,
 
-		`I output.go:<LINE>] "marshaler nil" obj="<panic: value method k8s.io/klog/v2.ObjectRef.String called using nil *ObjectRef pointer>"
+		`I output.go:<LINE>] "marshaler nil" obj="<panic: value method k8s.io/klog/v2.ObjectRef.WriteText called using nil *ObjectRef pointer>"
 `: `{"caller":"test/output.go:<LINE>","msg":"marshaler nil","v":0,"objError":"PANIC=value method k8s.io/klog/v2.ObjectRef.MarshalLog called using nil *ObjectRef pointer"}
 `,
 
@@ -137,28 +160,32 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 `: `{"caller":"test/output.go:<LINE>","msg":"error panic","errError":"PANIC=fake Error panic"}
 `,
 
-		`I output.go:<LINE>] "marshaler panic" obj={}
+		`I output.go:<LINE>] "marshaler panic" obj="<panic: fake MarshalLog panic>"
 `: `{"caller":"test/output.go:<LINE>","msg":"marshaler panic","v":0,"objError":"PANIC=fake MarshalLog panic"}
+`,
+
+		`I output.go:<LINE>] "marshaler recursion" obj={}
+`: `{"caller":"test/output.go:<LINE>","msg":"marshaler recursion","v":0,"obj":{}}
 `,
 
 		// klog.Info
 		`I output.go:<LINE>] "helloworld\n"
-`: `{"caller":"test/output.go:<LINE>","msg":"helloworld\n","v":0}
+`: `{"caller":"test/output.go:<LINE>","msg":"helloworld","v":0}
 `,
 
 		// klog.Infoln
 		`I output.go:<LINE>] "hello world\n"
-`: `{"caller":"test/output.go:<LINE>","msg":"hello world\n","v":0}
+`: `{"caller":"test/output.go:<LINE>","msg":"hello world","v":0}
 `,
 
 		// klog.Error
 		`E output.go:<LINE>] "helloworld\n"
-`: `{"caller":"test/output.go:<LINE>","msg":"helloworld\n"}
+`: `{"caller":"test/output.go:<LINE>","msg":"helloworld"}
 `,
 
 		// klog.Errorln
 		`E output.go:<LINE>] "hello world\n"
-`: `{"caller":"test/output.go:<LINE>","msg":"hello world\n"}
+`: `{"caller":"test/output.go:<LINE>","msg":"hello world"}
 `,
 
 		// klog.ErrorS
@@ -173,12 +200,12 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 
 		// klog.V(1).Info
 		`I output.go:<LINE>] "hellooneworld\n"
-`: `{"caller":"test/output.go:<LINE>","msg":"hellooneworld\n","v":1}
+`: `{"caller":"test/output.go:<LINE>","msg":"hellooneworld","v":1}
 `,
 
 		// klog.V(1).Infoln
 		`I output.go:<LINE>] "hello one world\n"
-`: `{"caller":"test/output.go:<LINE>","msg":"hello one world\n","v":1}
+`: `{"caller":"test/output.go:<LINE>","msg":"hello one world","v":1}
 `,
 
 		// klog.V(1).ErrorS
@@ -190,6 +217,72 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 		`I output.go:<LINE>] "hello" what="one world"
 `: `{"caller":"test/output.go:<LINE>","msg":"hello","v":1,"what":"one world"}
 `,
+
+		`I output.go:<LINE>] "integer keys" %!s(int=1)="value" %!s(int=2)="value2" akey="avalue" akey2="(MISSING)"
+`: `{"caller":"test/output.go:<WITH-VALUES>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":1}
+{"caller":"test/output.go:<LINE>","msg":"odd number of arguments passed as key-value pairs for logging","ignored key":"akey2"}
+{"caller":"test/output.go:<LINE>","msg":"integer keys","v":0,"akey":"avalue"}
+`,
+
+		`I output.go:<LINE>] "struct keys" {name}="value" test="other value" key="val"
+`: `{"caller":"test/output.go:<WITH-VALUES>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":{}}
+{"caller":"test/output.go:<LINE>","msg":"struct keys","v":0,"key":"val"}
+`,
+		`I output.go:<LINE>] "map keys" map[test:%!s(bool=true)]="test"
+`: `{"caller":"test/output.go:<LINE>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":{"test":true}}
+{"caller":"test/output.go:<LINE>","msg":"map keys","v":0}
+`,
+
+		`I output.go:<LINE>] "Format" config=<
+	{
+	  "Kind": "config",
+	  "RealField": 42
+	}
+ >
+`: `{"caller":"test/output.go:<LINE>","msg":"Format","v":0,"config":{"Kind":"config","RealField":42}}
+`,
+		`I output.go:<LINE>] "maps" s={"hello":"world"} i={"1":2,"3":4}
+`: `{"caller":"test/output.go:<LINE>","msg":"maps","v":0,"s":{"hello":"world"},"i":{"1":2,"3":4}}
+`,
+
+		`I output.go:<LINE>] "slices" s=["hello","world"] i=[1,2,3]
+`: `{"caller":"test/output.go:<LINE>","msg":"slices","v":0,"s":["hello","world"],"i":[1,2,3]}
+`,
+		`I output.go:<LINE>] "structs" s={"Name":"worker","Kind":"pod"}
+`: `{"caller":"test/output.go:<LINE>","msg":"structs","v":0,"s":{"Name":"worker","Kind":"pod"}}
+`,
+		`I output.go:<LINE>] "klog.Format" s=<
+	{
+	  "Name": "worker",
+	  "Kind": "pod"
+	}
+ >
+`: `{"caller":"test/output.go:<LINE>","msg":"klog.Format","v":0,"s":{"Name":"worker","Kind":"pod"}}
+`,
+
+		`I output.go:<LINE>] "cycle" list="<internal error: json: unsupported value: encountered a cycle via *test.myList>"
+`: `{"caller":"test/output.go:<LINE>","msg":"cycle","v":0,"listError":"json: unsupported value: encountered a cycle via *test.myList"}
+`,
+
+		`I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="1112131415161718"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="2122232425262728"
+`: `{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","v":0}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","trace":"101112131415161718191a1b1c1d1e1f","span":"1112131415161718","v":0}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","v":0}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","trace":"101112131415161718191a1b1c1d1e1f","span":"2122232425262728","v":0}
+`,
+
+		`I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708" a=1
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" a=1 b=2 span="1112131415161718"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708" a=1
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" a=1 c=3 span="2122232425262728" d=4
+`: `{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1,"v":0}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1,"b":2,"trace":"101112131415161718191a1b1c1d1e1f","span":"1112131415161718","v":0}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1,"v":0}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1,"c":3,"trace":"101112131415161718191a1b1c1d1e1f","span":"2122232425262728","d":4,"v":0}
+`,
 	}
 }
 
@@ -198,31 +291,24 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 // klog.
 //
 // This is different from ZaprOutputMappingDirect because:
-// - WithName gets added to the message by Output.
-// - zap uses . as separator instead of / between WithName values,
-//   here we get slashes because Output concatenates these values.
-// - WithValues are added to the normal key/value parameters by
-//   Output, which puts them after "v".
-// - Output does that without emitting the warning that we get
-//   from zapr.
-// - zap drops keys with missing values, here we get "(MISSING)".
-// - zap does not de-duplicate key/value pairs, here klog does that
-//   for it.
-//
-// Experimental
-//
-// Notice: This package is EXPERIMENTAL and may be changed or removed in a
-// later release.
+//   - WithName gets added to the message by Output.
+//   - zap uses . as separator instead of / between WithName values,
+//     here we get slashes because Output concatenates these values.
+//   - WithValues are added to the normal key/value parameters by
+//     Output, which puts them after "v".
+//   - Output does that without emitting the warning that we get
+//     from zapr.
+//   - zap drops keys with missing values, here we get "(MISSING)".
 func ZaprOutputMappingIndirect() map[string]string {
 	mapping := ZaprOutputMappingDirect()
 
 	for key, value := range map[string]string{
-		`I output.go:<LINE>] "hello/world: test" akey="avalue"
-`: `{"caller":"test/output.go:<LINE>","msg":"hello/world: test","v":0,"akey":"avalue"}
+		`I output.go:<LINE>] "test" logger="hello.world" akey="avalue"
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"logger":"hello.world","akey":"avalue"}
 `,
 
-		`I output.go:<LINE>] "me: test" akey="avalue"
-`: `{"caller":"test/output.go:<LINE>","msg":"me: test","v":0,"akey":"avalue"}
+		`I output.go:<LINE>] "test" logger="me" akey="avalue"
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"logger":"me","akey":"avalue"}
 `,
 
 		`I output.go:<LINE>] "odd parameters" basekey1="basevar1" basekey2="(MISSING)" akey="avalue" akey2="(MISSING)"
@@ -247,12 +333,16 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"akey9":"avalue9","akey8":"avalue8","akey1":"avalue1","akey5":"avalue5","akey4":"avalue4"}
 `,
 
-		`I output.go:<LINE>] "test" akey="avalue2"
-`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"akey":"avalue2"}
+		`I output.go:<LINE>] "test-arguments" akey="avalue2"
+`: `{"caller":"test/output.go:<LINE>","msg":"test-arguments","v":0,"akey":"avalue","akey":"avalue2"}
+`,
+
+		`I output.go:<LINE>] "test-with-values" akey="avalue2"
+`: `{"caller":"test/output.go:<LINE>","msg":"test-with-values","v":0,"akey":"avalue","akey":"avalue2"}
 `,
 
 		`I output.go:<LINE>] "test" X="y" duration="1m0s" A="b"
-`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"X":"y","duration":"1m0s","A":"b"}
+`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"duration":"1h0m0s","X":"y","duration":"1m0s","A":"b"}
 `,
 
 		`I output.go:<LINE>] "test" firstKey=1
@@ -263,6 +353,43 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 {"caller":"test/output.go:<LINE>","msg":"test","v":0,"firstKey":1,"secondKey":2}
 {"caller":"test/output.go:<LINE>","msg":"test","v":0,"firstKey":1}
 {"caller":"test/output.go:<LINE>","msg":"test","v":0,"firstKey":1,"secondKey":3}
+`,
+		`I output.go:<LINE>] "integer keys" %!s(int=1)="value" %!s(int=2)="value2" akey="avalue" akey2="(MISSING)"
+`: `{"caller":"test/output.go:<LINE>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":1}
+{"caller":"test/output.go:<LINE>","msg":"integer keys","v":0}
+`,
+		`I output.go:<LINE>] "struct keys" {name}="value" test="other value" key="val"
+`: `{"caller":"test/output.go:<LINE>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":{}}
+{"caller":"test/output.go:<LINE>","msg":"struct keys","v":0}
+`,
+		`I output.go:<LINE>] "map keys" map[test:%!s(bool=true)]="test"
+`: `{"caller":"test/output.go:<LINE>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":{"test":true}}
+{"caller":"test/output.go:<LINE>","msg":"map keys","v":0}
+`,
+
+		// zapr does not support vmodule checks and thus always
+		// discards these messages.
+		`I output.go:<LINE>] "v=11: you see me because of -vmodule output=11"
+`: ``,
+
+		`I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="1112131415161718"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="2122232425262728"
+`: `{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708"}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","trace":"101112131415161718191a1b1c1d1e1f","span":"1112131415161718"}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708"}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","trace":"101112131415161718191a1b1c1d1e1f","span":"2122232425262728"}
+`,
+
+		`I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708" a=1
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" a=1 b=2 span="1112131415161718"
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" span="0102030405060708" a=1
+I output.go:<LINE>] "duplicates" trace="101112131415161718191a1b1c1d1e1f" a=1 c=3 span="2122232425262728" d=4
+`: `{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1,"b":2,"trace":"101112131415161718191a1b1c1d1e1f","span":"1112131415161718"}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1}
+{"caller":"test/output.go:<LINE>","msg":"duplicates","v":0,"trace":"101112131415161718191a1b1c1d1e1f","span":"0102030405060708","a":1,"c":3,"trace":"101112131415161718191a1b1c1d1e1f","span":"2122232425262728","d":4}
 `,
 	} {
 		mapping[key] = value

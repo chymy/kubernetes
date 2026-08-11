@@ -24,14 +24,13 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/component-helpers/storage/ephemeral"
 	"k8s.io/klog/v2"
 	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util"
+	utiltrace "k8s.io/utils/trace"
 )
 
 // volumeStatCalculator calculates volume metrics for a given pod periodically in the background and caches the result
@@ -65,10 +64,10 @@ func newVolumeStatCalculator(statsProvider Provider, jitterPeriod time.Duration,
 }
 
 // StartOnce starts pod volume calc that will occur periodically in the background until s.StopOnce is called
-func (s *volumeStatCalculator) StartOnce() *volumeStatCalculator {
+func (s *volumeStatCalculator) StartOnce(logger klog.Logger) *volumeStatCalculator {
 	s.startO.Do(func() {
 		go wait.JitterUntil(func() {
-			s.calcAndStoreStats()
+			s.calcAndStoreStats(logger)
 		}, s.jitterPeriod, 1.0, true, s.stopChannel)
 	})
 	return s
@@ -94,7 +93,7 @@ func (s *volumeStatCalculator) GetLatest() (PodVolumeStats, bool) {
 
 // calcAndStoreStats calculates PodVolumeStats for a given pod and writes the result to the s.latest cache.
 // If the pod references PVCs, the prometheus metrics for those are updated with the result.
-func (s *volumeStatCalculator) calcAndStoreStats() {
+func (s *volumeStatCalculator) calcAndStoreStats(logger klog.Logger) {
 	// Find all Volumes for the Pod
 	volumes, found := s.statsProvider.ListVolumesForPod(s.pod.UID)
 	blockVolumes, bvFound := s.statsProvider.ListBlockVolumesForPod(s.pod.UID)
@@ -124,7 +123,7 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 	}
 
 	// Get volume specs for the pod - key'd by volume name
-	volumesSpec := make(map[string]v1.Volume)
+	volumesSpec := make(map[string]v1.Volume, len(s.pod.Spec.Volumes))
 	for _, v := range s.pod.Spec.Volumes {
 		volumesSpec[v.Name] = v
 	}
@@ -133,11 +132,15 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 	var ephemeralStats []stats.VolumeStats
 	var persistentStats []stats.VolumeStats
 	for name, v := range metricVolumes {
-		metric, err := v.GetMetrics()
+		metric, err := func() (*volume.Metrics, error) {
+			trace := utiltrace.New(fmt.Sprintf("Calculate volume metrics of %v for pod %v/%v", name, s.pod.Namespace, s.pod.Name))
+			defer trace.LogIfLong(1 * time.Second)
+			return v.GetMetrics()
+		}()
 		if err != nil {
 			// Expected for Volumes that don't support Metrics
 			if !volume.IsNotSupported(err) {
-				klog.V(4).InfoS("Failed to calculate volume metrics", "pod", klog.KObj(s.pod), "podUID", s.pod.UID, "volumeName", name, "err", err)
+				logger.V(4).Info("Failed to calculate volume metrics", "pod", klog.KObj(s.pod), "podUID", s.pod.UID, "volumeName", name, "err", err)
 			}
 			continue
 		}
@@ -162,11 +165,6 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 			persistentStats = append(persistentStats, volumeStats)
 		}
 
-		if utilfeature.DefaultFeatureGate.Enabled(features.CSIVolumeHealth) {
-			if metric.Abnormal != nil && metric.Message != nil && (*metric.Abnormal) {
-				s.eventRecorder.Event(s.pod, v1.EventTypeWarning, "VolumeConditionAbnormal", fmt.Sprintf("Volume %s: %s", name, *metric.Message))
-			}
-		}
 	}
 
 	// Store the new stats
@@ -205,12 +203,6 @@ func (s *volumeStatCalculator) parsePodVolumeStats(podName string, pvcRef *stats
 		PVCRef: pvcRef,
 		FsStats: stats.FsStats{Time: metric.Time, AvailableBytes: &available, CapacityBytes: &capacity,
 			UsedBytes: &used, Inodes: &inodes, InodesFree: &inodesFree, InodesUsed: &inodesUsed},
-	}
-
-	if metric.Abnormal != nil {
-		volumeStats.VolumeHealthStats = &stats.VolumeHealthStats{
-			Abnormal: *metric.Abnormal,
-		}
 	}
 
 	return volumeStats

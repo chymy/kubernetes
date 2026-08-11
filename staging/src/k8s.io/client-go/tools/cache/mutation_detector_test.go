@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -29,14 +29,14 @@ import (
 
 func TestMutationDetector(t *testing.T) {
 	fakeWatch := watch.NewFake()
-	lw := &testLW{
+	lw := toListWatcherWithUnSupportedWatchListSemantics(&ListWatch{
 		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 			return fakeWatch, nil
 		},
 		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 			return &v1.PodList{}, nil
 		},
-	}
+	})
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   "anything",
@@ -53,7 +53,10 @@ func TestMutationDetector(t *testing.T) {
 		period:         1 * time.Second,
 		retainDuration: 2 * time.Minute,
 		failureFunc: func(message string) {
-			mutationFound <- true
+			select {
+			case mutationFound <- true:
+			case <-stopCh:
+			}
 		},
 	}
 	informer.cacheMutationDetector = detector
@@ -63,8 +66,14 @@ func TestMutationDetector(t *testing.T) {
 
 	wait.PollImmediate(100*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
 		detector.addedObjsLock.Lock()
-		defer detector.addedObjsLock.Unlock()
-		return len(detector.addedObjs) > 0, nil
+		addedLen := len(detector.addedObjs)
+		detector.addedObjsLock.Unlock()
+
+		detector.compareObjectsLock.Lock()
+		cachedLen := len(detector.cachedObjs)
+		detector.compareObjectsLock.Unlock()
+
+		return addedLen+cachedLen > 0, nil
 	})
 
 	detector.compareObjectsLock.Lock()

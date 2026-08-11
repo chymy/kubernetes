@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/apitesting/fuzzer"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -30,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
-	"k8s.io/apimachinery/pkg/util/diff"
 	utiljson "k8s.io/apimachinery/pkg/util/json"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 )
@@ -38,7 +39,7 @@ import (
 func TestRoundtripObjectMeta(t *testing.T) {
 	scheme := runtime.NewScheme()
 	codecs := serializer.NewCodecFactory(scheme)
-	codec := json.NewSerializer(json.DefaultMetaFactory, scheme, scheme, false)
+	codec := json.NewSerializerWithOptions(json.DefaultMetaFactory, scheme, scheme, json.SerializerOptions{})
 	seed := rand.Int63()
 	fuzzer := fuzzer.FuzzerFor(metafuzzer.Funcs, rand.NewSource(seed), codecs)
 
@@ -46,7 +47,7 @@ func TestRoundtripObjectMeta(t *testing.T) {
 	for i := 0; i < N; i++ {
 		u := &unstructured.Unstructured{Object: map[string]interface{}{}}
 		original := &metav1.ObjectMeta{}
-		fuzzer.Fuzz(original)
+		fuzzer.Fill(original)
 		if err := SetObjectMeta(u.Object, original); err != nil {
 			t.Fatalf("unexpected error setting ObjectMeta: %v", err)
 		}
@@ -56,7 +57,7 @@ func TestRoundtripObjectMeta(t *testing.T) {
 		}
 
 		if !equality.Semantic.DeepEqual(original, o) {
-			t.Errorf("diff: %v\nCodec: %#v", diff.ObjectReflectDiff(original, o), codec)
+			t.Errorf("diff: %v\nCodec: %#v", cmp.Diff(original, o), codec)
 		}
 	}
 }
@@ -89,7 +90,7 @@ func TestMalformedObjectMetaFields(t *testing.T) {
 	N := 100
 	for i := 0; i < N; i++ {
 		fuzzedObjectMeta := &metav1.ObjectMeta{}
-		fuzzer.Fuzz(fuzzedObjectMeta)
+		fuzzer.Fill(fuzzedObjectMeta)
 		goodMetaMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(fuzzedObjectMeta.DeepCopy())
 		if err != nil {
 			t.Fatal(err)
@@ -153,10 +154,198 @@ func TestMalformedObjectMetaFields(t *testing.T) {
 				}
 
 				if !equality.Semantic.DeepEqual(expectedObjectMeta, actualObjectMeta) {
-					t.Errorf("%v=%#v, diff: %v\n", pth, v, diff.ObjectReflectDiff(expectedObjectMeta, actualObjectMeta))
+					t.Errorf("%v=%#v, diff: %v\n", pth, v, cmp.Diff(expectedObjectMeta, actualObjectMeta))
 					t.Errorf("expectedObjectMeta %#v", expectedObjectMeta)
 				}
 			}
+		}
+	}
+}
+
+func TestGetObjectMetaWithOptions(t *testing.T) {
+	unknownAndMalformed := map[string]interface{}{
+		"kind":       "Pod",
+		"apiVersion": "v1",
+		"metadata": map[string]interface{}{
+			"name":         "my-meta",
+			"unknownField": "foo",
+			"generateName": nil,
+			"generation":   nil,
+			"labels": map[string]string{
+				"foo": "bar",
+			},
+			"annotations": 11,
+		},
+	}
+
+	unknownOnly := map[string]interface{}{
+		"kind":       "Pod",
+		"apiVersion": "v1",
+		"metadata": map[string]interface{}{
+			"name":         "my-meta",
+			"unknownField": "foo",
+			"generateName": nil,
+			"generation":   nil,
+			"labels": map[string]string{
+				"foo": "bar",
+			},
+		},
+	}
+
+	malformedOnly := map[string]interface{}{
+		"kind":       "Pod",
+		"apiVersion": "v1",
+		"metadata": map[string]interface{}{
+			"name":         "my-meta",
+			"generateName": nil,
+			"generation":   nil,
+			"labels": map[string]string{
+				"foo": "bar",
+			},
+			"annotations": 11,
+		},
+	}
+
+	var testcases = []struct {
+		obj                     map[string]interface{}
+		dropMalformedFields     bool
+		returnUnknownFieldPaths bool
+		expectedObject          *metav1.ObjectMeta
+		expectedUnknownPaths    []string
+		expectedErr             string
+	}{
+		{
+			obj:                     unknownAndMalformed,
+			dropMalformedFields:     false,
+			returnUnknownFieldPaths: false,
+			expectedErr:             "json: cannot unmarshal number into Go struct field ObjectMeta.annotations of type map[string]string",
+		},
+		{
+			obj:                     unknownAndMalformed,
+			dropMalformedFields:     true,
+			returnUnknownFieldPaths: false,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+		},
+		{
+			obj:                     unknownAndMalformed,
+			dropMalformedFields:     false,
+			returnUnknownFieldPaths: true,
+			expectedErr:             "json: cannot unmarshal number into Go struct field ObjectMeta.annotations of type map[string]string",
+		},
+		{
+			obj:                     unknownAndMalformed,
+			dropMalformedFields:     true,
+			returnUnknownFieldPaths: true,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+			expectedUnknownPaths: []string{"metadata.unknownField"},
+		},
+
+		{
+			obj:                     unknownOnly,
+			dropMalformedFields:     false,
+			returnUnknownFieldPaths: false,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+		},
+		{
+			obj:                     unknownOnly,
+			dropMalformedFields:     true,
+			returnUnknownFieldPaths: false,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+		},
+		{
+			obj:                     unknownOnly,
+			dropMalformedFields:     false,
+			returnUnknownFieldPaths: true,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+			expectedUnknownPaths: []string{"metadata.unknownField"},
+		},
+		{
+			obj:                     unknownOnly,
+			dropMalformedFields:     true,
+			returnUnknownFieldPaths: true,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+			expectedUnknownPaths: []string{"metadata.unknownField"},
+		},
+
+		{
+			obj:                     malformedOnly,
+			dropMalformedFields:     false,
+			returnUnknownFieldPaths: false,
+			expectedErr:             "json: cannot unmarshal number into Go struct field ObjectMeta.annotations of type map[string]string",
+		},
+		{
+			obj:                     malformedOnly,
+			dropMalformedFields:     true,
+			returnUnknownFieldPaths: false,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+		},
+		{
+			obj:                     malformedOnly,
+			dropMalformedFields:     false,
+			returnUnknownFieldPaths: true,
+			expectedErr:             "json: cannot unmarshal number into Go struct field ObjectMeta.annotations of type map[string]string",
+		},
+		{
+			obj:                     malformedOnly,
+			dropMalformedFields:     true,
+			returnUnknownFieldPaths: true,
+			expectedObject: &metav1.ObjectMeta{
+				Name: "my-meta",
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+		},
+	}
+	for _, tc := range testcases {
+		opts := ObjectMetaOptions{
+			ReturnUnknownFieldPaths: tc.returnUnknownFieldPaths,
+			DropMalformedFields:     tc.dropMalformedFields,
+		}
+		obj, _, unknownPaths, err := GetObjectMetaWithOptions(tc.obj, opts)
+		if !reflect.DeepEqual(tc.expectedObject, obj) {
+			t.Errorf("expected: %v, got: %v", tc.expectedObject, obj)
+		}
+		if (err == nil && tc.expectedErr != "") || err != nil && (err.Error() != tc.expectedErr) {
+			t.Errorf("expected: %v, got: %v", tc.expectedErr, err)
+		}
+		if !reflect.DeepEqual(tc.expectedUnknownPaths, unknownPaths) {
+			t.Errorf("expected: %v, got: %v", tc.expectedUnknownPaths, unknownPaths)
 		}
 	}
 }
@@ -184,7 +373,7 @@ func TestGetObjectMetaNils(t *testing.T) {
 		t.Errorf("expected null json generateName value to be read as \"\" string, but got: %q", o.GenerateName)
 	}
 	if o.Generation != 0 {
-		t.Errorf("expected null json generation value to be read as zero, but got: %q", o.Generation)
+		t.Errorf("expected null json generation value to be read as zero, but got: %d", o.Generation)
 	}
 	if got, expected := o.Labels, map[string]string{"foo": ""}; !reflect.DeepEqual(got, expected) {
 		t.Errorf("unexpected labels, expected=%#v, got=%#v", expected, got)
@@ -204,7 +393,7 @@ func TestGetObjectMetaNils(t *testing.T) {
 		t.Errorf("expected generatedName to be %q, got %q", expected, got)
 	}
 	if got, expected := o.Generation, pod.ObjectMeta.Generation; got != expected {
-		t.Errorf("expected generation to be %q, got %q", expected, got)
+		t.Errorf("expected generation to be %d, got %d", expected, got)
 	}
 	if got, expected := o.Labels, pod.ObjectMeta.Labels; !reflect.DeepEqual(got, expected) {
 		t.Errorf("expected labels to be %v, got %v", expected, got)

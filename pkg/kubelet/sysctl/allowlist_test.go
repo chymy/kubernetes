@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -18,9 +20,14 @@ package sysctl
 
 import (
 	"testing"
+
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 func TestNewAllowlist(t *testing.T) {
+	tCtx := ktesting.Init(t)
 	type Test struct {
 		sysctls []string
 		err     bool
@@ -34,8 +41,9 @@ func TestNewAllowlist(t *testing.T) {
 		{sysctls: []string{"net.*.foo"}, err: true},
 		{sysctls: []string{"net.*/foo"}, err: true},
 		{sysctls: []string{"foo"}, err: true},
+		{sysctls: []string{"foo*"}, err: true},
 	} {
-		_, err := NewAllowlist(append(SafeSysctlAllowlist(), test.sysctls...))
+		_, err := NewAllowlist(append(SafeSysctlAllowlist(tCtx), test.sysctls...))
 		if test.err && err == nil {
 			t.Errorf("expected an error creating a allowlist for %v", test.sysctls)
 		} else if !test.err && err != nil {
@@ -45,9 +53,10 @@ func TestNewAllowlist(t *testing.T) {
 }
 
 func TestAllowlist(t *testing.T) {
+	tCtx := ktesting.Init(t)
 	type Test struct {
-		sysctl           string
-		hostNet, hostIPC bool
+		sysctl                      string
+		hostNet, hostIPC, hostUsers bool
 	}
 	valid := []Test{
 		{sysctl: "kernel.shm_rmid_forced"},
@@ -56,31 +65,68 @@ func TestAllowlist(t *testing.T) {
 		{sysctl: "kernel.msgmax"},
 		{sysctl: "kernel.sem"},
 		{sysctl: "kernel/sem"},
+		{sysctl: "user.max_user_namespaces", hostUsers: false},
 	}
 	invalid := []Test{
 		{sysctl: "kernel.shm_rmid_forced", hostIPC: true},
 		{sysctl: "net.ipv4.ip_local_port_range", hostNet: true},
+		{sysctl: "user.max_user_namespaces", hostUsers: true},
 		{sysctl: "foo"},
 		{sysctl: "net.a.b.c", hostNet: false},
 		{sysctl: "net.ipv4.ip_local_port_range.a.b.c", hostNet: false},
 		{sysctl: "kernel.msgmax", hostIPC: true},
 		{sysctl: "kernel.sem", hostIPC: true},
+		{sysctl: "net.b.c", hostNet: true},
 	}
+	pod := &v1.Pod{}
+	pod.Spec.SecurityContext = &v1.PodSecurityContext{}
+	attrs := &lifecycle.PodAdmitAttributes{Pod: pod}
 
-	w, err := NewAllowlist(append(SafeSysctlAllowlist(), "kernel.msg*", "kernel.sem"))
+	w, err := NewAllowlist(append(SafeSysctlAllowlist(tCtx), "kernel.msg*", "kernel.sem", "net.b.*", "user.*"))
 	if err != nil {
 		t.Fatalf("failed to create allowlist: %v", err)
 	}
 
 	for _, test := range valid {
-		if err := w.validateSysctl(test.sysctl, test.hostNet, test.hostIPC); err != nil {
+		if err := w.validateSysctl(test.sysctl, test.hostNet, test.hostIPC, test.hostUsers); err != nil {
 			t.Errorf("expected to be allowlisted: %+v, got: %v", test, err)
+		}
+		if test.hostUsers {
+			pod.Spec.HostUsers = new(true)
+		} else {
+			pod.Spec.HostUsers = new(bool)
+			*pod.Spec.HostUsers = false
+		}
+		pod.Spec.SecurityContext.Sysctls = []v1.Sysctl{{Name: test.sysctl, Value: test.sysctl}}
+		status := w.Admit(tCtx, attrs)
+		if !status.Admit {
+			t.Errorf("expected to be allowlisted: %+v, got: %+v", test, status)
 		}
 	}
 
 	for _, test := range invalid {
-		if err := w.validateSysctl(test.sysctl, test.hostNet, test.hostIPC); err == nil {
+		if err := w.validateSysctl(test.sysctl, test.hostNet, test.hostIPC, test.hostUsers); err == nil {
 			t.Errorf("expected to be rejected: %+v", test)
 		}
+		pod.Spec.HostNetwork = test.hostNet
+		pod.Spec.HostIPC = test.hostIPC
+		if test.hostUsers {
+			pod.Spec.HostUsers = new(true)
+		} else {
+			pod.Spec.HostUsers = new(bool)
+			*pod.Spec.HostUsers = false
+		}
+		pod.Spec.SecurityContext.Sysctls = []v1.Sysctl{{Name: test.sysctl, Value: test.sysctl}}
+		status := w.Admit(tCtx, attrs)
+		if status.Admit {
+			t.Errorf("expected to be rejected: %+v", test)
+		}
+	}
+
+	// test for: len(pod.Spec.SecurityContext.Sysctls) == 0
+	pod.Spec.SecurityContext.Sysctls = []v1.Sysctl{}
+	status := w.Admit(tCtx, attrs)
+	if !status.Admit {
+		t.Errorf("expected to be allowlisted,got %+v", status)
 	}
 }

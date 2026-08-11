@@ -17,32 +17,12 @@ limitations under the License.
 package securitycontext
 
 import (
+	"fmt"
+	"os"
+	"sync"
+
 	v1 "k8s.io/api/core/v1"
 )
-
-// HasPrivilegedRequest returns the value of SecurityContext.Privileged, taking into account
-// the possibility of nils
-func HasPrivilegedRequest(container *v1.Container) bool {
-	if container.SecurityContext == nil {
-		return false
-	}
-	if container.SecurityContext.Privileged == nil {
-		return false
-	}
-	return *container.SecurityContext.Privileged
-}
-
-// HasCapabilitiesRequest returns true if Adds or Drops are defined in the security context
-// capabilities, taking into account nils
-func HasCapabilitiesRequest(container *v1.Container) bool {
-	if container.SecurityContext == nil {
-		return false
-	}
-	if container.SecurityContext.Capabilities == nil {
-		return false
-	}
-	return len(container.SecurityContext.Capabilities.Add) > 0 || len(container.SecurityContext.Capabilities.Drop) > 0
-}
 
 // HasWindowsHostProcessRequest returns true if container should run as HostProcess container,
 // taking into account nils
@@ -212,21 +192,33 @@ func AddNoNewPrivileges(sc *v1.SecurityContext) bool {
 
 var (
 	// These *must* be kept in sync with moby/moby.
-	// https://github.com/moby/moby/blob/master/oci/defaults.go#L116-L134
-	// @jessfraz will watch changes to those files upstream.
-	defaultMaskedPaths = []string{
-		"/proc/acpi",
-		"/proc/kcore",
-		"/proc/keys",
-		"/proc/latency_stats",
-		"/proc/timer_list",
-		"/proc/timer_stats",
-		"/proc/sched_debug",
-		"/proc/scsi",
-		"/sys/firmware",
-	}
+	// https://github.com/moby/moby/blob/ecb03c4cdae6f323150fc11b303dcc5dc4d82416/oci/defaults.go#L190-L218
+	defaultMaskedPaths = sync.OnceValue(func() []string {
+		maskedPaths := []string{
+			"/proc/asound",
+			"/proc/acpi",
+			"/proc/interrupts",
+			"/proc/kcore",
+			"/proc/keys",
+			"/proc/latency_stats",
+			"/proc/timer_list",
+			"/proc/timer_stats",
+			"/proc/sched_debug",
+			"/proc/scsi",
+			"/sys/firmware",
+			"/sys/devices/virtual/powercap",
+		}
+
+		for _, cpu := range possibleCPUs() {
+			path := fmt.Sprintf("/sys/devices/system/cpu/cpu%d/thermal_throttle", cpu)
+			if _, err := os.Stat(path); err == nil {
+				maskedPaths = append(maskedPaths, path)
+			}
+		}
+
+		return maskedPaths
+	})
 	defaultReadonlyPaths = []string{
-		"/proc/asound",
 		"/proc/bus",
 		"/proc/fs",
 		"/proc/irq",
@@ -244,7 +236,7 @@ func ConvertToRuntimeMaskedPaths(opt *v1.ProcMountType) []string {
 	}
 
 	// Otherwise, add the default masked paths to the runtime security context.
-	return defaultMaskedPaths
+	return defaultMaskedPaths()
 }
 
 // ConvertToRuntimeReadonlyPaths converts the ProcMountType to the specified or default

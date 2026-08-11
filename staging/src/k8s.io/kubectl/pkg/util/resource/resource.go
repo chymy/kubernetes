@@ -27,63 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-// PodRequestsAndLimits returns a dictionary of all defined resources summed up for all
-// containers of the pod. If pod overhead is non-nil, the pod overhead is added to the
-// total container resource requests and to the total container limits which have a
-// non-zero quantity.
-func PodRequestsAndLimits(pod *corev1.Pod) (reqs, limits corev1.ResourceList) {
-	reqs, limits = corev1.ResourceList{}, corev1.ResourceList{}
-	for _, container := range pod.Spec.Containers {
-		addResourceList(reqs, container.Resources.Requests)
-		addResourceList(limits, container.Resources.Limits)
-	}
-	// init containers define the minimum of any resource
-	for _, container := range pod.Spec.InitContainers {
-		maxResourceList(reqs, container.Resources.Requests)
-		maxResourceList(limits, container.Resources.Limits)
-	}
-
-	// Add overhead for running a pod to the sum of requests and to non-zero limits:
-	if pod.Spec.Overhead != nil {
-		addResourceList(reqs, pod.Spec.Overhead)
-
-		for name, quantity := range pod.Spec.Overhead {
-			if value, ok := limits[name]; ok && !value.IsZero() {
-				value.Add(quantity)
-				limits[name] = value
-			}
-		}
-	}
-	return
-}
-
-// addResourceList adds the resources in newList to list
-func addResourceList(list, new corev1.ResourceList) {
-	for name, quantity := range new {
-		if value, ok := list[name]; !ok {
-			list[name] = quantity.DeepCopy()
-		} else {
-			value.Add(quantity)
-			list[name] = value
-		}
-	}
-}
-
-// maxResourceList sets list to the greater of list/newList for every resource
-// either list
-func maxResourceList(list, new corev1.ResourceList) {
-	for name, quantity := range new {
-		if value, ok := list[name]; !ok {
-			list[name] = quantity.DeepCopy()
-			continue
-		} else {
-			if quantity.Cmp(value) > 0 {
-				list[name] = quantity.DeepCopy()
-			}
-		}
-	}
-}
-
 // ExtractContainerResourceValue extracts the value of a resource
 // in an already known container
 func ExtractContainerResourceValue(fs *corev1.ResourceFieldSelector, container *corev1.Container) (string, error) {
@@ -153,7 +96,7 @@ func convertResourceEphemeralStorageToString(ephemeralStorage *resource.Quantity
 	return strconv.FormatInt(m, 10), nil
 }
 
-var standardContainerResources = sets.NewString(
+var standardContainerResources = sets.New(
 	string(corev1.ResourceCPU),
 	string(corev1.ResourceMemory),
 	string(corev1.ResourceEphemeralStorage),

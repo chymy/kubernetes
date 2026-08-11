@@ -50,15 +50,19 @@ func validNewCSIDriver(name string) *storageapi.CSIDriver {
 	podInfoOnMount := true
 	requiresRepublish := true
 	storageCapacity := true
+	seLinuxMount := true
+	preventPodSchedulingIfMissing := false
 	return &storageapi.CSIDriver{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 		Spec: storageapi.CSIDriverSpec{
-			AttachRequired:    &attachRequired,
-			PodInfoOnMount:    &podInfoOnMount,
-			RequiresRepublish: &requiresRepublish,
-			StorageCapacity:   &storageCapacity,
+			AttachRequired:                &attachRequired,
+			PodInfoOnMount:                &podInfoOnMount,
+			RequiresRepublish:             &requiresRepublish,
+			StorageCapacity:               &storageCapacity,
+			SELinuxMount:                  &seLinuxMount,
+			PreventPodSchedulingIfMissing: &preventPodSchedulingIfMissing,
 		},
 	}
 }
@@ -74,6 +78,8 @@ func TestCreate(t *testing.T) {
 	notPodInfoOnMount := false
 	notRequiresRepublish := false
 	notStorageCapacity := false
+	notSELinuxMount := false
+	notPreventPodSchedulingIfMissing := false
 	test.TestCreate(
 		// valid
 		csiDriver,
@@ -81,10 +87,12 @@ func TestCreate(t *testing.T) {
 		&storageapi.CSIDriver{
 			ObjectMeta: metav1.ObjectMeta{Name: "*BadName!"},
 			Spec: storageapi.CSIDriverSpec{
-				AttachRequired:    &attachNotRequired,
-				PodInfoOnMount:    &notPodInfoOnMount,
-				RequiresRepublish: &notRequiresRepublish,
-				StorageCapacity:   &notStorageCapacity,
+				AttachRequired:                &attachNotRequired,
+				PodInfoOnMount:                &notPodInfoOnMount,
+				RequiresRepublish:             &notRequiresRepublish,
+				StorageCapacity:               &notStorageCapacity,
+				SELinuxMount:                  &notSELinuxMount,
+				PreventPodSchedulingIfMissing: &notPreventPodSchedulingIfMissing,
 			},
 		},
 	)

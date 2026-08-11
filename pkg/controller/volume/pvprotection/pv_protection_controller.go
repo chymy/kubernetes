@@ -19,6 +19,7 @@ package pvprotection
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -31,9 +32,8 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/component-base/metrics/prometheus/ratelimiter"
 	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/controller/volume/protectionutil"
+	"k8s.io/kubernetes/pkg/controller/util/protectionutil"
 	"k8s.io/kubernetes/pkg/util/slice"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
@@ -46,47 +46,59 @@ type Controller struct {
 	pvLister       corelisters.PersistentVolumeLister
 	pvListerSynced cache.InformerSynced
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 }
 
 // NewPVProtectionController returns a new *Controller.
-func NewPVProtectionController(pvInformer coreinformers.PersistentVolumeInformer, cl clientset.Interface) *Controller {
+func NewPVProtectionController(logger klog.Logger, pvInformer coreinformers.PersistentVolumeInformer, cl clientset.Interface) (*Controller, error) {
 	e := &Controller{
 		client: cl,
-		queue:  workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "pvprotection"),
-	}
-	if cl != nil && cl.CoreV1().RESTClient().GetRateLimiter() != nil {
-		ratelimiter.RegisterMetricAndTrackRateLimiterUsage("persistentvolume_protection_controller", cl.CoreV1().RESTClient().GetRateLimiter())
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "pvprotection"},
+		),
 	}
 
 	e.pvLister = pvInformer.Lister()
 	e.pvListerSynced = pvInformer.Informer().HasSynced
-	pvInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: e.pvAddedUpdated,
-		UpdateFunc: func(old, new interface{}) {
-			e.pvAddedUpdated(new)
+	_, err := pvInformer.Informer().AddEventHandlerWithOptions(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			e.pvAddedUpdated(logger, obj)
 		},
-	})
+		UpdateFunc: func(old, new interface{}) {
+			e.pvAddedUpdated(logger, new)
+		},
+	}, cache.HandlerOptions{Logger: &logger})
+	if err != nil {
+		return nil, fmt.Errorf("could not add PV event handler: %w", err)
+	}
 
-	return e
+	return e, nil
 }
 
 // Run runs the controller goroutines.
 func (c *Controller) Run(ctx context.Context, workers int) {
 	defer utilruntime.HandleCrash()
-	defer c.queue.ShutDown()
 
-	klog.Infof("Starting PV protection controller")
-	defer klog.Infof("Shutting down PV protection controller")
+	logger := klog.FromContext(ctx)
+	logger.Info("Starting PV protection controller")
 
-	if !cache.WaitForNamedCacheSync("PV protection", ctx.Done(), c.pvListerSynced) {
+	var wg sync.WaitGroup
+	defer func() {
+		logger.Info("Shutting down PV protection controller")
+		c.queue.ShutDown()
+		wg.Wait()
+	}()
+
+	if !cache.WaitForNamedCacheSyncWithContext(ctx, c.pvListerSynced) {
 		return
 	}
 
 	for i := 0; i < workers; i++ {
-		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
+		wg.Go(func() {
+			wait.UntilWithContext(ctx, c.runWorker, time.Second)
+		})
 	}
-
 	<-ctx.Done()
 }
 
@@ -103,7 +115,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	}
 	defer c.queue.Done(pvKey)
 
-	pvName := pvKey.(string)
+	pvName := pvKey
 
 	err := c.processPV(ctx, pvName)
 	if err == nil {
@@ -118,15 +130,16 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 }
 
 func (c *Controller) processPV(ctx context.Context, pvName string) error {
-	klog.V(4).Infof("Processing PV %s", pvName)
+	logger := klog.FromContext(ctx)
+	logger.V(4).Info("Processing PV", "PV", klog.KRef("", pvName))
 	startTime := time.Now()
 	defer func() {
-		klog.V(4).Infof("Finished processing PV %s (%v)", pvName, time.Since(startTime))
+		logger.V(4).Info("Finished processing PV", "PV", klog.KRef("", pvName), "cost", time.Since(startTime))
 	}()
 
 	pv, err := c.pvLister.Get(pvName)
 	if apierrors.IsNotFound(err) {
-		klog.V(4).Infof("PV %s not found, ignoring", pvName)
+		logger.V(4).Info("PV not found, ignoring", "PV", klog.KRef("", pvName))
 		return nil
 	}
 	if err != nil {
@@ -140,7 +153,7 @@ func (c *Controller) processPV(ctx context.Context, pvName string) error {
 		if !isUsed {
 			return c.removeFinalizer(ctx, pv)
 		}
-		klog.V(4).Infof("Keeping PV %s because it is being used", pvName)
+		logger.V(4).Info("Keeping PV because it is being used", "PV", klog.KRef("", pvName))
 	}
 
 	if protectionutil.NeedToAddFinalizer(pv, volumeutil.PVProtectionFinalizer) {
@@ -157,11 +170,12 @@ func (c *Controller) addFinalizer(ctx context.Context, pv *v1.PersistentVolume) 
 	pvClone := pv.DeepCopy()
 	pvClone.ObjectMeta.Finalizers = append(pvClone.ObjectMeta.Finalizers, volumeutil.PVProtectionFinalizer)
 	_, err := c.client.CoreV1().PersistentVolumes().Update(ctx, pvClone, metav1.UpdateOptions{})
+	logger := klog.FromContext(ctx)
 	if err != nil {
-		klog.V(3).Infof("Error adding protection finalizer to PV %s: %v", pv.Name, err)
+		logger.V(3).Info("Error adding protection finalizer to PV", "PV", klog.KObj(pv), "err", err)
 		return err
 	}
-	klog.V(3).Infof("Added protection finalizer to PV %s", pv.Name)
+	logger.V(3).Info("Added protection finalizer to PV", "PV", klog.KObj(pv))
 	return nil
 }
 
@@ -169,11 +183,12 @@ func (c *Controller) removeFinalizer(ctx context.Context, pv *v1.PersistentVolum
 	pvClone := pv.DeepCopy()
 	pvClone.ObjectMeta.Finalizers = slice.RemoveString(pvClone.ObjectMeta.Finalizers, volumeutil.PVProtectionFinalizer, nil)
 	_, err := c.client.CoreV1().PersistentVolumes().Update(ctx, pvClone, metav1.UpdateOptions{})
+	logger := klog.FromContext(ctx)
 	if err != nil {
-		klog.V(3).Infof("Error removing protection finalizer from PV %s: %v", pv.Name, err)
+		logger.V(3).Info("Error removing protection finalizer from PV", "PV", klog.KObj(pv), "err", err)
 		return err
 	}
-	klog.V(3).Infof("Removed protection finalizer from PV %s", pv.Name)
+	logger.V(3).Info("Removed protection finalizer from PV", "PV", klog.KObj(pv))
 	return nil
 }
 
@@ -189,13 +204,13 @@ func (c *Controller) isBeingUsed(pv *v1.PersistentVolume) bool {
 }
 
 // pvAddedUpdated reacts to pv added/updated events
-func (c *Controller) pvAddedUpdated(obj interface{}) {
+func (c *Controller) pvAddedUpdated(logger klog.Logger, obj interface{}) {
 	pv, ok := obj.(*v1.PersistentVolume)
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("PV informer returned non-PV object: %#v", obj))
 		return
 	}
-	klog.V(4).Infof("Got event on PV %s", pv.Name)
+	logger.V(4).Info("Got event on PV", "PV", klog.KObj(pv))
 
 	if protectionutil.NeedToAddFinalizer(pv, volumeutil.PVProtectionFinalizer) || protectionutil.IsDeletionCandidate(pv, volumeutil.PVProtectionFinalizer) {
 		c.queue.Add(pv.Name)

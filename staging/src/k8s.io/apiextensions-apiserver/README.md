@@ -1,6 +1,11 @@
+> ⚠️ **This is an automatically published [staged repository](https://git.k8s.io/kubernetes/staging#external-repository-staging-area) for Kubernetes**.   
+> Contributions, including issues and pull requests, should be made to the main Kubernetes repository: [https://github.com/kubernetes/kubernetes](https://github.com/kubernetes/kubernetes).  
+> This repository is read-only for importing, and not used for direct contributions.  
+> See [CONTRIBUTING.md](./CONTRIBUTING.md) for more details.
+
 # apiextensions-apiserver
 
-Implements: https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/thirdpartyresources.md
+Implements: https://github.com/kubernetes/design-proposals-archive/blob/main/api-machinery/thirdpartyresources.md
 
 It provides an API for registering `CustomResourceDefinitions`.
 

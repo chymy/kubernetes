@@ -27,8 +27,9 @@ import (
 
 // StatefulSet represents a set of pods with consistent identities.
 // Identities are defined as:
-//  - Network: A single stable DNS and hostname.
-//  - Storage: As many VolumeClaims as requested.
+//   - Network: A single stable DNS and hostname.
+//   - Storage: As many VolumeClaims as requested.
+//
 // The StatefulSet guarantees that a given network identity will always
 // map to the same storage identity.
 type StatefulSet struct {
@@ -82,12 +83,22 @@ const (
 	// strategy, new Pods will be created from the specification version indicated
 	// by the StatefulSet's updateRevision.
 	RollingUpdateStatefulSetStrategyType StatefulSetUpdateStrategyType = "RollingUpdate"
-	// OnDeleteStatefulSetStrategyType triggers the legacy behavior. Version
-	// tracking and ordered rolling restarts are disabled. Pods are recreated
-	// from the StatefulSetSpec when they are manually deleted. When a scale
-	// operation is performed with this strategy,specification version indicated
-	// by the StatefulSet's currentRevision.
+	// OnDeleteStatefulSetStrategyType disables ordered rolling restarts. Version
+	// tracking is done on a best-effort basis - the controller will try to
+	// eventually converge StatefulSet's currentRevision with updateRevision.
+	// Pods are recreated from the StatefulSetSpec when they are manually deleted.
+	// When a scale operation is performed with this strategy, new Pods will be
+	// created from the specification version indicated by the StatefulSet's updateRevision.
 	OnDeleteStatefulSetStrategyType StatefulSetUpdateStrategyType = "OnDelete"
+	// RecreateStatefulSetStrategyType indicates that all existing pods will be
+	// deleted and fully terminated before any new-revision pods are created.
+	// This ensures that old and new revision Pods never run at the same time.
+	// This is an alpha type and requires enabling StatefulSetRecreateStrategy feature gate.
+	// Switching to the Recreate strategy is allowed when the feature gate is enabled,
+	// and switching away from it to a different update strategy is also allowed.
+	//
+	// +featureGate=StatefulSetRecreateStrategy
+	RecreateStatefulSetStrategyType StatefulSetUpdateStrategyType = "Recreate"
 )
 
 // RollingUpdateStatefulSetStrategy is used to communicate parameter for RollingUpdateStatefulSetStrategyType.
@@ -100,10 +111,12 @@ type RollingUpdateStatefulSetStrategy struct {
 	// The maximum number of pods that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
 	// Absolute number is calculated from percentage by rounding up. This can not be 0.
-	// Defaults to 1. This field is alpha-level and is only honored by servers that enable the
-	// MaxUnavailableStatefulSet feature. The field applies to all pods in the range 0 to
+	// Defaults to 1. This field is beta-level and is enabled by default. The field applies to all pods in the range 0 to
 	// Replicas-1. That means if there is any unavailable pod in the range 0 to Replicas-1, it
 	// will be counted towards MaxUnavailable.
+	// This setting might not be effective for the OrderedReady podManagementPolicy. That policy ensures pods are created and become ready one at a time.
+	//
+	// +featureGate=MaxUnavailableStatefulSet
 	// +optional
 	MaxUnavailable *intstr.IntOrString
 }
@@ -142,6 +155,21 @@ type StatefulSetPersistentVolumeClaimRetentionPolicy struct {
 	WhenScaled PersistentVolumeClaimRetentionPolicyType
 }
 
+// StatefulSetOrdinals describes the policy used for replica ordinal assignment
+// in this StatefulSet.
+type StatefulSetOrdinals struct {
+	// start is the number representing the first replica's index. It may be used
+	// to number replicas from an alternate index (eg: 1-indexed) over the default
+	// 0-indexed names, or to orchestrate progressive movement of replicas from
+	// one StatefulSet to another.
+	// If set, replica indices will be in the range:
+	//   [.spec.ordinals.start, .spec.ordinals.start + .spec.replicas).
+	// If unset, defaults to 0. Replica indices will be in the range:
+	//   [0, .spec.replicas).
+	// +optional
+	Start int32
+}
+
 // A StatefulSetSpec is the specification of a StatefulSet.
 type StatefulSetSpec struct {
 	// Replicas is the desired number of replicas of the given Template.
@@ -161,7 +189,10 @@ type StatefulSetSpec struct {
 	// Template is the object that describes the pod that will be created if
 	// insufficient replicas are detected. Each pod stamped out by the StatefulSet
 	// will fulfill this Template, but have a unique identity from the rest
-	// of the StatefulSet.
+	// of the StatefulSet. Each pod will be named with the format
+	// <statefulsetname>-<podindex>. For example, a pod in a StatefulSet named
+	// "web" with index number "3" would be named "web-3".
+	// The only allowed template.spec.restartPolicy value is "Always".
 	Template api.PodTemplateSpec
 
 	// VolumeClaimTemplates is a list of claims that pods are allowed to reference.
@@ -179,6 +210,7 @@ type StatefulSetSpec struct {
 	// the network identity of the set. Pods get DNS/hostnames that follow the
 	// pattern: pod-specific-string.serviceName.default.svc.cluster.local
 	// where "pod-specific-string" is managed by the StatefulSet controller.
+	// +optional
 	ServiceName string
 
 	// PodManagementPolicy controls how pods are created during initial scale up,
@@ -206,15 +238,23 @@ type StatefulSetSpec struct {
 	// Minimum number of seconds for which a newly created pod should be ready
 	// without any of its container crashing for it to be considered available.
 	// Defaults to 0 (pod will be considered available as soon as it is ready)
-	// This is an alpha field and requires enabling StatefulSetMinReadySeconds feature gate.
 	// +optional
 	MinReadySeconds int32
 
-	// PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
-	// the StatefulSet VolumeClaimTemplates. This requires the
-	// StatefulSetAutoDeletePVC feature gate to be enabled, which is alpha.
+	// persistentVolumeClaimRetentionPolicy describes the lifecycle of persistent
+	// volume claims created from volumeClaimTemplates. By default, all persistent
+	// volume claims are created as needed and retained until manually deleted. This
+	// policy allows the lifecycle to be altered, for example by deleting persistent
+	// volume claims when their stateful set is deleted, or when their pod is scaled
+	// down.
 	// +optional
 	PersistentVolumeClaimRetentionPolicy *StatefulSetPersistentVolumeClaimRetentionPolicy
+
+	// ordinals controls the numbering of replica indices in a StatefulSet. The
+	// default ordinals behavior assigns a "0" index to the first replica and
+	// increments the index by one for each additional replica requested.
+	// +optional
+	Ordinals *StatefulSetOrdinals
 }
 
 // StatefulSetStatus represents the current state of a StatefulSet.
@@ -256,13 +296,18 @@ type StatefulSetStatus struct {
 	Conditions []StatefulSetCondition
 
 	// Total number of available pods (ready for at least minReadySeconds) targeted by this statefulset.
-	// This is a beta field and requires enabling StatefulSetMinReadySeconds feature gate.
 	// +optional
 	AvailableReplicas int32
 }
 
 // StatefulSetConditionType describes the condition types of StatefulSets.
 type StatefulSetConditionType string
+
+const (
+	// StatefulSetProgressing means the StatefulSet is progressing through an update.
+	// This condition is an alpha type and requires enabling StatefulSetRecreateStrategy feature gate.
+	StatefulSetProgressing StatefulSetConditionType = "Progressing"
+)
 
 // TODO: Add valid condition types for Statefulsets.
 
@@ -306,7 +351,7 @@ type ControllerRevision struct {
 	metav1.ObjectMeta
 
 	// Data is the Object representing the state.
-	Data runtime.Object
+	Data runtime.RawExtension
 
 	// Revision indicates the revision of the state represented by Data.
 	Revision int64
@@ -343,9 +388,7 @@ type Deployment struct {
 
 // DeploymentSpec specifies the state of a Deployment.
 type DeploymentSpec struct {
-	// Number of desired pods. This is a pointer to distinguish between explicit
-	// zero and not specified. Defaults to 1.
-	// +optional
+	// Number of desired pods.
 	Replicas int32
 
 	// Label selector for pods. Existing ReplicaSets whose pods are
@@ -354,6 +397,7 @@ type DeploymentSpec struct {
 	Selector *metav1.LabelSelector
 
 	// Template describes the pods that will be created.
+	// The only allowed template.spec.restartPolicy value is "Always".
 	Template api.PodTemplateSpec
 
 	// The deployment strategy to use to replace existing pods with new ones.
@@ -485,19 +529,19 @@ type DeploymentStatus struct {
 	// +optional
 	ObservedGeneration int64
 
-	// Total number of non-terminated pods targeted by this deployment (their labels match the selector).
+	// Total number of non-terminating pods targeted by this deployment (their labels match the selector).
 	// +optional
 	Replicas int32
 
-	// Total number of non-terminated pods targeted by this deployment that have the desired template spec.
+	// Total number of non-terminating pods targeted by this deployment that have the desired template spec.
 	// +optional
 	UpdatedReplicas int32
 
-	// Total number of ready pods targeted by this deployment.
+	// Total number of non-terminating pods targeted by this Deployment with a Ready Condition.
 	// +optional
 	ReadyReplicas int32
 
-	// Total number of available pods (ready for at least minReadySeconds) targeted by this deployment.
+	// Total number of available non-terminating pods (ready for at least minReadySeconds) targeted by this deployment.
 	// +optional
 	AvailableReplicas int32
 
@@ -506,6 +550,13 @@ type DeploymentStatus struct {
 	// either be pods that are running but not yet available or pods that still have not been created.
 	// +optional
 	UnavailableReplicas int32
+
+	// Total number of terminating pods targeted by this deployment. Terminating pods have a non-null
+	// .metadata.deletionTimestamp and have not yet reached the Failed or Succeeded .status.phase.
+	//
+	// This is a beta field and requires enabling DeploymentReplicaSetTerminatingReplicas feature (enabled by default).
+	// +optional
+	TerminatingReplicas *int32
 
 	// Represents the latest available observations of a deployment's current state.
 	Conditions []DeploymentCondition
@@ -627,7 +678,6 @@ type RollingUpdateDaemonSet struct {
 	// daemonset on any given node can double if the readiness check fails, and
 	// so resource intensive daemonsets should take into account that they may
 	// cause evictions during disruption.
-	// This is beta field and enabled/disabled by DaemonSetUpdateSurge feature gate.
 	// +optional
 	MaxSurge intstr.IntOrString
 }
@@ -645,6 +695,7 @@ type DaemonSetSpec struct {
 	// The DaemonSet will create exactly one copy of this pod on every node
 	// that matches the template's node selector (or on every node if no node
 	// selector is specified).
+	// The only allowed template.spec.restartPolicy value is "Always".
 	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#pod-template
 	Template api.PodTemplateSpec
 
@@ -836,28 +887,37 @@ type ReplicaSetSpec struct {
 
 	// Template is the object that describes the pod that will be created if
 	// insufficient replicas are detected.
+	// The only allowed template.spec.restartPolicy value is "Always".
 	// +optional
 	Template api.PodTemplateSpec
 }
 
 // ReplicaSetStatus represents the current status of a ReplicaSet.
 type ReplicaSetStatus struct {
-	// Replicas is the number of actual replicas.
+	// Replicas is the most recently observed number of non-terminating pods.
+	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset
 	Replicas int32
 
-	// The number of pods that have labels matching the labels of the pod template of the replicaset.
+	// The number of non-terminating pods that have labels matching the labels of the pod template of the replicaset.
 	// +optional
 	FullyLabeledReplicas int32
 
-	// The number of ready replicas for this replica set.
+	// The number of non-terminating pods targeted by this ReplicaSet with a Ready Condition.
 	// +optional
 	ReadyReplicas int32
 
-	// The number of available replicas (ready for at least minReadySeconds) for this replica set.
+	// The number of available non-terminating pods (ready for at least minReadySeconds) for this replica set.
 	// +optional
 	AvailableReplicas int32
 
-	// ObservedGeneration is the most recent generation observed by the controller.
+	// The number of terminating pods for this replica set. Terminating pods have a non-null .metadata.deletionTimestamp
+	// and have not yet reached the Failed or Succeeded .status.phase.
+	//
+	// This is a beta field and requires enabling DeploymentReplicaSetTerminatingReplicas feature (enabled by default).
+	// +optional
+	TerminatingReplicas *int32
+
+	// ObservedGeneration reflects the generation of the most recently observed ReplicaSet.
 	// +optional
 	ObservedGeneration int64
 

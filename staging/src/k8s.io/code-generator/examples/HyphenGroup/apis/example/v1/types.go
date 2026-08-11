@@ -23,7 +23,7 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // TestType is a top-level type. A client is created for it.
 type TestType struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	// +optional
@@ -35,7 +35,7 @@ type TestType struct {
 // TestTypeList is a top-level list type. The client methods for lists are automatically created.
 // You are not supposed to create a separated client for this one.
 type TestTypeList struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 	// +optional
 	metav1.ListMeta `json:"metadata,omitempty"`
 
@@ -43,16 +43,16 @@ type TestTypeList struct {
 }
 
 type TestTypeStatus struct {
-	Blah string
+	Blah string `json:"blah"`
 }
 
 // +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type ClusterTestTypeList struct {
-	metav1.TypeMeta
-	metav1.ListMeta
-	Items []ClusterTestType
+	metav1.TypeMeta `json:""`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []ClusterTestType `json:"items"`
 }
 
 // +genclient
@@ -62,7 +62,7 @@ type ClusterTestTypeList struct {
 // +genclient:method=UpdateScale,verb=update,subresource=scale,input=k8s.io/api/autoscaling/v1.Scale,result=k8s.io/api/autoscaling/v1.Scale
 
 type ClusterTestType struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	// +optional
@@ -70,5 +70,5 @@ type ClusterTestType struct {
 }
 
 type ClusterTestTypeStatus struct {
-	Blah string
+	Blah string `json:"blah"`
 }

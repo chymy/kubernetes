@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/storage/volumeattachment"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // VolumeAttachmentStorage includes storage for VolumeAttachments and all subresources
@@ -46,9 +46,10 @@ type REST struct {
 // NewStorage returns a RESTStorage object that will work against VolumeAttachments
 func NewStorage(optsGetter generic.RESTOptionsGetter) (*VolumeAttachmentStorage, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &storageapi.VolumeAttachment{} },
-		NewListFunc:              func() runtime.Object { return &storageapi.VolumeAttachmentList{} },
-		DefaultQualifiedResource: storageapi.Resource("volumeattachments"),
+		NewFunc:                   func() runtime.Object { return &storageapi.VolumeAttachment{} },
+		NewListFunc:               func() runtime.Object { return &storageapi.VolumeAttachmentList{} },
+		DefaultQualifiedResource:  storageapi.Resource("volumeattachments"),
+		SingularQualifiedResource: storageapi.Resource("volumeattachment"),
 
 		CreateStrategy:      volumeattachment.Strategy,
 		UpdateStrategy:      volumeattachment.Strategy,

@@ -6,4 +6,5 @@ approvers:
 reviewers:
   - deads2k
   - liggitt
-  - lavalamp
+labels:
+  - sig/api-machinery

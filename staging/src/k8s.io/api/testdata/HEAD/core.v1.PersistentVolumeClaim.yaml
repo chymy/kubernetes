@@ -43,6 +43,7 @@ spec:
     apiGroup: apiGroupValue
     kind: kindValue
     name: nameValue
+    namespace: namespaceValue
   resources:
     limits:
       limitsKey: "0"
@@ -57,11 +58,14 @@ spec:
     matchLabels:
       matchLabelsKey: matchLabelsValue
   storageClassName: storageClassNameValue
+  volumeAttributesClassName: volumeAttributesClassNameValue
   volumeMode: volumeModeValue
   volumeName: volumeNameValue
 status:
   accessModes:
   - accessModesValue
+  allocatedResourceStatuses:
+    allocatedResourceStatusesKey: allocatedResourceStatusesValue
   allocatedResources:
     allocatedResourcesKey: "0"
   capacity:
@@ -73,5 +77,14 @@ status:
     reason: reasonValue
     status: statusValue
     type: typeValue
+  currentVolumeAttributesClassName: currentVolumeAttributesClassNameValue
+  healthStatus:
+    healthConditions:
+    - message: messageValue
+      reason: reasonValue
+      status: statusValue
+    lastTransitionTime: "2002-01-01T01:01:01Z"
+  modifyVolumeStatus:
+    status: statusValue
+    targetVolumeAttributesClassName: targetVolumeAttributesClassNameValue
   phase: phaseValue
-  resizeStatus: resizeStatusValue

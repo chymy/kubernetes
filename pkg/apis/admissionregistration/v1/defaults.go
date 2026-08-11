@@ -20,7 +20,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func addDefaultingFuncs(scheme *runtime.Scheme) error {
@@ -90,6 +90,38 @@ func SetDefaults_Rule(obj *admissionregistrationv1.Rule) {
 // SetDefaults_ServiceReference sets defaults for Webhook's ServiceReference
 func SetDefaults_ServiceReference(obj *admissionregistrationv1.ServiceReference) {
 	if obj.Port == nil {
-		obj.Port = utilpointer.Int32Ptr(443)
+		obj.Port = ptr.To[int32](443)
+	}
+}
+
+// SetDefaults_ValidatingAdmissionPolicySpec sets defaults for ValidatingAdmissionPolicySpec
+func SetDefaults_ValidatingAdmissionPolicySpec(obj *admissionregistrationv1.ValidatingAdmissionPolicySpec) {
+	if obj.FailurePolicy == nil {
+		policy := admissionregistrationv1.Fail
+		obj.FailurePolicy = &policy
+	}
+}
+
+// SetDefaults_MatchResources sets defaults for MatchResources
+func SetDefaults_MatchResources(obj *admissionregistrationv1.MatchResources) {
+	if obj.MatchPolicy == nil {
+		policy := admissionregistrationv1.Equivalent
+		obj.MatchPolicy = &policy
+	}
+	if obj.NamespaceSelector == nil {
+		selector := metav1.LabelSelector{}
+		obj.NamespaceSelector = &selector
+	}
+	if obj.ObjectSelector == nil {
+		selector := metav1.LabelSelector{}
+		obj.ObjectSelector = &selector
+	}
+}
+
+// SetDefaults_MutatingAdmissionPolicySpec sets defaults for MutatingAdmissionPolicySpec
+func SetDefaults_MutatingAdmissionPolicySpec(obj *admissionregistrationv1.MutatingAdmissionPolicySpec) {
+	if obj.FailurePolicy == nil {
+		policy := admissionregistrationv1.Fail
+		obj.FailurePolicy = &policy
 	}
 }

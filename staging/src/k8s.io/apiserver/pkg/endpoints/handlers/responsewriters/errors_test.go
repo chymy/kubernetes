@@ -48,7 +48,7 @@ func TestErrors(t *testing.T) {
 	for _, test := range cases {
 		observer := httptest.NewRecorder()
 		fns[test.fn](observer, &http.Request{RequestURI: test.uri})
-		result := string(observer.Body.Bytes())
+		result := observer.Body.String()
 		if result != test.expected {
 			t.Errorf("%s(..., %q) != %q, got %q", test.fn, test.uri, test.expected, result)
 		}
@@ -64,9 +64,9 @@ func TestForbidden(t *testing.T) {
 		contentType string
 	}{
 		{`{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"forbidden: User \"NAME\" cannot GET path \"/whatever\"","reason":"Forbidden","details":{},"code":403}
-`, authorizer.AttributesRecord{User: u, Verb: "GET", Path: "/whatever"}, "", "application/json"},
+`, authorizer.AttributesRecord{User: u, Verb: request.MethodGet, Path: "/whatever"}, "", "application/json"},
 		{`{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"forbidden: User \"NAME\" cannot GET path \"/\u0026lt;script\u0026gt;\"","reason":"Forbidden","details":{},"code":403}
-`, authorizer.AttributesRecord{User: u, Verb: "GET", Path: "/<script>"}, "", "application/json"},
+`, authorizer.AttributesRecord{User: u, Verb: request.MethodGet, Path: "/<script>"}, "", "application/json"},
 		{`{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"pod is forbidden: User \"NAME\" cannot get resource \"pod\" in API group \"\" at the cluster scope","reason":"Forbidden","details":{"kind":"pod"},"code":403}
 `, authorizer.AttributesRecord{User: u, Verb: "get", Resource: "pod", ResourceRequest: true}, "", "application/json"},
 		{`{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"pod \"mypod\" is forbidden: User \"NAME\" cannot get resource \"pod\" in API group \"\" at the cluster scope","reason":"Forbidden","details":{"name":"mypod","kind":"pod"},"code":403}
@@ -78,8 +78,8 @@ func TestForbidden(t *testing.T) {
 		observer := httptest.NewRecorder()
 		scheme := runtime.NewScheme()
 		negotiatedSerializer := serializer.NewCodecFactory(scheme).WithoutConversion()
-		Forbidden(request.NewDefaultContext(), test.attributes, observer, &http.Request{URL: &url.URL{Path: "/path"}}, test.reason, negotiatedSerializer)
-		result := string(observer.Body.Bytes())
+		Forbidden(test.attributes, observer, &http.Request{URL: &url.URL{Path: "/path"}}, test.reason, negotiatedSerializer)
+		result := observer.Body.String()
 		if result != test.expected {
 			t.Errorf("Forbidden response body(%#v...)\n expected: %v\ngot:       %v", test.attributes, test.expected, result)
 		}

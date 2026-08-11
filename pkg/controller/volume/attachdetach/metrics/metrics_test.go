@@ -23,22 +23,19 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	csitrans "k8s.io/csi-translation-lib"
+	"k8s.io/klog/v2/ktesting"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/volume/attachdetach/cache"
 	controllervolumetesting "k8s.io/kubernetes/pkg/controller/volume/attachdetach/testing"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/volume/csimigration"
 	volumetesting "k8s.io/kubernetes/pkg/volume/testing"
 	"k8s.io/kubernetes/pkg/volume/util/types"
 )
 
 func TestVolumesInUseMetricCollection(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIMigrationGCE, false)()
 	fakeVolumePluginMgr, _ := volumetesting.GetTestVolumePluginMgr(t)
 	fakeClient := &fake.Clientset{}
 
@@ -80,7 +77,7 @@ func TestVolumesInUseMetricCollection(t *testing.T) {
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany, v1.ReadWriteOnce},
-			Resources: v1.ResourceRequirements{
+			Resources: v1.VolumeResourceRequirements{
 				Requests: v1.ResourceList{
 					v1.ResourceName(v1.ResourceStorage): resource.MustParse("2G"),
 				},
@@ -101,6 +98,7 @@ func TestVolumesInUseMetricCollection(t *testing.T) {
 				v1.ResourceName(v1.ResourceStorage): resource.MustParse("5G"),
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
+				// Note that as GCE CSI Migration is completed, this is handled by the PD CSI plugin.
 				GCEPersistentDisk: &v1.GCEPersistentDiskVolumeSource{},
 			},
 			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce, v1.ReadOnlyMany},
@@ -121,14 +119,15 @@ func TestVolumesInUseMetricCollection(t *testing.T) {
 		nil,
 		nil,
 		fakeVolumePluginMgr,
-		csimigration.NewPluginManager(csiTranslator, utilfeature.DefaultFeatureGate),
+		csimigration.NewPluginManager(csiTranslator),
 		csiTranslator)
-	nodeUseMap := metricCollector.getVolumeInUseCount()
+	logger, _ := ktesting.NewTestContext(t)
+	nodeUseMap := metricCollector.getVolumeInUseCount(logger)
 	if len(nodeUseMap) < 1 {
 		t.Errorf("Expected one volume in use got %d", len(nodeUseMap))
 	}
 	testNodeMetric := nodeUseMap["metric-test-host"]
-	pluginUseCount, ok := testNodeMetric["fake-plugin"]
+	pluginUseCount, ok := testNodeMetric["fake-plugin:pd.csi.storage.gke.io"]
 	if !ok {
 		t.Errorf("Expected fake plugin pvc got nothing")
 	}
@@ -147,12 +146,13 @@ func TestTotalVolumesMetricCollection(t *testing.T) {
 	volumeSpec := controllervolumetesting.GetTestVolumeSpec(string(volumeName), volumeName)
 	nodeName := k8stypes.NodeName("node-name")
 
-	dsw.AddNode(nodeName, false)
+	dsw.AddNode(nodeName)
 	_, err := dsw.AddPod(types.UniquePodName(podName), controllervolumetesting.NewPod(podName, podName), volumeSpec, nodeName)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	asw.AddVolumeNode(volumeName, volumeSpec, nodeName, "", true)
+	logger, _ := ktesting.NewTestContext(t)
+	asw.AddVolumeNode(logger, volumeName, volumeSpec, nodeName, "", true)
 
 	csiTranslator := csitrans.New()
 	metricCollector := newAttachDetachStateCollector(
@@ -162,7 +162,7 @@ func TestTotalVolumesMetricCollection(t *testing.T) {
 		asw,
 		dsw,
 		fakeVolumePluginMgr,
-		csimigration.NewPluginManager(csiTranslator, utilfeature.DefaultFeatureGate),
+		csimigration.NewPluginManager(csiTranslator),
 		csiTranslator)
 
 	totalVolumesMap := metricCollector.getTotalVolumesCount()

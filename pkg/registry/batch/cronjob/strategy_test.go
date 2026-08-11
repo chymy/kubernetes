@@ -17,31 +17,141 @@ limitations under the License.
 package cronjob
 
 import (
+	"context"
 	"testing"
 
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	podtest "k8s.io/kubernetes/pkg/api/pod/testing"
 	"k8s.io/kubernetes/pkg/apis/batch"
 	api "k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/utils/ptr"
 )
+
+var (
+	validPodTemplateSpec = api.PodTemplateSpec{
+		Spec: podtest.MakePodSpec(podtest.SetRestartPolicy(api.RestartPolicyOnFailure)),
+	}
+	validCronjobSpec = batch.CronJobSpec{
+		Schedule:          "5 5 * * ?",
+		ConcurrencyPolicy: batch.AllowConcurrent,
+		TimeZone:          ptr.To("Asia/Shanghai"),
+		JobTemplate: batch.JobTemplateSpec{
+			Spec: batch.JobSpec{
+				Template:       validPodTemplateSpec,
+				CompletionMode: completionModePtr(batch.IndexedCompletion),
+				Completions:    ptr.To[int32](10),
+				Parallelism:    ptr.To[int32](10),
+			},
+		},
+	}
+	cronjobSpecWithTZinSchedule = batch.CronJobSpec{
+		Schedule:          "CRON_TZ=UTC 5 5 * * ?",
+		ConcurrencyPolicy: batch.AllowConcurrent,
+		TimeZone:          ptr.To("Asia/DoesNotExist"),
+		JobTemplate: batch.JobTemplateSpec{
+			Spec: batch.JobSpec{
+				Template: validPodTemplateSpec,
+			},
+		},
+	}
+)
+
+func completionModePtr(m batch.CompletionMode) *batch.CompletionMode {
+	return &m
+}
+
+func TestCronJobStrategy_ValidateUpdate_GangMinCount(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+	mkCronJob := func(parallelism, minCount int32) *batch.CronJob {
+		return &batch.CronJob{
+			ObjectMeta: metav1.ObjectMeta{Name: "mycronjob", Namespace: metav1.NamespaceDefault, ResourceVersion: "1"},
+			Spec: batch.CronJobSpec{
+				Schedule:          "* * * * ?",
+				ConcurrencyPolicy: batch.AllowConcurrent,
+				JobTemplate: batch.JobTemplateSpec{Spec: batch.JobSpec{
+					Parallelism: new(parallelism),
+					Template:    validPodTemplateSpec,
+					Scheduling:  &batch.JobSchedulingConfiguration{SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{MinCount: new(minCount)}}},
+				}},
+			},
+		}
+	}
+	const minCountPath = "spec.jobTemplate.spec.scheduling.schedulingPolicy.gang.minCount"
+
+	cases := map[string]struct {
+		enableWorkloadWithJob bool
+		oldParallelism        int32
+		oldMinCount           int32
+		newParallelism        int32
+		newMinCount           int32
+		wantField             string
+	}{
+		"gate on, old valid, new exceeds parallelism is rejected": {
+			enableWorkloadWithJob: true,
+			oldParallelism:        4, oldMinCount: 4,
+			newParallelism: 2, newMinCount: 4,
+			wantField: minCountPath,
+		},
+		"gate on, old already invalid is still rejected": {
+			enableWorkloadWithJob: true,
+			oldParallelism:        2, oldMinCount: 4,
+			newParallelism: 2, newMinCount: 4,
+			wantField: minCountPath,
+		},
+		"gate on, new within parallelism is accepted": {
+			enableWorkloadWithJob: true,
+			oldParallelism:        8, oldMinCount: 4,
+			newParallelism: 8, newMinCount: 6,
+		},
+		"gate off, new exceeds parallelism is still rejected": {
+			enableWorkloadWithJob: false,
+			oldParallelism:        4, oldMinCount: 4,
+			newParallelism: 2, newMinCount: 4,
+			wantField: minCountPath,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.GenericWorkload: tc.enableWorkloadWithJob,
+				features.WorkloadWithJob: tc.enableWorkloadWithJob,
+			})
+			old := mkCronJob(tc.oldParallelism, tc.oldMinCount)
+			update := mkCronJob(tc.newParallelism, tc.newMinCount)
+			update.ResourceVersion = "2"
+
+			errs := Strategy.ValidateUpdate(ctx, update, old)
+			if tc.wantField == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got %v", errs)
+				}
+				return
+			}
+			if len(errs) != 1 {
+				t.Fatalf("expected exactly one error on %s, got %v", tc.wantField, errs)
+			}
+			if errs[0].Field != tc.wantField {
+				t.Errorf("error field = %q, want %q", errs[0].Field, tc.wantField)
+			}
+		})
+	}
+}
 
 func TestCronJobStrategy(t *testing.T) {
 	ctx := genericapirequest.NewDefaultContext()
 	if !Strategy.NamespaceScoped() {
 		t.Errorf("CronJob must be namespace scoped")
 	}
-	if Strategy.AllowCreateOnUpdate() {
+	if Strategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("CronJob should not allow create on update")
 	}
 
-	validPodTemplateSpec := api.PodTemplateSpec{
-		Spec: api.PodSpec{
-			RestartPolicy: api.RestartPolicyOnFailure,
-			DNSPolicy:     api.DNSClusterFirst,
-			Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent", TerminationMessagePolicy: api.TerminationMessageReadFile}},
-		},
-	}
 	cronJob := &batch.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "mycronjob",
@@ -127,7 +237,7 @@ func TestCronJobStatusStrategy(t *testing.T) {
 	if !StatusStrategy.NamespaceScoped() {
 		t.Errorf("CronJob must be namespace scoped")
 	}
-	if StatusStrategy.AllowCreateOnUpdate() {
+	if StatusStrategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("CronJob should not allow create on update")
 	}
 	validPodTemplateSpec := api.PodTemplateSpec{
@@ -188,5 +298,205 @@ func TestCronJobStatusStrategy(t *testing.T) {
 	}
 	if newCronJob.ResourceVersion != "9" {
 		t.Errorf("Incoming resource version on update should not be mutated")
+	}
+}
+
+func TestStrategy_ResetFields(t *testing.T) {
+	resetFields := Strategy.GetResetFields()
+	if len(resetFields) != 2 {
+		t.Errorf("ResetFields should have 2 elements, but have %d", len(resetFields))
+	}
+}
+
+func TestCronJobStatusStrategy_ResetFields(t *testing.T) {
+	resetFields := StatusStrategy.GetResetFields()
+	if len(resetFields) != 2 {
+		t.Errorf("ResetFields should have 2 elements, but have %d", len(resetFields))
+	}
+}
+
+func TestCronJobStrategy_WarningsOnCreate(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+
+	now := metav1.Now()
+
+	testcases := map[string]struct {
+		cronjob           *batch.CronJob
+		wantWarningsCount int32
+	}{
+		"happy path cronjob": {
+			wantWarningsCount: 0,
+			cronjob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "9",
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+		},
+		"dns invalid name": {
+			wantWarningsCount: 1,
+			cronjob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "my cronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "9",
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+		},
+	}
+	for name, tc := range testcases {
+		t.Run(name, func(t *testing.T) {
+			gotWarnings := Strategy.WarningsOnCreate(ctx, tc.cronjob)
+			if len(gotWarnings) != int(tc.wantWarningsCount) {
+				t.Errorf("%s: got warning length of %d but expected %d", name, len(gotWarnings), tc.wantWarningsCount)
+			}
+		})
+	}
+}
+
+func TestCronJobStrategy_WarningsOnUpdate(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+	now := metav1.Now()
+
+	cases := map[string]struct {
+		oldCronJob        *batch.CronJob
+		cronjob           *batch.CronJob
+		wantWarningsCount int32
+	}{
+		"generation 0 for both": {
+			wantWarningsCount: 0,
+			oldCronJob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "9",
+					Generation:      0,
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+			cronjob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "9",
+					Generation:      0,
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+		},
+		"generation 1 for new; force WarningsOnUpdate to check PodTemplate for updates": {
+			wantWarningsCount: 0,
+			oldCronJob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "9",
+					Generation:      1,
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+			cronjob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "9",
+					Generation:      0,
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+		},
+		"force validation failure in pod template": {
+			oldCronJob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "0",
+					Generation:      1,
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+			cronjob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "0",
+					Generation:      0,
+				},
+				Spec: batch.CronJobSpec{
+					Schedule:          "5 5 * * ?",
+					ConcurrencyPolicy: batch.AllowConcurrent,
+					JobTemplate: batch.JobTemplateSpec{
+						Spec: batch.JobSpec{
+							Template: api.PodTemplateSpec{
+								Spec: api.PodSpec{ImagePullSecrets: []api.LocalObjectReference{{Name: ""}}},
+							},
+						},
+					},
+				},
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+			wantWarningsCount: 1,
+		},
+		"timezone invalid failure": {
+			oldCronJob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "0",
+					Generation:      1,
+				},
+				Spec: validCronjobSpec,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+			cronjob: &batch.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "mycronjob",
+					Namespace:       metav1.NamespaceDefault,
+					ResourceVersion: "0",
+					Generation:      0,
+				},
+				Spec: cronjobSpecWithTZinSchedule,
+				Status: batch.CronJobStatus{
+					LastScheduleTime: &now,
+				},
+			},
+			wantWarningsCount: 1,
+		},
+	}
+	for val, tc := range cases {
+		t.Run(val, func(t *testing.T) {
+			gotWarnings := Strategy.WarningsOnUpdate(ctx, tc.cronjob, tc.oldCronJob)
+			if len(gotWarnings) != int(tc.wantWarningsCount) {
+				t.Errorf("%s: got warning length of %d but expected %d", val, len(gotWarnings), tc.wantWarningsCount)
+			}
+		})
 	}
 }

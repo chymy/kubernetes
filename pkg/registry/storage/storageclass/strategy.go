@@ -19,23 +19,26 @@ package storageclass
 import (
 	"context"
 
+	"k8s.io/apiserver/pkg/registry/rest"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	storageutil "k8s.io/kubernetes/pkg/api/storage"
 	"k8s.io/kubernetes/pkg/apis/storage"
 	"k8s.io/kubernetes/pkg/apis/storage/validation"
 )
 
 // storageClassStrategy implements behavior for StorageClass objects
 type storageClassStrategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Strategy is the default logic that applies when creating and updating
 // StorageClass objects via the REST API.
-var Strategy = storageClassStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = storageClassStrategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 func (storageClassStrategy) NamespaceScoped() bool {
 	return false
@@ -52,14 +55,14 @@ func (storageClassStrategy) Validate(ctx context.Context, obj runtime.Object) fi
 
 // WarningsOnCreate returns warnings for the creation of the given object.
 func (storageClassStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
-	return nil
+	return storageutil.GetWarningsForStorageClass(obj.(*storage.StorageClass))
 }
 
 // Canonicalize normalizes the object after validation.
 func (storageClassStrategy) Canonicalize(obj runtime.Object) {
 }
 
-func (storageClassStrategy) AllowCreateOnUpdate() bool {
+func (storageClassStrategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return false
 }
 
@@ -68,15 +71,16 @@ func (storageClassStrategy) PrepareForUpdate(ctx context.Context, obj, old runti
 }
 
 func (storageClassStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
-	errorList := validation.ValidateStorageClass(obj.(*storage.StorageClass))
-	return append(errorList, validation.ValidateStorageClassUpdate(obj.(*storage.StorageClass), old.(*storage.StorageClass))...)
+	allErrs := validation.ValidateStorageClass(obj.(*storage.StorageClass))
+	allErrs = append(allErrs, validation.ValidateStorageClassUpdate(obj.(*storage.StorageClass), old.(*storage.StorageClass))...)
+	return allErrs
 }
 
 // WarningsOnUpdate returns warnings for the given update.
 func (storageClassStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
-	return nil
+	return storageutil.GetWarningsForStorageClass(obj.(*storage.StorageClass))
 }
 
-func (storageClassStrategy) AllowUnconditionalUpdate() bool {
+func (storageClassStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return true
 }

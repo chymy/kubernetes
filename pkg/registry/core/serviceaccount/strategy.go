@@ -18,24 +18,27 @@ package serviceaccount
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
+	sa "k8s.io/kubernetes/plugin/pkg/admission/serviceaccount"
 )
 
 // strategy implements behavior for ServiceAccount objects
 type strategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Strategy is the default logic that applies when creating and updating ServiceAccount
 // objects via the REST API.
-var Strategy = strategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = strategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 func (strategy) NamespaceScoped() bool {
 	return true
@@ -50,13 +53,15 @@ func (strategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorLis
 }
 
 // WarningsOnCreate returns warnings for the creation of the given object.
-func (strategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string { return nil }
+func (strategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
+	return warnIfHasEnforceMountableSecretsAnnotation(obj.(*api.ServiceAccount), nil)
+}
 
 // Canonicalize normalizes the object after validation.
 func (strategy) Canonicalize(obj runtime.Object) {
 }
 
-func (strategy) AllowCreateOnUpdate() bool {
+func (strategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return false
 }
 
@@ -76,9 +81,24 @@ func (strategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) fie
 
 // WarningsOnUpdate returns warnings for the given update.
 func (strategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
-	return nil
+	return warnIfHasEnforceMountableSecretsAnnotation(obj.(*api.ServiceAccount), old.(*api.ServiceAccount))
 }
 
-func (strategy) AllowUnconditionalUpdate() bool {
+func (strategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return true
+}
+
+func warnIfHasEnforceMountableSecretsAnnotation(serviceAccount, oldServiceAccount *api.ServiceAccount) []string {
+	if oldServiceAccount != nil {
+		_, ok := oldServiceAccount.Annotations[sa.EnforceMountableSecretsAnnotation]
+		if ok {
+			// skip warning if request isn't newly setting the annotation
+			return nil
+		}
+	}
+	_, ok := serviceAccount.Annotations[sa.EnforceMountableSecretsAnnotation]
+	if ok {
+		return []string{fmt.Sprintf("metadata.annotations[%s]: deprecated in v1.32+; prefer separate namespaces to isolate access to mounted secrets", sa.EnforceMountableSecretsAnnotation)}
+	}
+	return nil
 }

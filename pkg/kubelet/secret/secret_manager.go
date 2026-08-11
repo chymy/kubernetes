@@ -23,6 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	corev1 "k8s.io/kubernetes/pkg/apis/core/v1"
 	"k8s.io/kubernetes/pkg/kubelet/util/manager"
@@ -99,8 +100,8 @@ func (s *secretManager) UnregisterPod(pod *v1.Pod) {
 	s.manager.UnregisterPod(pod)
 }
 
-func getSecretNames(pod *v1.Pod) sets.String {
-	result := sets.NewString()
+func getSecretNames(pod *v1.Pod) sets.Set[string] {
+	result := sets.New[string]()
 	podutil.VisitPodSecretNames(pod, func(name string) bool {
 		result.Insert(name)
 		return true
@@ -115,11 +116,11 @@ const (
 // NewCachingSecretManager creates a manager that keeps a cache of all secrets
 // necessary for registered pods.
 // It implements the following logic:
-// - whenever a pod is created or updated, the cached versions of all secrets
-//   are invalidated
-// - every GetObject() call tries to fetch the value from local cache; if it is
-//   not there, invalidated or too old, we fetch it from apiserver and refresh the
-//   value in cache; otherwise it is just fetched from cache
+//   - whenever a pod is created or updated, the cached versions of all secrets
+//     are invalidated
+//   - every GetObject() call tries to fetch the value from local cache; if it is
+//     not there, invalidated or too old, we fetch it from apiserver and refresh the
+//     value in cache; otherwise it is just fetched from cache
 func NewCachingSecretManager(kubeClient clientset.Interface, getTTL manager.GetObjectTTLFunc) Manager {
 	getSecret := func(namespace, name string, opts metav1.GetOptions) (runtime.Object, error) {
 		return kubeClient.CoreV1().Secrets(namespace).Get(context.TODO(), name, opts)
@@ -133,9 +134,9 @@ func NewCachingSecretManager(kubeClient clientset.Interface, getTTL manager.GetO
 // NewWatchingSecretManager creates a manager that keeps a cache of all secrets
 // necessary for registered pods.
 // It implements the following logic:
-// - whenever a pod is created or updated, we start individual watches for all
-//   referenced objects that aren't referenced from other registered pods
-// - every GetObject() returns a value from local cache propagated via watches
+//   - whenever a pod is created or updated, we start individual watches for all
+//     referenced objects that aren't referenced from other registered pods
+//   - every GetObject() returns a value from local cache propagated via watches
 func NewWatchingSecretManager(kubeClient clientset.Interface, resyncInterval time.Duration) Manager {
 	listSecret := func(namespace string, opts metav1.ListOptions) (runtime.Object, error) {
 		return kubeClient.CoreV1().Secrets(namespace).List(context.TODO(), opts)
@@ -152,8 +153,11 @@ func NewWatchingSecretManager(kubeClient clientset.Interface, resyncInterval tim
 		}
 		return false
 	}
+	listWatcherWithWatchListSemanticsWrapper := func(lw *cache.ListWatch) cache.ListerWatcher {
+		return cache.ToListWatcherWithWatchListSemantics(lw, kubeClient)
+	}
 	gr := corev1.Resource("secret")
 	return &secretManager{
-		manager: manager.NewWatchBasedManager(listSecret, watchSecret, newSecret, isImmutable, gr, resyncInterval, getSecretNames),
+		manager: manager.NewWatchBasedManager(listSecret, watchSecret, newSecret, isImmutable, listWatcherWithWatchListSemanticsWrapper, gr, resyncInterval, getSecretNames),
 	}
 }

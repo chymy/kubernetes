@@ -19,24 +19,26 @@ package podresources
 import (
 	"context"
 
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 
-	"k8s.io/kubelet/pkg/apis/podresources/v1"
+	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 	"k8s.io/kubelet/pkg/apis/podresources/v1alpha1"
 )
 
-// podResourcesServerV1alpha1 implements PodResourcesListerServer
+// v1alpha1PodResourcesServer implements PodResourcesListerServer
 type v1alpha1PodResourcesServer struct {
 	podsProvider    PodsProvider
 	devicesProvider DevicesProvider
+	v1alpha1.UnsafePodResourcesListerServer
 }
 
 // NewV1alpha1PodResourcesServer returns a PodResourcesListerServer which lists pods provided by the PodsProvider
 // with device information provided by the DevicesProvider
-func NewV1alpha1PodResourcesServer(podsProvider PodsProvider, devicesProvider DevicesProvider) v1alpha1.PodResourcesListerServer {
+func NewV1alpha1PodResourcesServer(providers PodResourcesProviders) v1alpha1.PodResourcesListerServer {
 	return &v1alpha1PodResourcesServer{
-		podsProvider:    podsProvider,
-		devicesProvider: devicesProvider,
+		podsProvider:    providers.Pods,
+		devicesProvider: providers.Devices,
 	}
 }
 
@@ -55,10 +57,11 @@ func v1DevicesToAlphaV1(alphaDevs []*v1.ContainerDevices) []*v1alpha1.ContainerD
 
 // List returns information about the resources assigned to pods on the node
 func (p *v1alpha1PodResourcesServer) List(ctx context.Context, req *v1alpha1.ListPodResourcesRequest) (*v1alpha1.ListPodResourcesResponse, error) {
+	logger := klog.FromContext(ctx)
 	metrics.PodResourcesEndpointRequestsTotalCount.WithLabelValues("v1alpha1").Inc()
 	pods := p.podsProvider.GetPods()
 	podResources := make([]*v1alpha1.PodResources, len(pods))
-	p.devicesProvider.UpdateAllocatedDevices()
+	p.devicesProvider.UpdateAllocatedDevices(logger)
 
 	for i, pod := range pods {
 		pRes := v1alpha1.PodResources{

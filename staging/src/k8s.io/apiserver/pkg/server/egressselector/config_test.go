@@ -18,18 +18,17 @@ package egressselector
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+
+	utiltesting "k8s.io/client-go/util/testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver"
+	"k8s.io/utils/ptr"
 )
-
-func strptr(s string) *string {
-	return &s
-}
 
 func TestReadEgressSelectorConfiguration(t *testing.T) {
 	testcases := []struct {
@@ -44,14 +43,46 @@ func TestReadEgressSelectorConfiguration(t *testing.T) {
 			createFile:     true,
 			contents:       ``,
 			expectedResult: nil,
-			expectedError:  strptr("invalid service configuration object \"\""),
+			expectedError:  ptr.To("invalid service configuration object \"\""),
 		},
 		{
 			name:           "absent",
 			createFile:     false,
 			contents:       ``,
 			expectedResult: nil,
-			expectedError:  strptr("unable to read egress selector configuration from \"test-egress-selector-config-absent\" [open test-egress-selector-config-absent: no such file or directory]"),
+			expectedError:  ptr.To("errors.errorString{s:\"unable to read egress selector configuration"),
+		},
+		{
+			name:       "unknown field causes error",
+			createFile: false,
+			contents: `
+apiVersion: apiserver.k8s.io/v1beta1
+kind: EgressSelectorConfiguration
+egressSelections:
+- name: "etcd"
+  connection:
+    proxyProtocol: "Direct"
+  foo:
+    bar: "baz"
+`,
+			expectedResult: nil,
+			expectedError:  ptr.To("runtime.strictDecodingError"),
+		},
+		{
+			name:       "duplicate field causes error",
+			createFile: false,
+			contents: `
+apiVersion: apiserver.k8s.io/v1beta1
+kind: EgressSelectorConfiguration
+egressSelections:
+- name: "etcd"
+  connection:
+    proxyProtocol: "Direct"
+  connection:
+    proxyProtocol: "Indirect"
+`,
+			expectedResult: nil,
+			expectedError:  ptr.To("runtime.strictDecodingError"),
 		},
 		{
 			name:       "v1beta1",
@@ -269,7 +300,53 @@ spec:
               mountPath: /etc/srv/kubernetes/pki/konnectivity-agent
 `,
 			expectedResult: nil,
-			expectedError:  strptr("invalid service configuration object \"DaemonSet\""),
+			expectedError:  ptr.To("invalid service configuration object \"DaemonSet\""),
+		},
+		{
+			name:       "v1beta1 with tlsServerName",
+			createFile: true,
+			contents: `
+apiVersion: apiserver.k8s.io/v1beta1
+kind: EgressSelectorConfiguration
+egressSelections:
+- name: "cluster"
+  connection:
+    proxyProtocol: "HTTPConnect"
+    transport:
+      tcp:
+        url: "https://proxy.kube-system.svc.cluster.local:8443"
+        tlsConfig:
+          caBundle: "/etc/srv/kubernetes/pki/konnectivity-server/ca.crt"
+          clientKey: "/etc/srv/kubernetes/pki/konnectivity-server/client.key"
+          clientCert: "/etc/srv/kubernetes/pki/konnectivity-server/client.crt"
+          tlsServerName: "konnectivity-server.example.com"
+`,
+			expectedResult: &apiserver.EgressSelectorConfiguration{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "",
+					APIVersion: "",
+				},
+				EgressSelections: []apiserver.EgressSelection{
+					{
+						Name: "cluster",
+						Connection: apiserver.Connection{
+							ProxyProtocol: "HTTPConnect",
+							Transport: &apiserver.Transport{
+								TCP: &apiserver.TCPTransport{
+									URL: "https://proxy.kube-system.svc.cluster.local:8443",
+									TLSConfig: &apiserver.TLSConfig{
+										CABundle:      "/etc/srv/kubernetes/pki/konnectivity-server/ca.crt",
+										ClientKey:     "/etc/srv/kubernetes/pki/konnectivity-server/client.key",
+										ClientCert:    "/etc/srv/kubernetes/pki/konnectivity-server/client.crt",
+										TLSServerName: "konnectivity-server.example.com",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: nil,
 		},
 	}
 
@@ -277,12 +354,12 @@ spec:
 		t.Run(tc.name, func(t *testing.T) {
 			proxyConfig := fmt.Sprintf("test-egress-selector-config-%s", tc.name)
 			if tc.createFile {
-				f, err := ioutil.TempFile("", proxyConfig)
+				f, err := os.CreateTemp("", proxyConfig)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer os.Remove(f.Name())
-				if err := ioutil.WriteFile(f.Name(), []byte(tc.contents), os.FileMode(0755)); err != nil {
+				defer utiltesting.CloseAndRemove(t, f)
+				if err := os.WriteFile(f.Name(), []byte(tc.contents), os.FileMode(0755)); err != nil {
 					t.Fatal(err)
 				}
 				proxyConfig = f.Name()
@@ -294,7 +371,7 @@ spec:
 			if err != nil && tc.expectedError == nil {
 				t.Errorf("unexpected error calling ReadEgressSelectorConfiguration got: %#v", err)
 			}
-			if err != nil && tc.expectedError != nil && err.Error() != *tc.expectedError {
+			if err != nil && tc.expectedError != nil && strings.Contains(err.Error(), *tc.expectedError) {
 				t.Errorf("calling ReadEgressSelectorConfiguration expected error: %s, got %#v", *tc.expectedError, err)
 			}
 			if !reflect.DeepEqual(config, tc.expectedResult) {
@@ -540,9 +617,9 @@ func TestValidateEgressSelectorConfiguration(t *testing.T) {
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			errs := ValidateEgressSelectorConfiguration(tc.contents)
-			if tc.expectError == false && len(errs) != 0 {
+			if !tc.expectError && len(errs) != 0 {
 				t.Errorf("Calling ValidateEgressSelectorConfiguration expected no error, got %v", errs)
-			} else if tc.expectError == true && len(errs) == 0 {
+			} else if tc.expectError && len(errs) == 0 {
 				t.Errorf("Calling ValidateEgressSelectorConfiguration expected error, got no error")
 			}
 		})

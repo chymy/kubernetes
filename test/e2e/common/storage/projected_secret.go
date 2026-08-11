@@ -24,26 +24,28 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2epodoutput "k8s.io/kubernetes/test/e2e/framework/pod/output"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
 
 var _ = SIGDescribe("Projected secret", func() {
 	f := framework.NewDefaultFramework("projected")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
 
 	/*
 	   Release: v1.9
 	   Testname: Projected Volume, Secrets, volume mode default
 	   Description: A Pod is created with a projected volume source 'secret' to store a secret with a specified key with default permission mode. Pod MUST be able to read the content of the key successfully and the mode MUST be -rw-r--r-- by default.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume [NodeConformance]", func() {
-		doProjectedSecretE2EWithoutMapping(f, nil /* default mode */, "projected-secret-test-"+string(uuid.NewUUID()), nil, nil)
+	framework.ConformanceIt("should be consumable from pods in volume", f.WithNodeConformance(), func(ctx context.Context) {
+		doProjectedSecretE2EWithoutMapping(ctx, f, nil, nil, "projected-secret-test-"+string(uuid.NewUUID()), nil, nil)
 	})
 
 	/*
@@ -52,9 +54,9 @@ var _ = SIGDescribe("Projected secret", func() {
 	   Description: A Pod is created with a projected volume source 'secret' to store a secret with a specified key with permission mode set to 0x400 on the Pod. Pod MUST be able to read the content of the key successfully and the mode MUST be -r--------.
 	   This test is marked LinuxOnly since Windows does not support setting specific file permissions.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume with defaultMode set [LinuxOnly] [NodeConformance]", func() {
+	framework.ConformanceIt("should be consumable from pods in volume with defaultMode set [LinuxOnly]", f.WithNodeConformance(), func(ctx context.Context) {
 		defaultMode := int32(0400)
-		doProjectedSecretE2EWithoutMapping(f, &defaultMode, "projected-secret-test-"+string(uuid.NewUUID()), nil, nil)
+		doProjectedSecretE2EWithoutMapping(ctx, f, &defaultMode, nil, "projected-secret-test-"+string(uuid.NewUUID()), nil, nil)
 	})
 
 	/*
@@ -63,10 +65,15 @@ var _ = SIGDescribe("Projected secret", func() {
 	   Description: A Pod is created with a projected volume source 'secret' to store a secret with a specified key. The volume has permission mode set to 0440, fsgroup set to 1001 and user set to non-root uid of 1000. Pod MUST be able to read the content of the key successfully and the mode MUST be -r--r-----.
 	   This test is marked LinuxOnly since Windows does not support setting specific file permissions, or running as UID / GID.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume as non-root with defaultMode and fsGroup set [LinuxOnly] [NodeConformance]", func() {
+	framework.ConformanceIt("should be consumable from pods in volume as non-root with defaultMode and fsGroup set [LinuxOnly]", f.WithNodeConformance(), func(ctx context.Context) {
 		defaultMode := int32(0440) /* setting fsGroup sets mode to at least 440 */
 		fsGroup := int64(1001)
-		doProjectedSecretE2EWithoutMapping(f, &defaultMode, "projected-secret-test-"+string(uuid.NewUUID()), &fsGroup, &nonRootTestUserID)
+		doProjectedSecretE2EWithoutMapping(ctx, f, &defaultMode, nil, "projected-secret-test-"+string(uuid.NewUUID()), &fsGroup, &nonRootTestUserID)
+	})
+
+	f.It("should be consumable from pods in volume as non-root with defaultUser set [LinuxOnly]", f.WithFeatureGate(features.AtomicWriteVolumeUserFields), func(ctx context.Context) {
+		defaultUser := int64(1000)
+		doProjectedSecretE2EWithoutMapping(ctx, f, nil, &defaultUser, "projected-secret-test-"+string(uuid.NewUUID()), nil, &nonRootTestUserID)
 	})
 
 	/*
@@ -74,8 +81,8 @@ var _ = SIGDescribe("Projected secret", func() {
 	   Testname: Projected Volume, Secrets, mapped
 	   Description: A Pod is created with a projected volume source 'secret' to store a secret with a specified key with default permission mode. The secret is also mapped to a custom path. Pod MUST be able to read the content of the key successfully and the mode MUST be -r--------on the mapped volume.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume with mappings [NodeConformance]", func() {
-		doProjectedSecretE2EWithMapping(f, nil)
+	framework.ConformanceIt("should be consumable from pods in volume with mappings", f.WithNodeConformance(), func(ctx context.Context) {
+		doProjectedSecretE2EWithMapping(ctx, f, nil, nil, nil)
 	})
 
 	/*
@@ -84,19 +91,24 @@ var _ = SIGDescribe("Projected secret", func() {
 	   Description: A Pod is created with a projected volume source 'secret' to store a secret with a specified key with permission mode set to 0400. The secret is also mapped to a specific name. Pod MUST be able to read the content of the key successfully and the mode MUST be -r-------- on the mapped volume.
 	   This test is marked LinuxOnly since Windows does not support setting specific file permissions.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume with mappings and Item Mode set [LinuxOnly] [NodeConformance]", func() {
+	framework.ConformanceIt("should be consumable from pods in volume with mappings and Item Mode set [LinuxOnly]", f.WithNodeConformance(), func(ctx context.Context) {
 		mode := int32(0400)
-		doProjectedSecretE2EWithMapping(f, &mode)
+		doProjectedSecretE2EWithMapping(ctx, f, &mode, nil, nil)
 	})
 
-	ginkgo.It("should be able to mount in a volume regardless of a different secret existing with same name in different namespace [NodeConformance]", func() {
+	f.It("should be consumable from pods in volume with mappings and Item User set [LinuxOnly]", f.WithFeatureGate(features.AtomicWriteVolumeUserFields), func(ctx context.Context) {
+		user := int64(1000)
+		doProjectedSecretE2EWithMapping(ctx, f, nil, &user, &user)
+	})
+
+	f.It("should be able to mount in a volume regardless of a different secret existing with same name in different namespace", f.WithNodeConformance(), func(ctx context.Context) {
 		var (
 			namespace2  *v1.Namespace
 			err         error
 			secret2Name = "projected-secret-test-" + string(uuid.NewUUID())
 		)
 
-		if namespace2, err = f.CreateNamespace("secret-namespace", nil); err != nil {
+		if namespace2, err = f.CreateNamespace(ctx, "secret-namespace", nil); err != nil {
 			framework.Failf("unable to create new namespace %s: %v", namespace2.Name, err)
 		}
 
@@ -104,10 +116,10 @@ var _ = SIGDescribe("Projected secret", func() {
 		secret2.Data = map[string][]byte{
 			"this_should_not_match_content_of_other_secret": []byte("similarly_this_should_not_match_content_of_other_secret\n"),
 		}
-		if secret2, err = f.ClientSet.CoreV1().Secrets(namespace2.Name).Create(context.TODO(), secret2, metav1.CreateOptions{}); err != nil {
+		if secret2, err = f.ClientSet.CoreV1().Secrets(namespace2.Name).Create(ctx, secret2, metav1.CreateOptions{}); err != nil {
 			framework.Failf("unable to create test secret %s: %v", secret2.Name, err)
 		}
-		doProjectedSecretE2EWithoutMapping(f, nil /* default mode */, secret2.Name, nil, nil)
+		doProjectedSecretE2EWithoutMapping(ctx, f, nil, nil, secret2.Name, nil, nil)
 	})
 
 	/*
@@ -115,7 +127,7 @@ var _ = SIGDescribe("Projected secret", func() {
 	   Testname: Projected Volume, Secrets, mapped, multiple paths
 	   Description: A Pod is created with a projected volume source 'secret' to store a secret with a specified key. The secret is mapped to two different volume mounts. Pod MUST be able to read the content of the key successfully from the two volume mounts and the mode MUST be -r-------- on the mapped volumes.
 	*/
-	framework.ConformanceIt("should be consumable in multiple volumes in a pod [NodeConformance]", func() {
+	framework.ConformanceIt("should be consumable in multiple volumes in a pod", f.WithNodeConformance(), func(ctx context.Context) {
 		// This test ensures that the same secret can be mounted in multiple
 		// volumes in the same pod.  This test case exists to prevent
 		// regressions that break this use-case.
@@ -130,7 +142,7 @@ var _ = SIGDescribe("Projected secret", func() {
 
 		ginkgo.By(fmt.Sprintf("Creating secret with name %s", secret.Name))
 		var err error
-		if secret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), secret, metav1.CreateOptions{}); err != nil {
+		if secret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
 			framework.Failf("unable to create test secret %s: %v", secret.Name, err)
 		}
 
@@ -200,7 +212,7 @@ var _ = SIGDescribe("Projected secret", func() {
 		}
 
 		fileModeRegexp := getFileModeRegex("/etc/projected-secret-volume/data-1", nil)
-		f.TestContainerOutputRegexp("consume secrets", pod, 0, []string{
+		e2epodoutput.TestContainerOutputRegexp(ctx, f, "consume secrets", pod, 0, []string{
 			"content of file \"/etc/projected-secret-volume/data-1\": value-1",
 			fileModeRegexp,
 		})
@@ -211,8 +223,8 @@ var _ = SIGDescribe("Projected secret", func() {
 	   Testname: Projected Volume, Secrets, create, update delete
 	   Description: Create a Pod with three containers with secrets namely a create, update and delete container. Create Container when started MUST no have a secret, update and delete containers MUST be created with a secret value. Create a secret in the create container, the Pod MUST be able to read the secret from the create container. Update the secret in the update container, Pod MUST be able to read the updated secret value. Delete the secret in the delete container. Pod MUST fail to read the secret from the delete container.
 	*/
-	framework.ConformanceIt("optional updates should be reflected in volume [NodeConformance]", func() {
-		podLogTimeout := e2epod.GetPodSecretUpdateTimeout(f.ClientSet)
+	framework.ConformanceIt("optional updates should be reflected in volume", f.WithNodeConformance(), func(ctx context.Context) {
+		podLogTimeout := e2epod.GetPodSecretUpdateTimeout(ctx, f.ClientSet)
 		containerTimeoutArg := fmt.Sprintf("--retry_time=%v", int(podLogTimeout.Seconds()))
 		trueVal := true
 		volumeMountPath := "/etc/projected-secret-volumes"
@@ -258,12 +270,12 @@ var _ = SIGDescribe("Projected secret", func() {
 
 		ginkgo.By(fmt.Sprintf("Creating secret with name %s", deleteSecret.Name))
 		var err error
-		if deleteSecret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), deleteSecret, metav1.CreateOptions{}); err != nil {
+		if deleteSecret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(ctx, deleteSecret, metav1.CreateOptions{}); err != nil {
 			framework.Failf("unable to create test secret %s: %v", deleteSecret.Name, err)
 		}
 
 		ginkgo.By(fmt.Sprintf("Creating secret with name %s", updateSecret.Name))
-		if updateSecret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), updateSecret, metav1.CreateOptions{}); err != nil {
+		if updateSecret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(ctx, updateSecret, metav1.CreateOptions{}); err != nil {
 			framework.Failf("unable to create test secret %s: %v", updateSecret.Name, err)
 		}
 
@@ -367,68 +379,70 @@ var _ = SIGDescribe("Projected secret", func() {
 			},
 		}
 		ginkgo.By("Creating the pod")
-		f.PodClient().CreateSync(pod)
+		e2epod.NewPodClient(f).CreateSync(ctx, pod)
 
 		pollCreateLogs := func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, createContainerName)
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, createContainerName)
 		}
-		gomega.Eventually(pollCreateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/projected-secret-volumes/create/data-1"))
+		gomega.Eventually(ctx, pollCreateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/projected-secret-volumes/create/data-1"))
 
 		pollUpdateLogs := func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, updateContainerName)
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, updateContainerName)
 		}
-		gomega.Eventually(pollUpdateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/projected-secret-volumes/update/data-3"))
+		gomega.Eventually(ctx, pollUpdateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/projected-secret-volumes/update/data-3"))
 
 		pollDeleteLogs := func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, deleteContainerName)
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, deleteContainerName)
 		}
-		gomega.Eventually(pollDeleteLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
+		gomega.Eventually(ctx, pollDeleteLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
 
 		ginkgo.By(fmt.Sprintf("Deleting secret %v", deleteSecret.Name))
-		err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Delete(context.TODO(), deleteSecret.Name, metav1.DeleteOptions{})
+		err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Delete(ctx, deleteSecret.Name, metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "Failed to delete secret %q in namespace %q", deleteSecret.Name, f.Namespace.Name)
 
 		ginkgo.By(fmt.Sprintf("Updating secret %v", updateSecret.Name))
 		updateSecret.ResourceVersion = "" // to force update
 		delete(updateSecret.Data, "data-1")
 		updateSecret.Data["data-3"] = []byte("value-3")
-		_, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Update(context.TODO(), updateSecret, metav1.UpdateOptions{})
+		_, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Update(ctx, updateSecret, metav1.UpdateOptions{})
 		framework.ExpectNoError(err, "Failed to update secret %q in namespace %q", updateSecret.Name, f.Namespace.Name)
 
 		ginkgo.By(fmt.Sprintf("Creating secret with name %s", createSecret.Name))
-		if createSecret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), createSecret, metav1.CreateOptions{}); err != nil {
+		if createSecret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(ctx, createSecret, metav1.CreateOptions{}); err != nil {
 			framework.Failf("unable to create test secret %s: %v", createSecret.Name, err)
 		}
 
 		ginkgo.By("waiting to observe update in volume")
 
-		gomega.Eventually(pollCreateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
-		gomega.Eventually(pollUpdateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-3"))
-		gomega.Eventually(pollDeleteLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/projected-secret-volumes/delete/data-1"))
+		gomega.Eventually(ctx, pollCreateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
+		gomega.Eventually(ctx, pollUpdateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-3"))
+		gomega.Eventually(ctx, pollDeleteLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/projected-secret-volumes/delete/data-1"))
 	})
 
 	//The secret is in pending during volume creation until the secret objects are available
 	//or until mount the secret volume times out. There is no secret object defined for the pod, so it should return timeout exception unless it is marked optional.
 	//Slow (~5 mins)
-	ginkgo.It("Should fail non-optional pod creation due to secret object does not exist [Slow]", func() {
+	f.It("Should fail non-optional pod creation due to secret object does not exist", f.WithSlow(), f.WithNodeConformance(), func(ctx context.Context) {
 		volumeMountPath := "/etc/projected-secret-volumes"
 		podName := "pod-secrets-" + string(uuid.NewUUID())
-		err := createNonOptionalSecretPod(f, volumeMountPath, podName)
-		framework.ExpectError(err, "created pod %q with non-optional secret in namespace %q", podName, f.Namespace.Name)
+		pod := createNonOptionalSecretPod(ctx, f, volumeMountPath, podName)
+		getPod := e2epod.Get(f.ClientSet, pod)
+		gomega.Consistently(ctx, getPod).WithTimeout(f.Timeouts.PodStart).Should(e2epod.BeInPhase(v1.PodPending))
 	})
 
 	//Secret object defined for the pod, If a key is specified which is not present in the secret,
 	// the volume setup will error unless it is marked optional, during the pod creation.
 	//Slow (~5 mins)
-	ginkgo.It("Should fail non-optional pod creation due to the key in the secret object does not exist [Slow]", func() {
+	f.It("Should fail non-optional pod creation due to the key in the secret object does not exist", f.WithSlow(), f.WithNodeConformance(), func(ctx context.Context) {
 		volumeMountPath := "/etc/secret-volumes"
 		podName := "pod-secrets-" + string(uuid.NewUUID())
-		err := createNonOptionalSecretPodWithSecret(f, volumeMountPath, podName)
-		framework.ExpectError(err, "created pod %q with non-optional secret in namespace %q", podName, f.Namespace.Name)
+		pod := createNonOptionalSecretPodWithSecret(ctx, f, volumeMountPath, podName)
+		getPod := e2epod.Get(f.ClientSet, pod)
+		gomega.Consistently(ctx, getPod).WithTimeout(f.Timeouts.PodStart).Should(e2epod.BeInPhase(v1.PodPending))
 	})
 })
 
-func doProjectedSecretE2EWithoutMapping(f *framework.Framework, defaultMode *int32,
+func doProjectedSecretE2EWithoutMapping(ctx context.Context, f *framework.Framework, defaultMode *int32, defaultUser *int64,
 	secretName string, fsGroup *int64, uid *int64) {
 	var (
 		volumeName      = "projected-secret-volume"
@@ -438,7 +452,7 @@ func doProjectedSecretE2EWithoutMapping(f *framework.Framework, defaultMode *int
 
 	ginkgo.By(fmt.Sprintf("Creating projection with secret that has name %s", secret.Name))
 	var err error
-	if secret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), secret, metav1.CreateOptions{}); err != nil {
+	if secret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
 		framework.Failf("unable to create test secret %s: %v", secret.Name, err)
 	}
 
@@ -473,7 +487,9 @@ func doProjectedSecretE2EWithoutMapping(f *framework.Framework, defaultMode *int
 					Args: []string{
 						"mounttest",
 						"--file_content=/etc/projected-secret-volume/data-1",
-						"--file_mode=/etc/projected-secret-volume/data-1"},
+						"--file_mode=/etc/projected-secret-volume/data-1",
+						"--file_owner=/etc/projected-secret-volume/data-1",
+					},
 					VolumeMounts: []v1.VolumeMount{
 						{
 							Name:      volumeName,
@@ -487,8 +503,10 @@ func doProjectedSecretE2EWithoutMapping(f *framework.Framework, defaultMode *int
 	}
 
 	if defaultMode != nil {
-		//pod.Spec.Volumes[0].VolumeSource.Projected.Sources[0].Secret.DefaultMode = defaultMode
 		pod.Spec.Volumes[0].VolumeSource.Projected.DefaultMode = defaultMode
+	}
+	if defaultUser != nil {
+		pod.Spec.Volumes[0].VolumeSource.Projected.DefaultUser = defaultUser
 	}
 
 	if fsGroup != nil || uid != nil {
@@ -503,11 +521,14 @@ func doProjectedSecretE2EWithoutMapping(f *framework.Framework, defaultMode *int
 		"content of file \"/etc/projected-secret-volume/data-1\": value-1",
 		fileModeRegexp,
 	}
+	if defaultUser != nil {
+		expectedOutput = append(expectedOutput, fmt.Sprintf("owner UID of \"/etc/projected-secret-volume/data-1\": %d", *defaultUser))
+	}
 
-	f.TestContainerOutputRegexp("consume secrets", pod, 0, expectedOutput)
+	e2epodoutput.TestContainerOutputRegexp(ctx, f, "consume secrets", pod, 0, expectedOutput)
 }
 
-func doProjectedSecretE2EWithMapping(f *framework.Framework, mode *int32) {
+func doProjectedSecretE2EWithMapping(ctx context.Context, f *framework.Framework, mode *int32, user, runAsUser *int64) {
 	var (
 		name            = "projected-secret-test-map-" + string(uuid.NewUUID())
 		volumeName      = "projected-secret-volume"
@@ -517,7 +538,7 @@ func doProjectedSecretE2EWithMapping(f *framework.Framework, mode *int32) {
 
 	ginkgo.By(fmt.Sprintf("Creating projection with secret that has name %s", secret.Name))
 	var err error
-	if secret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), secret, metav1.CreateOptions{}); err != nil {
+	if secret, err = f.ClientSet.CoreV1().Secrets(f.Namespace.Name).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
 		framework.Failf("unable to create test secret %s: %v", secret.Name, err)
 	}
 
@@ -557,7 +578,9 @@ func doProjectedSecretE2EWithMapping(f *framework.Framework, mode *int32) {
 					Args: []string{
 						"mounttest",
 						"--file_content=/etc/projected-secret-volume/new-path-data-1",
-						"--file_mode=/etc/projected-secret-volume/new-path-data-1"},
+						"--file_mode=/etc/projected-secret-volume/new-path-data-1",
+						"--file_owner=/etc/projected-secret-volume/new-path-data-1",
+					},
 					VolumeMounts: []v1.VolumeMount{
 						{
 							Name:      volumeName,
@@ -571,8 +594,15 @@ func doProjectedSecretE2EWithMapping(f *framework.Framework, mode *int32) {
 	}
 
 	if mode != nil {
-		//pod.Spec.Volumes[0].VolumeSource.Projected.Sources[0].Secret.Items[0].Mode = mode
-		pod.Spec.Volumes[0].VolumeSource.Projected.DefaultMode = mode
+		pod.Spec.Volumes[0].VolumeSource.Projected.Sources[0].Secret.Items[0].Mode = mode
+	}
+	if user != nil {
+		pod.Spec.Volumes[0].VolumeSource.Projected.Sources[0].Secret.Items[0].User = user
+	}
+	if runAsUser != nil {
+		pod.Spec.SecurityContext = &v1.PodSecurityContext{
+			RunAsUser: runAsUser,
+		}
 	}
 
 	fileModeRegexp := getFileModeRegex("/etc/projected-secret-volume/new-path-data-1", mode)
@@ -580,6 +610,9 @@ func doProjectedSecretE2EWithMapping(f *framework.Framework, mode *int32) {
 		"content of file \"/etc/projected-secret-volume/new-path-data-1\": value-1",
 		fileModeRegexp,
 	}
+	if user != nil {
+		expectedOutput = append(expectedOutput, fmt.Sprintf("owner UID of \"/etc/projected-secret-volume/new-path-data-1\": %d", *user))
+	}
 
-	f.TestContainerOutputRegexp("consume secrets", pod, 0, expectedOutput)
+	e2epodoutput.TestContainerOutputRegexp(ctx, f, "consume secrets", pod, 0, expectedOutput)
 }

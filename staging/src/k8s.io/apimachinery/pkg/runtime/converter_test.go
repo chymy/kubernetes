@@ -33,12 +33,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/util/json"
 
-	fuzz "github.com/google/gofuzz"
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/randfill"
 )
 
 var simpleEquality = conversion.EqualitiesOrDie(
@@ -52,6 +52,7 @@ type A struct {
 	A int    `json:"aa,omitempty"`
 	B string `json:"ab,omitempty"`
 	C bool   `json:"ac,omitempty"`
+	D uint   `json:"ad,omitempty"`
 }
 
 type B struct {
@@ -63,7 +64,7 @@ type B struct {
 
 type C struct {
 	A []A `json:"ca"`
-	B `json:",inline"`
+	B `json:""`
 	C string         `json:"cc"`
 	D *int64         `json:"cd"`
 	E map[string]int `json:"ce"`
@@ -91,6 +92,7 @@ type F struct {
 	G []int             `json:"fg"`
 	H []bool            `json:"fh"`
 	I []float32         `json:"fi"`
+	J []byte            `json:"fj"`
 }
 
 type G struct {
@@ -102,20 +104,20 @@ type G struct {
 
 type H struct {
 	A A `json:"ha"`
-	C `json:",inline"`
+	C `json:""`
 }
 
 type I struct {
 	A A `json:"ia"`
-	H `json:",inline"`
+	H `json:""`
 
 	UL1 UnknownLevel1 `json:"ul1"`
 }
 
 type UnknownLevel1 struct {
 	A          int64 `json:"a"`
-	InlinedAA  `json:",inline"`
-	InlinedAAA `json:",inline"`
+	InlinedAA  `json:""`
+	InlinedAAA `json:""`
 }
 type InlinedAA struct {
 	AA int64 `json:"aa"`
@@ -127,8 +129,8 @@ type InlinedAAA struct {
 
 type UnknownLevel2 struct {
 	B          int64 `json:"b"`
-	InlinedBB  `json:",inline"`
-	InlinedBBB `json:",inline"`
+	InlinedBB  `json:""`
+	InlinedBBB `json:""`
 }
 type InlinedBB struct {
 	BB int64 `json:"bb"`
@@ -140,8 +142,8 @@ type InlinedBBB struct {
 
 type UnknownLevel3 struct {
 	C          int64 `json:"c"`
-	InlinedCC  `json:",inline"`
-	InlinedCCC `json:",inline"`
+	InlinedCC  `json:""`
+	InlinedCCC `json:""`
 }
 type InlinedCC struct {
 	CC int64 `json:"cc"`
@@ -194,7 +196,7 @@ func doRoundTrip(t *testing.T, item interface{}) {
 		return
 	}
 	if !reflect.DeepEqual(item, unmarshalledObj) {
-		t.Errorf("Object changed during JSON operations, diff: %v", diff.ObjectReflectDiff(item, unmarshalledObj))
+		t.Errorf("Object changed during JSON operations, diff: %v", cmp.Diff(item, unmarshalledObj))
 		return
 	}
 
@@ -202,6 +204,14 @@ func doRoundTrip(t *testing.T, item interface{}) {
 	newUnstr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(item)
 	if err != nil {
 		t.Errorf("ToUnstructured failed: %v", err)
+		return
+	}
+
+	copiedNewUnstr := runtime.DeepCopyJSONValue(newUnstr)
+	if value, ok := copiedNewUnstr.(map[string]interface{}); ok {
+		newUnstr = value
+	} else {
+		t.Errorf("DeepCopyJSONValue return unexpected type %T", copiedNewUnstr)
 		return
 	}
 
@@ -213,7 +223,7 @@ func doRoundTrip(t *testing.T, item interface{}) {
 	}
 
 	if !reflect.DeepEqual(item, newObj) {
-		t.Errorf("Object changed, diff: %v", diff.ObjectReflectDiff(item, newObj))
+		t.Errorf("Object changed, diff: %v", cmp.Diff(item, newObj))
 	}
 }
 
@@ -330,6 +340,12 @@ func TestRoundTrip(t *testing.T) {
 				A: []interface{}{float64(3.5), int64(4), "3.0", nil},
 			},
 		},
+		{
+			// Test uint values.
+			obj: &A{
+				D: 1,
+			},
+		},
 	}
 
 	for i := range testCases {
@@ -341,7 +357,7 @@ func TestRoundTrip(t *testing.T) {
 
 // TestUnknownFields checks for the collection of unknown
 // field errors from the various possible locations of
-// unknown fields (e.g. fields on struct, inlined sturct, slice, etc)
+// unknown fields (e.g. fields on struct, inlined struct, slice, etc)
 func TestUnknownFields(t *testing.T) {
 	// simples checks that basic unknown fields are found
 	// in fields, subfields and slices.
@@ -639,9 +655,9 @@ func TestUnknownFields(t *testing.T) {
 // with the various validation directives (Ignore, Warn, Strict)
 func BenchmarkFromUnstructuredWithValidation(b *testing.B) {
 	re := regexp.MustCompile("^I$")
-	f := fuzz.NewWithSeed(1).NilChance(0.1).SkipFieldsWithPattern(re)
+	f := randfill.NewWithSeed(1).NilChance(0.1).SkipFieldsWithPattern(re)
 	iObj := &I{}
-	f.Fuzz(&iObj)
+	f.Fill(&iObj)
 
 	unstr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(iObj)
 	if err != nil {
@@ -687,7 +703,7 @@ func doUnrecognized(t *testing.T, jsonData string, item interface{}, expectedErr
 	}
 
 	if expectedErr == nil && !reflect.DeepEqual(unmarshalledObj, newObj) {
-		t.Errorf("Object changed, diff: %v", diff.ObjectReflectDiff(unmarshalledObj, newObj))
+		t.Errorf("Object changed, diff: %v", cmp.Diff(unmarshalledObj, newObj))
 	}
 }
 
@@ -749,6 +765,10 @@ func TestUnrecognized(t *testing.T) {
 		},
 		{
 			data: "{\"ff\":[\"abc\"],\"fg\":[123],\"fh\":[true,false]}",
+			obj:  &F{},
+		},
+		{
+			data: "{\"fj\":\"\"}",
 			obj:  &F{},
 		},
 		{
@@ -916,7 +936,7 @@ func TestFloatIntConversion(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(obj, unmarshalled) {
-		t.Errorf("Incorrect conversion, diff: %v", diff.ObjectReflectDiff(obj, unmarshalled))
+		t.Errorf("Incorrect conversion, diff: %v", cmp.Diff(obj, unmarshalled))
 	}
 }
 
@@ -938,7 +958,7 @@ func TestIntFloatConversion(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(obj, unmarshalled) {
-		t.Errorf("Incorrect conversion, diff: %v", diff.ObjectReflectDiff(obj, unmarshalled))
+		t.Errorf("Incorrect conversion, diff: %v", cmp.Diff(obj, unmarshalled))
 	}
 }
 
@@ -959,7 +979,6 @@ func TestCustomToUnstructured(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		tc := tc
 		t.Run(tc.Data, func(t *testing.T) {
 			t.Parallel()
 			result, err := runtime.NewTestUnstructuredConverter(simpleEquality).ToUnstructured(&G{
@@ -984,12 +1003,211 @@ func TestCustomToUnstructuredTopLevel(t *testing.T) {
 	}
 	expected := map[string]interface{}{"a": int64(1)}
 	for i, obj := range topLevelCases {
-		obj := obj
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			t.Parallel()
 			result, err := runtime.NewTestUnstructuredConverter(simpleEquality).ToUnstructured(obj)
 			require.NoError(t, err)
 			assert.Equal(t, expected, result)
+		})
+	}
+}
+
+type OmitemptyNameField struct {
+	I int `json:"omitempty"`
+}
+
+func TestOmitempty(t *testing.T) {
+	expected := `{"omitempty":0}`
+
+	o := &OmitemptyNameField{}
+	jsonData, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, a := expected, string(jsonData); e != a {
+		t.Fatalf("expected\n%s\ngot\n%s", e, a)
+	}
+
+	unstr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonUnstrData, err := json.Marshal(unstr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, a := expected, string(jsonUnstrData); e != a {
+		t.Fatalf("expected\n%s\ngot\n%s", e, a)
+	}
+}
+
+type InlineTestPrimitive struct {
+	NoNameTagPrimitive          int64 `json:""`
+	NoNameTagInlinePrimitive    int64 `json:",inline"`
+	NoNameTagOmitemptyPrimitive int64 `json:",omitempty"`
+}
+type InlineTestAnonymous struct {
+	NoTag
+	NoNameTag          `json:""`
+	NameTag            `json:"nameTagEmbedded"`
+	NoNameTagInline    `json:",inline"`
+	NoNameTagEmbed     `json:",embed"` //nolint:staticcheck // SA5008 intentionally exercising a tag not present until Go 1.27
+	NoNameTagOmitempty `json:",omitempty"`
+}
+type InlineTestNamed struct {
+	NoTag              NoTag
+	NoNameTag          NoNameTag          `json:""`
+	NameTag            NameTag            `json:"nameTagEmbedded"`
+	NoNameTagInline    NoNameTagInline    `json:",inline"`
+	NoNameTagEmbed     NoNameTagEmbed     `json:",embed"` //nolint:staticcheck // intentionally exercising a tag not present until Go 1.27
+	NoNameTagOmitempty NoNameTagOmitempty `json:",omitempty"`
+}
+type NoTag struct {
+	Data0 int `json:"data0"`
+}
+type NameTag struct {
+	Data1 int `json:"data1"`
+}
+type NoNameTag struct {
+	Data2 int `json:"data2"`
+}
+type NoNameTagInline struct {
+	Data3 int `json:"data3"`
+}
+type NoNameTagOmitempty struct {
+	Data4 int `json:"data4"`
+}
+type NoNameTagEmbed struct {
+	Data5 int `json:"data5"`
+}
+
+func TestInline(t *testing.T) {
+	testcases := []struct {
+		name   string
+		obj    any
+		expect map[string]any
+	}{
+		{
+			name: "primitive-zero",
+			obj:  &InlineTestPrimitive{},
+			expect: map[string]any{
+				"NoNameTagPrimitive":       int64(0),
+				"NoNameTagInlinePrimitive": int64(0),
+			},
+		},
+		{
+			name: "primitive-set",
+			obj: &InlineTestPrimitive{
+				NoNameTagPrimitive:          1,
+				NoNameTagInlinePrimitive:    2,
+				NoNameTagOmitemptyPrimitive: 3,
+			},
+			expect: map[string]any{
+				"NoNameTagPrimitive":          int64(1),
+				"NoNameTagInlinePrimitive":    int64(2),
+				"NoNameTagOmitemptyPrimitive": int64(3),
+			},
+		},
+		{
+			name: "anonymous-zero",
+			obj:  &InlineTestAnonymous{},
+			expect: map[string]any{
+				"data0":           int64(0),
+				"data2":           int64(0),
+				"data3":           int64(0),
+				"data4":           int64(0),
+				"data5":           int64(0),
+				"nameTagEmbedded": map[string]any{"data1": int64(0)},
+			},
+		},
+		{
+			name: "anonymous-set",
+			obj:  &InlineTestAnonymous{},
+			expect: map[string]any{
+				"data0":           int64(0),
+				"data2":           int64(0),
+				"data3":           int64(0),
+				"data4":           int64(0),
+				"data5":           int64(0),
+				"nameTagEmbedded": map[string]any{"data1": int64(0)},
+			},
+		},
+		{
+			name: "named-zero",
+			obj:  &InlineTestNamed{},
+			expect: func() map[string]any {
+				m := map[string]any{
+					"NoTag":              map[string]any{"data0": int64(0)},
+					"nameTagEmbedded":    map[string]any{"data1": int64(0)},
+					"NoNameTag":          map[string]any{"data2": int64(0)},
+					"NoNameTagInline":    map[string]any{"data3": int64(0)},
+					"NoNameTagOmitempty": map[string]any{"data4": int64(0)},
+				}
+				if stdlibSupportsEmbedTag {
+					m["data5"] = int64(0)
+				} else {
+					m["NoNameTagEmbed"] = map[string]any{"data5": int64(0)}
+				}
+				return m
+			}(),
+		},
+		{
+			name: "named-set",
+			obj: &InlineTestNamed{
+				NoTag:              NoTag{Data0: 10},
+				NameTag:            NameTag{Data1: 11},
+				NoNameTag:          NoNameTag{Data2: 12},
+				NoNameTagInline:    NoNameTagInline{Data3: 13},
+				NoNameTagOmitempty: NoNameTagOmitempty{Data4: 14},
+				NoNameTagEmbed:     NoNameTagEmbed{Data5: 15},
+			},
+			expect: func() map[string]any {
+				m := map[string]any{
+					"NoTag":              map[string]any{"data0": int64(10)},
+					"nameTagEmbedded":    map[string]any{"data1": int64(11)},
+					"NoNameTag":          map[string]any{"data2": int64(12)},
+					"NoNameTagInline":    map[string]any{"data3": int64(13)},
+					"NoNameTagOmitempty": map[string]any{"data4": int64(14)},
+				}
+				if stdlibSupportsEmbedTag {
+					m["data5"] = int64(15)
+				} else {
+					m["NoNameTagEmbed"] = map[string]any{"data5": int64(15)}
+				}
+				return m
+			}(),
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				// handle panics
+				if err := recover(); err != nil {
+					t.Fatal(err)
+				}
+			}()
+
+			// Check the expectation against stdlib
+			jsonData, err := json.Marshal(tc.obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jsonUnstr := map[string]any{}
+			if err := json.Unmarshal(jsonData, &jsonUnstr); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(tc.expect, jsonUnstr) {
+				t.Fatal(cmp.Diff(tc.expect, jsonUnstr))
+			}
+
+			// Check the expectation against DefaultUnstructuredConverter.ToUnstructured
+			unstr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(tc.obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(tc.expect, unstr) {
+				t.Fatal(cmp.Diff(tc.expect, unstr))
+			}
 		})
 	}
 }

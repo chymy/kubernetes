@@ -18,6 +18,7 @@ package app
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +29,8 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	restclient "k8s.io/client-go/rest"
-	"k8s.io/controller-manager/controller"
+
+	"k8s.io/kubernetes/cmd/kube-controller-manager/names"
 )
 
 // TestClientBuilder inherits ClientBuilder and can accept a given fake clientset.
@@ -36,12 +38,14 @@ type TestClientBuilder struct {
 	clientset clientset.Interface
 }
 
-func (TestClientBuilder) Config(name string) (*restclient.Config, error) { return nil, nil }
+func (TestClientBuilder) Config(name string) (*restclient.Config, error) {
+	return &restclient.Config{}, nil
+}
 func (TestClientBuilder) ConfigOrDie(name string) *restclient.Config {
 	return &restclient.Config{}
 }
 
-func (TestClientBuilder) Client(name string) (clientset.Interface, error) { return nil, nil }
+func (m TestClientBuilder) Client(name string) (clientset.Interface, error) { return m.clientset, nil }
 func (m TestClientBuilder) ClientOrDie(name string) clientset.Interface {
 	return m.clientset
 }
@@ -68,13 +72,17 @@ func (d FakeDiscoveryWithError) ServerPreferredNamespacedResources() ([]*metav1.
 	return d.PossibleResources, d.Err
 }
 
+func (d FakeDiscoveryWithError) ServerPreferredNamespacedResourcesWithContext(ctx context.Context) ([]*metav1.APIResourceList, error) {
+	return d.PossibleResources, d.Err
+}
+
 // FakeDiscoveryWithError inherits Clientset(via FakeClientset) with overridden Discovery method.
 type FakeClientSet struct {
 	fakeclientset.Clientset
 	DiscoveryObj *FakeDiscoveryWithError
 }
 
-func (c *FakeClientSet) Discovery() discovery.DiscoveryInterface {
+func (c *FakeClientSet) Discovery() discovery.DiscoveryInterfaces {
 	return c.DiscoveryObj
 }
 
@@ -105,15 +113,13 @@ func possibleDiscoveryResource() []*metav1.APIResourceList {
 	}
 }
 
-type controllerInitFunc func(context.Context, ControllerContext) (controller.Interface, bool, error)
-
 func TestController_DiscoveryError(t *testing.T) {
-	controllerInitFuncMap := map[string]controllerInitFunc{
-		"ResourceQuotaController":          startResourceQuotaController,
-		"GarbageCollectorController":       startGarbageCollectorController,
-		"EndpointSliceController":          startEndpointSliceController,
-		"EndpointSliceMirroringController": startEndpointSliceMirroringController,
-		"PodDisruptionBudgetController":    startDisruptionController,
+	controllerDescriptorMap := map[string]*ControllerDescriptor{
+		"ResourceQuotaController":          newResourceQuotaControllerDescriptor(),
+		"GarbageCollectorController":       newGarbageCollectorControllerDescriptor(),
+		"EndpointSliceController":          newEndpointSliceControllerDescriptor(),
+		"EndpointSliceMirroringController": newEndpointSliceMirroringControllerDescriptor(),
+		"PodDisruptionBudgetController":    newDisruptionControllerDescriptor(),
 	}
 
 	tcs := map[string]struct {
@@ -133,26 +139,44 @@ func TestController_DiscoveryError(t *testing.T) {
 		},
 	}
 	for name, test := range tcs {
-		testDiscovery := FakeDiscoveryWithError{Err: test.discoveryError, PossibleResources: test.possibleResources}
-		testClientset := NewFakeClientset(testDiscovery)
-		testClientBuilder := TestClientBuilder{clientset: testClientset}
-		testInformerFactory := informers.NewSharedInformerFactoryWithOptions(testClientset, time.Duration(1))
-		ctx := ControllerContext{
-			ClientBuilder:                   testClientBuilder,
-			InformerFactory:                 testInformerFactory,
-			ObjectOrMetadataInformerFactory: testInformerFactory,
-			InformersStarted:                make(chan struct{}),
-		}
-		for funcName, controllerInit := range controllerInitFuncMap {
-			_, _, err := controllerInit(context.TODO(), ctx)
-			if test.expectedErr != (err != nil) {
-				t.Errorf("%v test failed for use case: %v", funcName, name)
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			testDiscovery := FakeDiscoveryWithError{Err: test.discoveryError, PossibleResources: test.possibleResources}
+			testClientset := NewFakeClientset(testDiscovery)
+			testClientBuilder := TestClientBuilder{clientset: testClientset}
+			testInformerFactory := informers.NewSharedInformerFactoryWithOptions(testClientset, time.Duration(1))
+			controllerContext := ControllerContext{
+				ClientBuilder:                   testClientBuilder,
+				InformerFactory:                 testInformerFactory,
+				ObjectOrMetadataInformerFactory: testInformerFactory,
+				InformersStarted:                make(chan struct{}),
 			}
-		}
-		_, _, err := startModifiedNamespaceController(
-			context.TODO(), ctx, testClientset, testClientBuilder.ConfigOrDie("namespace-controller"))
-		if test.expectedErr != (err != nil) {
-			t.Errorf("Namespace Controller test failed for use case: %v", name)
-		}
+			for controllerName, controllerDesc := range controllerDescriptorMap {
+				_, err := controllerDesc.GetControllerConstructor()(ctx, controllerContext, controllerName)
+				if test.expectedErr != (err != nil) {
+					t.Errorf("%v test failed for use case: %v", controllerName, name)
+				}
+			}
+
+			namespaceController, err := newModifiedNamespaceController(
+				ctx, controllerContext, names.NamespaceController,
+				testClientset, testClientBuilder.ConfigOrDie("namespace-controller"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(ctx)
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				namespaceController.Run(ctx)
+			}()
+			cancel()
+			wg.Wait()
+			if test.expectedErr != (err != nil) {
+				t.Errorf("Namespace Controller test failed for use case: %v", name)
+			}
+		})
 	}
 }

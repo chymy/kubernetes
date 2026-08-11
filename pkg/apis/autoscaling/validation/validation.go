@@ -17,16 +17,20 @@ limitations under the License.
 package validation
 
 import (
+	"context"
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/api/operation"
+	"k8s.io/apimachinery/pkg/api/validate/content"
 	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
-	pathvalidation "k8s.io/apimachinery/pkg/api/validation/path"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/kubernetes/pkg/apis/autoscaling"
-	corevalidation "k8s.io/kubernetes/pkg/apis/core/v1/validation"
 	apivalidation "k8s.io/kubernetes/pkg/apis/core/validation"
-	"k8s.io/kubernetes/pkg/features"
 )
 
 const (
@@ -39,39 +43,54 @@ const (
 // ValidateScale validates a Scale and returns an ErrorList with any errors.
 func ValidateScale(scale *autoscaling.Scale) field.ErrorList {
 	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, apivalidation.ValidateObjectMeta(&scale.ObjectMeta, true, apimachineryvalidation.NameIsDNSSubdomain, field.NewPath("metadata"))...)
-
+	// Only validate managed fields and replicas. Other metadata fields are ignored
+	// and discarded by the scale subresource handler.
+	allErrs = append(allErrs, metav1validation.ValidateManagedFields(scale.GetManagedFields(), field.NewPath("metadata").Child("managedFields"))...)
 	if scale.Spec.Replicas < 0 {
-		allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "replicas"), scale.Spec.Replicas, "must be greater than or equal to 0"))
+		allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(scale.Spec.Replicas), field.NewPath("spec", "replicas")).MarkCoveredByDeclarative()...)
 	}
 
 	return allErrs
 }
 
+// ValidateScaleUpdate is the single composition of handwritten and declarative
+// Scale validation invoked by every in-tree ScaleREST.UpdatedObject
+// (replicationcontroller, deployment, replicaset, statefulset) and by the
+// corresponding tests under test/declarative_validation/{autoscaling,apps}/scale.
+// mapper translates the request's parent group/version to the appropriate Scale
+// GVK; tests pass nil because they set RequestInfo directly to a Scale GV.
+func ValidateScaleUpdate(ctx context.Context, newScale, oldScale *autoscaling.Scale, scheme *runtime.Scheme, mapper rest.GroupVersionKindProvider) field.ErrorList {
+	errs := ValidateScale(newScale)
+	dv := rest.DeclarativeValidation{Scheme: scheme}
+	return dv.ValidateDeclaratively(ctx, newScale, oldScale, errs, operation.Update, rest.DeclarativeValidationConfig{SubresourceGVKMapper: mapper})
+}
+
 // ValidateHorizontalPodAutoscalerName can be used to check whether the given autoscaler name is valid.
 // Prefix indicates this name will be used as part of generation, in which case trailing dashes are allowed.
-var ValidateHorizontalPodAutoscalerName = apivalidation.ValidateReplicationControllerName
+var ValidateHorizontalPodAutoscalerName = apimachineryvalidation.NameIsDNSSubdomain
 
-func validateHorizontalPodAutoscalerSpec(autoscaler autoscaling.HorizontalPodAutoscalerSpec, fldPath *field.Path, minReplicasLowerBound int32) field.ErrorList {
+func validateHorizontalPodAutoscalerSpec(autoscaler autoscaling.HorizontalPodAutoscalerSpec, fldPath *field.Path, opts HorizontalPodAutoscalerSpecValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	if autoscaler.MinReplicas != nil && *autoscaler.MinReplicas < minReplicasLowerBound {
+	if autoscaler.MinReplicas != nil && *autoscaler.MinReplicas < opts.MinReplicasLowerBound {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("minReplicas"), *autoscaler.MinReplicas,
-			fmt.Sprintf("must be greater than or equal to %d", minReplicasLowerBound)))
+			fmt.Sprintf("must be greater than or equal to %d", opts.MinReplicasLowerBound)).WithOrigin("minimum").MarkCoveredByDeclarative())
 	}
-	if autoscaler.MaxReplicas < 1 {
-		allErrs = append(allErrs, field.Invalid(fldPath.Child("maxReplicas"), autoscaler.MaxReplicas, "must be greater than 0"))
+	if autoscaler.MaxReplicas == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("maxReplicas"), "must be set and greater than 0").MarkCoveredByDeclarative())
+	} else if autoscaler.MaxReplicas < 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("maxReplicas"), autoscaler.MaxReplicas, "must be greater than or equal to 1").WithOrigin("minimum").MarkCoveredByDeclarative())
 	}
 	if autoscaler.MinReplicas != nil && autoscaler.MaxReplicas < *autoscaler.MinReplicas {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("maxReplicas"), autoscaler.MaxReplicas, "must be greater than or equal to `minReplicas`"))
 	}
-	if refErrs := ValidateCrossVersionObjectReference(autoscaler.ScaleTargetRef, fldPath.Child("scaleTargetRef")); len(refErrs) > 0 {
+	if refErrs := ValidateCrossVersionObjectReference(autoscaler.ScaleTargetRef, fldPath.Child("scaleTargetRef"), opts.ScaleTargetRefValidationOptions); len(refErrs) > 0 {
 		allErrs = append(allErrs, refErrs...)
 	}
-	if refErrs := validateMetrics(autoscaler.Metrics, fldPath.Child("metrics"), autoscaler.MinReplicas); len(refErrs) > 0 {
+	if refErrs := validateMetrics(autoscaler.Metrics, fldPath.Child("metrics"), autoscaler.MinReplicas, opts.ObjectMetricsValidationOptions); len(refErrs) > 0 {
 		allErrs = append(allErrs, refErrs...)
 	}
-	if refErrs := validateBehavior(autoscaler.Behavior, fldPath.Child("behavior")); len(refErrs) > 0 {
+	if refErrs := validateBehavior(autoscaler.Behavior, fldPath.Child("behavior"), opts); len(refErrs) > 0 {
 		allErrs = append(allErrs, refErrs...)
 	}
 	return allErrs
@@ -79,61 +98,63 @@ func validateHorizontalPodAutoscalerSpec(autoscaler autoscaling.HorizontalPodAut
 
 // ValidateCrossVersionObjectReference validates a CrossVersionObjectReference and returns an
 // ErrorList with any errors.
-func ValidateCrossVersionObjectReference(ref autoscaling.CrossVersionObjectReference, fldPath *field.Path) field.ErrorList {
+func ValidateCrossVersionObjectReference(ref autoscaling.CrossVersionObjectReference, fldPath *field.Path, opts CrossVersionObjectReferenceValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if len(ref.Kind) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("kind"), ""))
+		err := field.Required(fldPath.Child("kind"), "")
+		if opts.RequiredCoveredByDeclarative {
+			err = err.MarkCoveredByDeclarative()
+		}
+		allErrs = append(allErrs, err)
 	} else {
-		for _, msg := range pathvalidation.IsValidPathSegmentName(ref.Kind) {
+		for _, msg := range content.IsPathSegmentName(ref.Kind) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("kind"), ref.Kind, msg))
 		}
 	}
 
 	if len(ref.Name) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("name"), ""))
+		err := field.Required(fldPath.Child("name"), "")
+		if opts.RequiredCoveredByDeclarative {
+			err = err.MarkCoveredByDeclarative()
+		}
+		allErrs = append(allErrs, err)
 	} else {
-		for _, msg := range pathvalidation.IsValidPathSegmentName(ref.Name) {
+		for _, msg := range content.IsPathSegmentName(ref.Name) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("name"), ref.Name, msg))
 		}
 	}
-
+	if err := ValidateAPIVersion(ref, opts); err != nil {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("apiVersion"), ref.APIVersion, err.Error()))
+	}
 	return allErrs
+}
+
+func ValidateAPIVersion(ref autoscaling.CrossVersionObjectReference, opts CrossVersionObjectReferenceValidationOptions) error {
+	if opts.AllowInvalidAPIVersion {
+		return nil
+	}
+	gv, err := schema.ParseGroupVersion(ref.APIVersion)
+	if err != nil {
+		return err
+	} else if !opts.AllowEmptyAPIGroup && gv.Group == "" {
+		return fmt.Errorf("apiVersion must specify API group")
+	}
+	return nil
 }
 
 // ValidateHorizontalPodAutoscaler validates a HorizontalPodAutoscaler and returns an
 // ErrorList with any errors.
-func ValidateHorizontalPodAutoscaler(autoscaler *autoscaling.HorizontalPodAutoscaler) field.ErrorList {
+func ValidateHorizontalPodAutoscaler(autoscaler *autoscaling.HorizontalPodAutoscaler, opts HorizontalPodAutoscalerSpecValidationOptions) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMeta(&autoscaler.ObjectMeta, true, ValidateHorizontalPodAutoscalerName, field.NewPath("metadata"))
-
-	// MinReplicasLowerBound represents a minimum value for minReplicas
-	// 0 when HPA scale-to-zero feature is enabled
-	var minReplicasLowerBound int32
-
-	if utilfeature.DefaultFeatureGate.Enabled(features.HPAScaleToZero) {
-		minReplicasLowerBound = 0
-	} else {
-		minReplicasLowerBound = 1
-	}
-	allErrs = append(allErrs, validateHorizontalPodAutoscalerSpec(autoscaler.Spec, field.NewPath("spec"), minReplicasLowerBound)...)
+	allErrs = append(allErrs, validateHorizontalPodAutoscalerSpec(autoscaler.Spec, field.NewPath("spec"), opts)...)
 	return allErrs
 }
 
 // ValidateHorizontalPodAutoscalerUpdate validates an update to a HorizontalPodAutoscaler and returns an
 // ErrorList with any errors.
-func ValidateHorizontalPodAutoscalerUpdate(newAutoscaler, oldAutoscaler *autoscaling.HorizontalPodAutoscaler) field.ErrorList {
+func ValidateHorizontalPodAutoscalerUpdate(newAutoscaler, oldAutoscaler *autoscaling.HorizontalPodAutoscaler, opts HorizontalPodAutoscalerSpecValidationOptions) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMetaUpdate(&newAutoscaler.ObjectMeta, &oldAutoscaler.ObjectMeta, field.NewPath("metadata"))
-
-	// minReplicasLowerBound represents a minimum value for minReplicas
-	// 0 when HPA scale-to-zero feature is enabled or HPA object already has minReplicas=0
-	var minReplicasLowerBound int32
-
-	if utilfeature.DefaultFeatureGate.Enabled(features.HPAScaleToZero) || (oldAutoscaler.Spec.MinReplicas != nil && *oldAutoscaler.Spec.MinReplicas == 0) {
-		minReplicasLowerBound = 0
-	} else {
-		minReplicasLowerBound = 1
-	}
-
-	allErrs = append(allErrs, validateHorizontalPodAutoscalerSpec(newAutoscaler.Spec, field.NewPath("spec"), minReplicasLowerBound)...)
+	allErrs = append(allErrs, validateHorizontalPodAutoscalerSpec(newAutoscaler.Spec, field.NewPath("spec"), opts)...)
 	return allErrs
 }
 
@@ -142,19 +163,47 @@ func ValidateHorizontalPodAutoscalerUpdate(newAutoscaler, oldAutoscaler *autosca
 func ValidateHorizontalPodAutoscalerStatusUpdate(newAutoscaler, oldAutoscaler *autoscaling.HorizontalPodAutoscaler) field.ErrorList {
 	allErrs := apivalidation.ValidateObjectMetaUpdate(&newAutoscaler.ObjectMeta, &oldAutoscaler.ObjectMeta, field.NewPath("metadata"))
 	status := newAutoscaler.Status
+	for i, condition := range status.Conditions {
+		if condition.ObservedGeneration != nil {
+			allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(*condition.ObservedGeneration, field.NewPath("status").Child("conditions").Index(i).Child("observedGeneration"))...)
+		}
+	}
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.CurrentReplicas), field.NewPath("status", "currentReplicas"))...)
 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.DesiredReplicas), field.NewPath("status", "desiredReplicas"))...)
 	return allErrs
 }
 
-func validateMetrics(metrics []autoscaling.MetricSpec, fldPath *field.Path, minReplicas *int32) field.ErrorList {
+// CrossVersionObjectReferenceValidationOptions contains the different setting
+// to validate CrossVersionObjectReference.
+type CrossVersionObjectReferenceValidationOptions struct {
+	// Whether to allow API Version empty
+	AllowEmptyAPIGroup bool
+	// AllowInvalidAPIVersion skips APIVersion validation when true.
+	AllowInvalidAPIVersion bool
+	// RequiredCoveredByDeclarative marks the required-value errors for Kind and
+	// Name as covered by declarative validation. Set it only where declarative
+	// validation actually validates the reference (scaleTargetRef); leave it
+	// false for describedObject, which is under the opaque metrics subtree and is
+	// validated only by hand-written validation.
+	RequiredCoveredByDeclarative bool
+}
+
+// HorizontalPodAutoscalerSpecValidationOptions contains the different settings for
+// HorizontalPodAutoscaler spec validation.
+type HorizontalPodAutoscalerSpecValidationOptions struct {
+	// The minimum value for minReplicas.
+	MinReplicasLowerBound           int32
+	ScaleTargetRefValidationOptions CrossVersionObjectReferenceValidationOptions
+	ObjectMetricsValidationOptions  CrossVersionObjectReferenceValidationOptions
+}
+
+func validateMetrics(newMetrics []autoscaling.MetricSpec, fldPath *field.Path, minReplicas *int32, opts CrossVersionObjectReferenceValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	hasObjectMetrics := false
 	hasExternalMetrics := false
-
-	for i, metricSpec := range metrics {
+	for i, metricSpec := range newMetrics {
 		idxPath := fldPath.Index(i)
-		if targetErrs := validateMetricSpec(metricSpec, idxPath); len(targetErrs) > 0 {
+		if targetErrs := validateMetricSpec(metricSpec, idxPath, opts); len(targetErrs) > 0 {
 			allErrs = append(allErrs, targetErrs...)
 		}
 		if metricSpec.Type == autoscaling.ObjectMetricSourceType {
@@ -174,13 +223,13 @@ func validateMetrics(metrics []autoscaling.MetricSpec, fldPath *field.Path, minR
 	return allErrs
 }
 
-func validateBehavior(behavior *autoscaling.HorizontalPodAutoscalerBehavior, fldPath *field.Path) field.ErrorList {
+func validateBehavior(behavior *autoscaling.HorizontalPodAutoscalerBehavior, fldPath *field.Path, opts HorizontalPodAutoscalerSpecValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if behavior != nil {
-		if scaleUpErrs := validateScalingRules(behavior.ScaleUp, fldPath.Child("scaleUp")); len(scaleUpErrs) > 0 {
+		if scaleUpErrs := validateScalingRules(behavior.ScaleUp, fldPath.Child("scaleUp"), opts); len(scaleUpErrs) > 0 {
 			allErrs = append(allErrs, scaleUpErrs...)
 		}
-		if scaleDownErrs := validateScalingRules(behavior.ScaleDown, fldPath.Child("scaleDown")); len(scaleDownErrs) > 0 {
+		if scaleDownErrs := validateScalingRules(behavior.ScaleDown, fldPath.Child("scaleDown"), opts); len(scaleDownErrs) > 0 {
 			allErrs = append(allErrs, scaleDownErrs...)
 		}
 	}
@@ -190,7 +239,7 @@ func validateBehavior(behavior *autoscaling.HorizontalPodAutoscalerBehavior, fld
 var validSelectPolicyTypes = sets.NewString(string(autoscaling.MaxPolicySelect), string(autoscaling.MinPolicySelect), string(autoscaling.DisabledPolicySelect))
 var validSelectPolicyTypesList = validSelectPolicyTypes.List()
 
-func validateScalingRules(rules *autoscaling.HPAScalingRules, fldPath *field.Path) field.ErrorList {
+func validateScalingRules(rules *autoscaling.HPAScalingRules, fldPath *field.Path, opts HorizontalPodAutoscalerSpecValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if rules != nil {
 		if rules.StabilizationWindowSeconds != nil && *rules.StabilizationWindowSeconds < 0 {
@@ -212,6 +261,9 @@ func validateScalingRules(rules *autoscaling.HPAScalingRules, fldPath *field.Pat
 			if policyErrs := validateScalingPolicy(policy, idxPath); len(policyErrs) > 0 {
 				allErrs = append(allErrs, policyErrs...)
 			}
+		}
+		if rules.Tolerance != nil {
+			allErrs = append(allErrs, apivalidation.ValidateNonnegativeQuantity(*rules.Tolerance, fldPath.Child("tolerance"))...)
 		}
 	}
 	return allErrs
@@ -244,7 +296,7 @@ var validMetricSourceTypes = sets.NewString(
 	string(autoscaling.ContainerResourceMetricSourceType))
 var validMetricSourceTypesList = validMetricSourceTypes.List()
 
-func validateMetricSpec(spec autoscaling.MetricSpec, fldPath *field.Path) field.ErrorList {
+func validateMetricSpec(spec autoscaling.MetricSpec, fldPath *field.Path, opts CrossVersionObjectReferenceValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if len(string(spec.Type)) == 0 {
@@ -259,7 +311,7 @@ func validateMetricSpec(spec autoscaling.MetricSpec, fldPath *field.Path) field.
 	if spec.Object != nil {
 		typesPresent.Insert("object")
 		if typesPresent.Len() == 1 {
-			allErrs = append(allErrs, validateObjectSource(spec.Object, fldPath.Child("object"))...)
+			allErrs = append(allErrs, validateObjectSource(spec.Object, fldPath.Child("object"), opts)...)
 		}
 	}
 
@@ -316,11 +368,7 @@ func validateMetricSpec(spec autoscaling.MetricSpec, fldPath *field.Path) field.
 		expectedField = "external"
 	case autoscaling.ContainerResourceMetricSourceType:
 		if spec.ContainerResource == nil {
-			if utilfeature.DefaultFeatureGate.Enabled(features.HPAContainerMetrics) {
-				allErrs = append(allErrs, field.Required(fldPath.Child("containerResource"), "must populate information for the given metric source"))
-			} else {
-				allErrs = append(allErrs, field.Required(fldPath.Child("containerResource"), "must populate information for the given metric source (only allowed when HPAContainerMetrics feature is enabled)"))
-			}
+			allErrs = append(allErrs, field.Required(fldPath.Child("containerResource"), "must populate information for the given metric source"))
 		}
 		expectedField = "containerResource"
 	default:
@@ -337,10 +385,9 @@ func validateMetricSpec(spec autoscaling.MetricSpec, fldPath *field.Path) field.
 	return allErrs
 }
 
-func validateObjectSource(src *autoscaling.ObjectMetricSource, fldPath *field.Path) field.ErrorList {
+func validateObjectSource(src *autoscaling.ObjectMetricSource, fldPath *field.Path, opts CrossVersionObjectReferenceValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
-
-	allErrs = append(allErrs, ValidateCrossVersionObjectReference(src.DescribedObject, fldPath.Child("describedObject"))...)
+	allErrs = append(allErrs, ValidateCrossVersionObjectReference(src.DescribedObject, fldPath.Child("describedObject"), opts)...)
 	allErrs = append(allErrs, validateMetricIdentifier(src.Metric, fldPath.Child("metric"))...)
 	allErrs = append(allErrs, validateMetricTarget(src.Target, fldPath.Child("target"))...)
 
@@ -387,7 +434,7 @@ func validateContainerResourceSource(src *autoscaling.ContainerResourceMetricSou
 	if len(src.Name) == 0 {
 		allErrs = append(allErrs, field.Required(fldPath.Child("name"), "must specify a resource name"))
 	} else {
-		allErrs = append(allErrs, corevalidation.ValidateContainerResourceName(string(src.Name), fldPath.Child("name"))...)
+		allErrs = append(allErrs, apivalidation.ValidateContainerResourceName(src.Name, fldPath.Child("name"))...)
 	}
 
 	if len(src.Container) == 0 {
@@ -463,7 +510,7 @@ func validateMetricIdentifier(id autoscaling.MetricIdentifier, fldPath *field.Pa
 	if len(id.Name) == 0 {
 		allErrs = append(allErrs, field.Required(fldPath.Child("name"), "must specify a metric name"))
 	} else {
-		for _, msg := range pathvalidation.IsValidPathSegmentName(id.Name) {
+		for _, msg := range content.IsPathSegmentName(id.Name) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("name"), id.Name, msg))
 		}
 	}

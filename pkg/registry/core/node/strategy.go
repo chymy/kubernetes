@@ -30,8 +30,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/generic"
+	"k8s.io/apiserver/pkg/registry/rest"
 	pkgstorage "k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -40,19 +42,18 @@ import (
 	"k8s.io/kubernetes/pkg/apis/core/validation"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/client"
-	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // nodeStrategy implements behavior for nodes
 type nodeStrategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Nodes is the default logic that applies when creating and updating Node
 // objects.
-var Strategy = nodeStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = nodeStrategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 // NamespaceScoped is false for nodes.
 func (nodeStrategy) NamespaceScoped() bool {
@@ -72,7 +73,7 @@ func (nodeStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
 }
 
 // AllowCreateOnUpdate is false for nodes.
-func (nodeStrategy) AllowCreateOnUpdate() bool {
+func (nodeStrategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return false
 }
 
@@ -94,16 +95,31 @@ func (nodeStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Objec
 func dropDisabledFields(node *api.Node, oldNode *api.Node) {
 	// Nodes allow *all* fields, including status, to be set on create.
 	// for create
-	if !utilfeature.DefaultFeatureGate.Enabled(features.DynamicKubeletConfig) && oldNode == nil {
+	if oldNode == nil {
 		node.Spec.ConfigSource = nil
 		node.Status.Config = nil
 	}
 
 	// for update
-	if !utilfeature.DefaultFeatureGate.Enabled(features.DynamicKubeletConfig) && !nodeConfigSourceInUse(oldNode) && oldNode != nil {
+	if !nodeConfigSourceInUse(oldNode) && oldNode != nil {
 		node.Spec.ConfigSource = nil
 	}
 
+	if !utilfeature.DefaultFeatureGate.Enabled(features.RecursiveReadOnlyMounts) && !utilfeature.DefaultFeatureGate.Enabled(features.UserNamespacesSupport) {
+		node.Status.RuntimeHandlers = nil
+	}
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.SupplementalGroupsPolicy) && !supplementalGroupsPolicyInUse(oldNode) {
+		node.Status.Features = nil
+	}
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.NodeDeclaredFeatures) && !nodeDeclaredFeaturesInUse(oldNode) {
+		node.Status.DeclaredFeatures = nil
+	}
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) && !nodePodPreemptionPolicyInUse(oldNode) {
+		node.Spec.PodPreemptionPolicy = nil
+	}
 }
 
 // nodeConfigSourceInUse returns true if node's Spec ConfigSource is set(used)
@@ -123,9 +139,17 @@ func (nodeStrategy) Validate(ctx context.Context, obj runtime.Object) field.Erro
 	return validation.ValidateNode(node)
 }
 
+// DeclarativeValidationConfig declares the options referenced by this type's tags,
+// mapped to whether each is enabled.
+func (nodeStrategy) DeclarativeValidationConfig(ctx context.Context, obj, oldObj runtime.Object) rest.DeclarativeValidationConfig {
+	return rest.DeclarativeValidationConfig{Options: map[string]bool{
+		string(features.InPlacePodVerticalScalingSchedulerPreemption): utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption),
+	}}
+}
+
 // WarningsOnCreate returns warnings for the creation of the given object.
 func (nodeStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
-	return dynamicKubeletConfigIsDeprecatedWarning(obj)
+	return nodeWarnings(obj)
 }
 
 // Canonicalize normalizes the object after validation.
@@ -140,10 +164,10 @@ func (nodeStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object)
 
 // WarningsOnUpdate returns warnings for the given update.
 func (nodeStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
-	return dynamicKubeletConfigIsDeprecatedWarning(obj)
+	return nodeWarnings(obj)
 }
 
-func (nodeStrategy) AllowUnconditionalUpdate() bool {
+func (nodeStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return true
 }
 
@@ -170,8 +194,12 @@ func (nodeStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime
 	oldNode := old.(*api.Node)
 	newNode.Spec = oldNode.Spec
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.DynamicKubeletConfig) && !nodeStatusConfigInUse(oldNode) {
+	if !nodeStatusConfigInUse(oldNode) {
 		newNode.Status.Config = nil
+	}
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.KubeletInUserNamespace) && oldNode.Status.NodeInfo.RunningInUserNamespace == nil {
+		newNode.Status.NodeInfo.RunningInUserNamespace = nil
 	}
 }
 
@@ -225,16 +253,10 @@ func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 // MatchNode returns a generic matcher for a given label and field selector.
 func MatchNode(label labels.Selector, field fields.Selector) pkgstorage.SelectionPredicate {
 	return pkgstorage.SelectionPredicate{
-		Label:       label,
-		Field:       field,
-		GetAttrs:    GetAttrs,
-		IndexFields: []string{"metadata.name"},
+		Label:    label,
+		Field:    field,
+		GetAttrs: GetAttrs,
 	}
-}
-
-// NameTriggerFunc returns value metadata.namespace of given object.
-func NameTriggerFunc(obj runtime.Object) string {
-	return obj.(*api.Node).ObjectMeta.Name
 }
 
 // ResourceLocation returns a URL and transport which one can use to send traffic for the specified node.
@@ -249,6 +271,10 @@ func ResourceLocation(getter ResourceGetter, connection client.ConnectionInfoGet
 		return nil, nil, err
 	}
 
+	if err := isProxyableHostname(ctx, info.Hostname); err != nil {
+		return nil, nil, errors.NewBadRequest(err.Error())
+	}
+
 	// We check if we want to get a default Kubelet's transport. It happens if either:
 	// - no port is specified in request (Kubelet's port is default)
 	// - the requested port matches the kubelet port for this node
@@ -261,21 +287,63 @@ func ResourceLocation(getter ResourceGetter, connection client.ConnectionInfoGet
 			nil
 	}
 
-	if err := proxyutil.IsProxyableHostname(ctx, &net.Resolver{}, info.Hostname); err != nil {
-		return nil, nil, errors.NewBadRequest(err.Error())
-	}
-
 	// Otherwise, return the requested scheme and port, and the proxy transport
 	return &url.URL{Scheme: schemeReq, Host: net.JoinHostPort(info.Hostname, portReq)}, proxyTransport, nil
 }
 
-func dynamicKubeletConfigIsDeprecatedWarning(obj runtime.Object) []string {
-	newNode := obj.(*api.Node)
-	if newNode.Spec.ConfigSource != nil {
-		var warnings []string
-		// KEP https://github.com/kubernetes/enhancements/issues/281
-		warnings = append(warnings, "spec.configSource: deprecated in v1.22, support removal is planned in v1.23")
-		return warnings
+func isProxyableHostname(ctx context.Context, hostname string) error {
+	resp, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
+	if err != nil {
+		return err
 	}
+
+	if len(resp) == 0 {
+		return fmt.Errorf("no addresses for hostname")
+	}
+	for _, host := range resp {
+		if !host.IP.IsGlobalUnicast() {
+			return fmt.Errorf("address not allowed")
+		}
+	}
+
 	return nil
+}
+
+func nodeWarnings(obj runtime.Object) []string {
+	newNode := obj.(*api.Node)
+	var warnings []string
+	if newNode.Spec.ConfigSource != nil {
+		// KEP https://github.com/kubernetes/enhancements/issues/281
+		warnings = append(warnings, "spec.configSource: the feature is removed")
+	}
+	if len(newNode.Spec.DoNotUseExternalID) > 0 {
+		warnings = append(warnings, "spec.externalID: this field is deprecated, and is unused by Kubernetes")
+	}
+
+	if len(newNode.Spec.PodCIDRs) > 0 {
+		podCIDRsField := field.NewPath("spec", "podCIDRs")
+		for i, value := range newNode.Spec.PodCIDRs {
+			warnings = append(warnings, utilvalidation.GetWarningsForCIDR(podCIDRsField.Index(i), value)...)
+		}
+	}
+
+	return warnings
+}
+
+// supplementalGroupsPolicyInUse returns true if the node.status has NodeFeature
+func supplementalGroupsPolicyInUse(node *api.Node) bool {
+	if node == nil {
+		return false
+	}
+	return node.Status.Features != nil
+}
+
+// nodeDeclaredFeaturesInUse returns true if the node.status has DeclaredFeatures
+func nodeDeclaredFeaturesInUse(node *api.Node) bool {
+	return node != nil && node.Status.DeclaredFeatures != nil
+}
+
+// nodePodPreemptionPolicyInUse returns true if the node.spec has PodPreemptionPolicy
+func nodePodPreemptionPolicyInUse(node *api.Node) bool {
+	return node != nil && node.Spec.PodPreemptionPolicy != nil
 }

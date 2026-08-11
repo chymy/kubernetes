@@ -19,13 +19,17 @@ package storage
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
+	"k8s.io/apiserver/pkg/registry/rest"
 	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
+	podtest "k8s.io/kubernetes/pkg/api/pod/testing"
 	"k8s.io/kubernetes/pkg/apis/apps"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/registry/registrytest"
@@ -62,18 +66,7 @@ func newValidDaemonSet() *apps.DaemonSet {
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"a": "b"},
 				},
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:                     "test",
-							Image:                    "test_image",
-							ImagePullPolicy:          api.PullIfNotPresent,
-							TerminationMessagePolicy: api.TerminationMessageReadFile,
-						},
-					},
-					RestartPolicy: api.RestartPolicyAlways,
-					DNSPolicy:     api.DNSClusterFirst,
-				},
+				Spec: podtest.MakePodSpec(),
 			},
 		},
 	}
@@ -189,6 +182,37 @@ func TestWatch(t *testing.T) {
 	)
 }
 
+func TestUpdateStatus(t *testing.T) {
+	storage, statusStorage, server := newStorage(t)
+	defer server.Terminate(t)
+	defer storage.Store.DestroyFunc()
+
+	dsStart := newValidDaemonSet()
+	ctx := genericregistrytest.NewNamespaceScopeContext(storage.Store, dsStart.Namespace)
+	statusCtx := genericregistrytest.NewNamespaceScopeContext(storage.Store, dsStart.Namespace, "status")
+	key, _ := storage.KeyFunc(ctx, dsStart.Name)
+	err := storage.Storage.Create(ctx, key, dsStart, nil, 0, false)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	ds := dsStart.DeepCopy()
+	ds.Status.ObservedGeneration = 1
+	_, _, err = statusStorage.Update(statusCtx, ds.Name, rest.DefaultUpdatedObjectInfo(ds), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	obj, err := storage.Get(ctx, ds.Name, &metav1.GetOptions{})
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	dsOut := obj.(*apps.DaemonSet)
+	// only compare relevant changes b/c of difference in metadata
+	if !apiequality.Semantic.DeepEqual(ds.Status, dsOut.Status) {
+		t.Errorf("unexpected object: %s", cmp.Diff(ds.Status, dsOut.Status))
+	}
+}
+
 func TestShortNames(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
@@ -196,5 +220,3 @@ func TestShortNames(t *testing.T) {
 	expected := []string{"ds"}
 	registrytest.AssertShortNames(t, storage, expected)
 }
-
-// TODO TestUpdateStatus

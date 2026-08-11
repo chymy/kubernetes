@@ -43,7 +43,7 @@ var (
 	regex         = flag.String("include-path", "(test/e2e/|test/e2e_node)", "only files with paths matching this regex is touched")
 	isTerminal    = term.IsTerminal(int(os.Stdout.Fd()))
 	logPrefix     = ""
-	aliases       map[string]string
+	aliases       = map[*regexp.Regexp]string{}
 )
 
 type analyzer struct {
@@ -95,7 +95,17 @@ func (a *analyzer) collect(dir string) {
 				if imp.Name != nil {
 					importName = imp.Name.Name
 				}
-				if alias, ok := aliases[importPath]; ok {
+				for re, template := range aliases {
+					match := re.FindStringSubmatchIndex(importPath)
+					if match == nil {
+						// No match.
+						continue
+					}
+					if match[0] > 0 || match[1] < len(importPath) {
+						// Not a full match.
+						continue
+					}
+					alias := string(re.ExpandString(nil, template, importPath, match))
 					if alias != importName {
 						if !*confirm {
 							fmt.Fprintf(os.Stderr, "%sERROR wrong alias for import \"%s\" should be %s in file %s\n", logPrefix, importPath, alias, pathToFile)
@@ -108,6 +118,7 @@ func (a *analyzer) collect(dir string) {
 							imp.Name = ast.NewIdent(alias)
 						}
 					}
+					break
 				}
 			}
 
@@ -189,10 +200,6 @@ func (c *collector) handlePath(path string, info os.FileInfo, err error) error {
 	if info.IsDir() {
 		// Ignore hidden directories (.git, .cache, etc)
 		if len(path) > 1 && path[0] == '.' ||
-			// Staging code is symlinked from vendor/k8s.io, and uses import
-			// paths as if it were inside of vendor/. It fails typechecking
-			// inside of staging/, but works when typechecked as part of vendor/.
-			path == "staging" ||
 			// OS-specific vendor code tends to be imported by OS-specific
 			// packages. We recursively typecheck imported vendored packages for
 			// each OS, but don't typecheck everything for every OS.
@@ -238,9 +245,17 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error reading import aliases: %v", err)
 		}
-		err = json.Unmarshal(bytes, &aliases)
+		var stringAliases map[string]string
+		err = json.Unmarshal(bytes, &stringAliases)
 		if err != nil {
 			log.Fatalf("Error loading aliases: %v", err)
+		}
+		for pattern, name := range stringAliases {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				log.Fatalf("Error parsing import path pattern %q as regular expression: %v", pattern, err)
+			}
+			aliases[re] = name
 		}
 	}
 	if isTerminal {

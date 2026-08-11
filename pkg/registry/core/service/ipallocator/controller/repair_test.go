@@ -23,9 +23,9 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/component-base/metrics/testutil"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/registry/core/service/ipallocator"
 	netutils "k8s.io/utils/net"
@@ -78,6 +78,8 @@ func TestRepair(t *testing.T) {
 }
 
 func TestRepairLeak(t *testing.T) {
+	clearMetrics()
+
 	_, cidr, _ := netutils.ParseCIDRSloppy("192.168.1.0/24")
 	previous, err := ipallocator.NewInMemory(cidr)
 	if err != nil {
@@ -127,9 +129,21 @@ func TestRepairLeak(t *testing.T) {
 	if after.Has(netutils.ParseIPSloppy("192.168.1.10")) {
 		t.Errorf("expected ipallocator to not have leaked IP")
 	}
+	em := testMetrics{
+		leak:       1,
+		repair:     0,
+		outOfRange: 0,
+		duplicate:  0,
+		unknown:    0,
+		invalid:    0,
+		full:       0,
+	}
+	expectMetrics(t, em)
 }
 
 func TestRepairWithExisting(t *testing.T) {
+	clearMetrics()
+
 	_, cidr, _ := netutils.ParseCIDRSloppy("192.168.1.0/24")
 	previous, err := ipallocator.NewInMemory(cidr)
 	if err != nil {
@@ -148,7 +162,7 @@ func TestRepairWithExisting(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.1.1",
 				ClusterIPs: []string{"192.168.1.1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{
@@ -156,7 +170,7 @@ func TestRepairWithExisting(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.1.100",
 				ClusterIPs: []string{"192.168.1.100"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{ // outside CIDR, will be dropped
@@ -164,7 +178,7 @@ func TestRepairWithExisting(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.0.1",
 				ClusterIPs: []string{"192.168.0.1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{ // empty, ignored
@@ -179,7 +193,7 @@ func TestRepairWithExisting(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.1.1",
 				ClusterIPs: []string{"192.168.1.1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{ // headless
@@ -214,6 +228,16 @@ func TestRepairWithExisting(t *testing.T) {
 	if free := after.Free(); free != 252 {
 		t.Errorf("unexpected ipallocator state: %d free (expected 252)", free)
 	}
+	em := testMetrics{
+		leak:       0,
+		repair:     2,
+		outOfRange: 1,
+		duplicate:  1,
+		unknown:    0,
+		invalid:    0,
+		full:       0,
+	}
+	expectMetrics(t, em)
 }
 
 func makeRangeRegistry(t *testing.T, cidrRange string) *mockRangeRegistry {
@@ -250,31 +274,31 @@ func makeIPNet(cidr string) *net.IPNet {
 func TestShouldWorkOnSecondary(t *testing.T) {
 	testCases := []struct {
 		name             string
-		expectedFamilies []v1.IPFamily
+		expectedFamilies []corev1.IPFamily
 		primaryNet       *net.IPNet
 		secondaryNet     *net.IPNet
 	}{
 		{
 			name:             "primary only (v4)",
-			expectedFamilies: []v1.IPFamily{v1.IPv4Protocol},
+			expectedFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			primaryNet:       makeIPNet("10.0.0.0/16"),
 			secondaryNet:     nil,
 		},
 		{
 			name:             "primary only (v6)",
-			expectedFamilies: []v1.IPFamily{v1.IPv6Protocol},
+			expectedFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
 			primaryNet:       makeIPNet("2000::/120"),
 			secondaryNet:     nil,
 		},
 		{
 			name:             "primary and secondary provided (v4,v6)",
-			expectedFamilies: []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol},
+			expectedFamilies: []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol},
 			primaryNet:       makeIPNet("10.0.0.0/16"),
 			secondaryNet:     makeIPNet("2000::/120"),
 		},
 		{
 			name:             "primary and secondary provided (v6,v4)",
-			expectedFamilies: []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol},
+			expectedFamilies: []corev1.IPFamily{corev1.IPv6Protocol, corev1.IPv4Protocol},
 			primaryNet:       makeIPNet("2000::/120"),
 			secondaryNet:     makeIPNet("10.0.0.0/16"),
 		},
@@ -295,7 +319,7 @@ func TestShouldWorkOnSecondary(t *testing.T) {
 				t.Fatalf("expected to have allocator by family count:%v got %v", len(tc.expectedFamilies), len(repair.allocatorByFamily))
 			}
 
-			seen := make(map[v1.IPFamily]bool)
+			seen := make(map[corev1.IPFamily]bool)
 			for _, family := range tc.expectedFamilies {
 				familySeen := true
 
@@ -324,6 +348,8 @@ func TestShouldWorkOnSecondary(t *testing.T) {
 }
 
 func TestRepairDualStack(t *testing.T) {
+	clearMetrics()
+
 	fakeClient := fake.NewSimpleClientset()
 	ipregistry := &mockRangeRegistry{
 		item: &api.RangeAllocation{Range: "192.168.1.0/24"},
@@ -346,6 +372,14 @@ func TestRepairDualStack(t *testing.T) {
 		t.Errorf("unexpected ipregistry: %#v", ipregistry)
 	}
 
+	repairErrors, err := testutil.GetCounterMetricValue(clusterIPRepairReconcileErrors)
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairReconcileErrors.Name, err)
+	}
+	if repairErrors != 0 {
+		t.Fatalf("0 error expected, got %v", repairErrors)
+	}
+
 	ipregistry = &mockRangeRegistry{
 		item:      &api.RangeAllocation{Range: "192.168.1.0/24"},
 		updateErr: fmt.Errorf("test error"),
@@ -359,9 +393,17 @@ func TestRepairDualStack(t *testing.T) {
 	if err := r.runOnce(); !strings.Contains(err.Error(), ": test error") {
 		t.Fatal(err)
 	}
+	repairErrors, err = testutil.GetCounterMetricValue(clusterIPRepairReconcileErrors)
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairReconcileErrors.Name, err)
+	}
+	if repairErrors != 1 {
+		t.Fatalf("1 error expected, got %v", repairErrors)
+	}
 }
 
 func TestRepairLeakDualStack(t *testing.T) {
+	clearMetrics()
 	_, cidr, _ := netutils.ParseCIDRSloppy("192.168.1.0/24")
 	previous, err := ipallocator.NewInMemory(cidr)
 	if err != nil {
@@ -450,9 +492,22 @@ func TestRepairLeakDualStack(t *testing.T) {
 	if secondaryAfter.Has(netutils.ParseIPSloppy("2000::1")) {
 		t.Errorf("expected ipallocator to not have leaked IP")
 	}
+
+	em := testMetrics{
+		leak:       2,
+		repair:     0,
+		outOfRange: 0,
+		duplicate:  0,
+		unknown:    0,
+		invalid:    0,
+		full:       0,
+	}
+	expectMetrics(t, em)
+
 }
 
 func TestRepairWithExistingDualStack(t *testing.T) {
+	clearMetrics()
 	// because anything (other than allocator) depends
 	// on families assigned to service (not the value of IPFamilyPolicy)
 	// we can saftly create tests that has ipFamilyPolicy:nil
@@ -488,7 +543,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.1.1",
 				ClusterIPs: []string{"192.168.1.1", "2000::1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol},
 			},
 		},
 		&corev1.Service{
@@ -496,7 +551,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "2000::1",
 				ClusterIPs: []string{"2000::1", "192.168.1.100"},
-				IPFamilies: []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol, corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{
@@ -504,7 +559,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "2000::2",
 				ClusterIPs: []string{"2000::2"},
-				IPFamilies: []v1.IPFamily{v1.IPv6Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
 			},
 		},
 		&corev1.Service{
@@ -512,7 +567,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.1.90",
 				ClusterIPs: []string{"192.168.1.90"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		// outside CIDR, will be dropped
@@ -521,7 +576,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.0.1",
 				ClusterIPs: []string{"192.168.0.1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{ // outside CIDR, will be dropped
@@ -529,7 +584,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "3000::1",
 				ClusterIPs: []string{"3000::1"},
-				IPFamilies: []v1.IPFamily{v1.IPv6Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
 			},
 		},
 		&corev1.Service{
@@ -537,7 +592,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.0.1",
 				ClusterIPs: []string{"192.168.0.1", "3000::1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol},
 			},
 		},
 		&corev1.Service{
@@ -545,7 +600,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "3000::1",
 				ClusterIPs: []string{"3000::1", "192.168.0.1"},
-				IPFamilies: []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol, corev1.IPv4Protocol},
 			},
 		},
 
@@ -558,7 +613,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "192.168.1.1",
 				ClusterIPs: []string{"192.168.1.1"},
-				IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv4Protocol},
 			},
 		},
 		&corev1.Service{ // duplicate, dropped
@@ -566,7 +621,7 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "2000::2",
 				ClusterIPs: []string{"2000::2"},
-				IPFamilies: []v1.IPFamily{v1.IPv6Protocol},
+				IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol},
 			},
 		},
 
@@ -621,5 +676,68 @@ func TestRepairWithExistingDualStack(t *testing.T) {
 	}
 	if free := secondaryAfter.Free(); free != 65533 {
 		t.Errorf("unexpected ipallocator state: %d free (number of free ips is not 65532)", free)
+	}
+	em := testMetrics{
+		leak:       0,
+		repair:     5,
+		outOfRange: 6,
+		duplicate:  3,
+		unknown:    0,
+		invalid:    0,
+		full:       0,
+	}
+	expectMetrics(t, em)
+}
+
+// Metrics helpers
+func clearMetrics() {
+	clusterIPRepairIPErrors.Reset()
+	clusterIPRepairReconcileErrors.Reset()
+}
+
+type testMetrics struct {
+	leak       float64
+	repair     float64
+	outOfRange float64
+	full       float64
+	duplicate  float64
+	invalid    float64
+	unknown    float64
+}
+
+func expectMetrics(t *testing.T, em testMetrics) {
+	var m testMetrics
+	var err error
+
+	m.leak, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("leak"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	m.repair, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("repair"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	m.outOfRange, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("outOfRange"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	m.duplicate, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("duplicate"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	m.invalid, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("invalid"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	m.full, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("full"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	m.unknown, err = testutil.GetCounterMetricValue(clusterIPRepairIPErrors.WithLabelValues("unknown"))
+	if err != nil {
+		t.Errorf("failed to get %s value, err: %v", clusterIPRepairIPErrors.Name, err)
+	}
+	if m != em {
+		t.Fatalf("metrics error: expected %v, received %v", em, m)
 	}
 }

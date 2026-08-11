@@ -18,14 +18,14 @@ package config
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	util "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	internal "k8s.io/controller-manager/config"
-	"k8s.io/controller-manager/config/v1"
+	v1 "k8s.io/controller-manager/config/v1"
 	"k8s.io/controller-manager/config/v1alpha1"
 	"k8s.io/controller-manager/config/v1beta1"
 )
@@ -59,11 +59,11 @@ func init() {
 // The parsed LeaderMigrationConfiguration may be invalid.
 // It returns an error if the file did not exist.
 func ReadLeaderMigrationConfiguration(configFilePath string) (*internal.LeaderMigrationConfiguration, error) {
-	data, err := ioutil.ReadFile(configFilePath)
+	data, err := os.ReadFile(configFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read leader migration configuration from %q: %w", configFilePath, err)
 	}
-	config, gvk, err := serializer.NewCodecFactory(cfgScheme).UniversalDecoder().Decode(data, nil, nil)
+	config, gvk, err := serializer.NewCodecFactory(cfgScheme, serializer.EnableStrict).UniversalDecoder().Decode(data, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +100,10 @@ func validateControllerLeaderConfiguration(path *field.Path, config *internal.Co
 		return
 	}
 	if config.Component == "" {
-		allErrs = append(allErrs, field.Required(path.Child("component"), "component must be set"))
+		allErrs = append(allErrs, field.Required(path.Child("component"), ""))
 	}
 	if config.Name == "" {
-		allErrs = append(allErrs, field.Required(path.Child("name"), "name must be set"))
+		allErrs = append(allErrs, field.Required(path.Child("name"), ""))
 	}
 	return
 }

@@ -18,7 +18,6 @@ package dns
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"strconv"
@@ -29,12 +28,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/record"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
-	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/kubernetes/test/utils/ktesting"
 	netutils "k8s.io/utils/net"
 
 	"github.com/stretchr/testify/assert"
@@ -42,7 +39,10 @@ import (
 )
 
 var (
-	fetchEvent = func(recorder *record.FakeRecorder) string {
+	// testHostNameserver and testHostDomain are also being used in dns_windows_test.go.
+	testHostNameserver = "8.8.8.8"
+	testHostDomain     = "host.domain"
+	fetchEvent         = func(recorder *record.FakeRecorder) string {
 		select {
 		case event := <-recorder.Events:
 			return event
@@ -77,8 +77,11 @@ func TestParseResolvConf(t *testing.T) {
 		{"nameserver \t 1.2.3.4", []string{"1.2.3.4"}, []string{}, []string{}, false},
 		{"nameserver 1.2.3.4\nnameserver 5.6.7.8", []string{"1.2.3.4", "5.6.7.8"}, []string{}, []string{}, false},
 		{"nameserver 1.2.3.4 #comment", []string{"1.2.3.4"}, []string{}, []string{}, false},
-		{"search ", []string{}, []string{}, []string{}, false}, // search empty
-		{"search .", []string{}, []string{"."}, []string{}, false},
+		{"search ", []string{}, []string{}, []string{}, false},  // search empty
+		{"search .", []string{}, []string{}, []string{}, false}, // ignore lone dot
+		{"search . foo", []string{}, []string{"foo"}, []string{}, false},
+		{"search foo .", []string{}, []string{"foo"}, []string{}, false},
+		{"search foo .  bar", []string{}, []string{"foo", "bar"}, []string{}, false},
 		{"search foo", []string{}, []string{"foo"}, []string{}, false},
 		{"search foo bar", []string{}, []string{"foo", "bar"}, []string{}, false},
 		{"search foo. bar", []string{}, []string{"foo", "bar"}, []string{}, false},
@@ -89,7 +92,11 @@ func TestParseResolvConf(t *testing.T) {
 		{"#comment\nnameserver 1.2.3.4\n#comment\nsearch foo\ncomment", []string{"1.2.3.4"}, []string{"foo"}, []string{}, false},
 		{"options ", []string{}, []string{}, []string{}, false},
 		{"options ndots:5 attempts:2", []string{}, []string{}, []string{"ndots:5", "attempts:2"}, false},
+		{"options ndots:1 ndots:5 attempts:2", []string{}, []string{}, []string{"ndots:5", "attempts:2"}, false},
+		{"options ndots:1 edns0 attempts:2 single-request-reopen", []string{}, []string{}, []string{"edns0", "attempts:2", "single-request-reopen", "ndots:1"}, false},
 		{"options ndots:1\noptions ndots:5 attempts:3", []string{}, []string{}, []string{"ndots:5", "attempts:3"}, false},
+		{"options ndots:1 timeout:3 timeout:1 attempts:3\noptions ndots:5", []string{}, []string{}, []string{"ndots:5", "timeout:1", "attempts:3"}, false},
+		{"options ndots:1 attempts:3\noptions ndots:1 attempts:3 ndots:5", []string{}, []string{}, []string{"ndots:5", "attempts:3"}, false},
 		{"nameserver 1.2.3.4\nsearch foo\nnameserver 5.6.7.8\nsearch bar\noptions ndots:5 attempts:4", []string{"1.2.3.4", "5.6.7.8"}, []string{"bar"}, []string{"ndots:5", "attempts:4"}, false},
 	}
 	for i, tc := range testCases {
@@ -98,7 +105,7 @@ func TestParseResolvConf(t *testing.T) {
 			require.NoError(t, err)
 			assert.EqualValues(t, tc.nameservers, ns, "test case [%d]: name servers", i)
 			assert.EqualValues(t, tc.searches, srch, "test case [%d] searches", i)
-			assert.EqualValues(t, tc.options, opts, "test case [%d] options", i)
+			assert.EqualValues(t, sets.New[string](tc.options...), sets.New[string](opts...), "test case [%d] options", i)
 		} else {
 			require.Error(t, err, "tc.searches %v", tc.searches)
 		}
@@ -147,11 +154,10 @@ func TestFormDNSSearchFitsLimits(t *testing.T) {
 	}
 
 	testCases := []struct {
-		desc              string
-		hostNames         []string
-		resultSearch      []string
-		events            []string
-		expandedDNSConfig bool
+		desc         string
+		hostNames    []string
+		resultSearch []string
+		events       []string
 	}{
 		{
 			desc:         "valid: 3 search paths",
@@ -175,58 +181,52 @@ func TestFormDNSSearchFitsLimits(t *testing.T) {
 		},
 
 		{
-			desc:              "valid ExpandedDNSConfig: 2048 characters in search path list",
-			hostNames:         searchPathList2048Chars,
-			resultSearch:      searchPathList2048Chars,
-			events:            []string{},
-			expandedDNSConfig: true,
+			desc:         "valid: 2048 characters in search path list",
+			hostNames:    searchPathList2048Chars,
+			resultSearch: searchPathList2048Chars,
+			events:       []string{},
 		},
 
 		{
-			desc:              "invalid ExpandedDNSConfig: 2050 characters in search path list",
-			hostNames:         append(searchPathList2048Chars, "B"),
-			resultSearch:      searchPathList2048Chars,
-			events:            []string{fmt.Sprintf("Search Line limits were exceeded, some search paths have been omitted, the applied search line is: %s", strings.Join(searchPathList2048Chars, " "))},
-			expandedDNSConfig: true,
+			desc:         "invalid: 2050 characters in search path list",
+			hostNames:    append(searchPathList2048Chars, "B"),
+			resultSearch: searchPathList2048Chars,
+			events:       []string{fmt.Sprintf("Search Line limits were exceeded, some search paths have been omitted, the applied search line is: %s", strings.Join(searchPathList2048Chars, " "))},
 		},
 
 		{
-			desc:              "invalid ExpandedDNSConfig: 256 characters search path",
-			hostNames:         []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", strings.Repeat("B", 256), "BBB"},
-			resultSearch:      []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB"},
-			events:            []string{"Search Line limits were exceeded, some search paths have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST AAA BBB"},
-			expandedDNSConfig: true,
+			desc:         "invalid: 256 characters search path",
+			hostNames:    []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", strings.Repeat("B", 256), "BBB"},
+			resultSearch: []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB"},
+			events:       []string{"Search Line limits were exceeded, some search paths have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST AAA BBB"},
 		},
 
 		{
-			desc:         "invalid: 7 search paths",
+			desc:         "valid: 7 search paths",
 			hostNames:    []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB", "CCC", "DDD"},
-			resultSearch: []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB", "CCC"},
-			events:       []string{"Search Line limits were exceeded, some search paths have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST AAA BBB CCC"},
+			resultSearch: []string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB", "CCC", "DDD"},
+			events:       []string{},
 		},
 
 		{
-			desc:              "valid ExpandedDNSConfig: 32 search paths",
-			hostNames:         []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"},
-			resultSearch:      []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"},
-			events:            []string{},
-			expandedDNSConfig: true,
+			desc:         "valid: 32 search paths",
+			hostNames:    []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"},
+			resultSearch: []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"},
+			events:       []string{},
 		},
 
 		{
-			desc:              "invalid ExpandedDNSConfig: 33 search paths",
-			hostNames:         []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33"},
-			resultSearch:      []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"},
-			events:            []string{"Search Line limits were exceeded, some search paths have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32"},
-			expandedDNSConfig: true,
+			desc:         "invalid: 33 search paths",
+			hostNames:    []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33"},
+			resultSearch: []string{"testNS.svc.TEST", "svc.TEST", "TEST", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"},
+			events:       []string{"Search Line limits were exceeded, some search paths have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32"},
 		},
 	}
 
 	for i, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExpandedDNSConfig, tc.expandedDNSConfig)()
-
-			dnsSearch := configurer.formDNSSearchFitsLimits(tc.hostNames, pod)
+			logger, _ := ktesting.NewTestContext(t)
+			dnsSearch := configurer.formDNSSearchFitsLimits(logger, tc.hostNames, pod)
 			assert.EqualValues(t, tc.resultSearch, dnsSearch, "test [%d]", i)
 			for _, expectedEvent := range tc.events {
 				expected := fmt.Sprintf("%s %s %s", v1.EventTypeWarning, "DNSConfigForming", expectedEvent)
@@ -285,7 +285,8 @@ func TestFormDNSNameserversFitsLimits(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		appliedNameservers := configurer.formDNSNameserversFitsLimits(tc.nameservers, pod)
+		logger, _ := ktesting.NewTestContext(t)
+		appliedNameservers := configurer.formDNSNameserversFitsLimits(logger, tc.nameservers, pod)
 		assert.EqualValues(t, tc.expectedNameserver, appliedNameservers, tc.desc)
 		event := fetchEvent(recorder)
 		if tc.expectedEvent && len(event) == 0 {
@@ -336,7 +337,7 @@ func TestMergeDNSOptions(t *testing.T) {
 	for _, tc := range testCases {
 		options := mergeDNSOptions(tc.existingDNSConfigOptions, tc.dnsConfigOptions)
 		// Options order may be changed after conversion.
-		if !sets.NewString(options...).Equal(sets.NewString(tc.expectedOptions...)) {
+		if !sets.New[string](options...).Equal(sets.New[string](tc.expectedOptions...)) {
 			t.Errorf("%s: mergeDNSOptions(%v, %v)=%v, want %v", tc.desc, tc.existingDNSConfigOptions, tc.dnsConfigOptions, options, tc.expectedOptions)
 		}
 	}
@@ -447,29 +448,7 @@ func TestGetPodDNSType(t *testing.T) {
 }
 
 func TestGetPodDNS(t *testing.T) {
-	testCases := []struct {
-		desc              string
-		expandedDNSConfig bool
-	}{
-		{
-			desc:              "Not ExpandedDNSConfig",
-			expandedDNSConfig: false,
-		},
-		{
-			desc:              "ExpandedDNSConfig",
-			expandedDNSConfig: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.desc, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExpandedDNSConfig, tc.expandedDNSConfig)()
-			testGetPodDNS(t)
-		})
-	}
-}
-
-func testGetPodDNS(t *testing.T) {
+	ctx := ktesting.Init(t)
 	recorder := record.NewFakeRecorder(20)
 	nodeRef := &v1.ObjectReference{
 		Kind:      "Node",
@@ -496,7 +475,7 @@ func testGetPodDNS(t *testing.T) {
 	}, 4)
 	for i, pod := range pods {
 		var err error
-		dnsConfig, err := configurer.GetPodDNS(pod)
+		dnsConfig, err := configurer.GetPodDNS(ctx, pod)
 		if err != nil {
 			t.Fatalf("failed to generate container options: %v", err)
 		}
@@ -527,11 +506,12 @@ func testGetPodDNS(t *testing.T) {
 		t.Errorf("expected search \".\", got %+v", options[3].DNSSearch)
 	}
 
-	testResolverConfig := "/etc/resolv.conf"
-	configurer = NewConfigurer(recorder, nodeRef, nil, testClusterDNS, testClusterDNSDomain, testResolverConfig)
+	configurer = NewConfigurer(recorder, nodeRef, nil, testClusterDNS, testClusterDNSDomain, defaultResolvConf)
+	configurer.getHostDNSConfig = fakeGetHostDNSConfigCustom
+
 	for i, pod := range pods {
 		var err error
-		dnsConfig, err := configurer.GetPodDNS(pod)
+		dnsConfig, err := configurer.GetPodDNS(ctx, pod)
 		if err != nil {
 			t.Fatalf("failed to generate container options: %v", err)
 		}
@@ -545,10 +525,7 @@ func testGetPodDNS(t *testing.T) {
 	}
 	expLength := len(options[1].DNSSearch) + 3
 
-	maxDNSSearchPaths := validation.MaxDNSSearchPathsLegacy
-	if utilfeature.DefaultFeatureGate.Enabled(features.ExpandedDNSConfig) {
-		maxDNSSearchPaths = validation.MaxDNSSearchPathsExpanded
-	}
+	maxDNSSearchPaths := validation.MaxDNSSearchPaths
 
 	if expLength > maxDNSSearchPaths {
 		expLength = maxDNSSearchPaths
@@ -585,8 +562,6 @@ func TestGetPodDNSCustom(t *testing.T) {
 	testSvcDomain := fmt.Sprintf("svc.%s", testClusterDNSDomain)
 	testNsSvcDomain := fmt.Sprintf("%s.svc.%s", testPodNamespace, testClusterDNSDomain)
 	testNdotsOptionValue := "3"
-	testHostNameserver := "8.8.8.8"
-	testHostDomain := "host.domain"
 
 	testPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -596,7 +571,7 @@ func TestGetPodDNSCustom(t *testing.T) {
 	}
 
 	resolvConfContent := []byte(fmt.Sprintf("nameserver %s\nsearch %s\n", testHostNameserver, testHostDomain))
-	tmpfile, err := ioutil.TempFile("", "tmpResolvConf")
+	tmpfile, err := os.CreateTemp("", "tmpResolvConf")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,11 +670,12 @@ func TestGetPodDNSCustom(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := ktesting.Init(t)
 			testPod.Spec.HostNetwork = tc.hostnetwork
 			testPod.Spec.DNSConfig = tc.dnsConfig
 			testPod.Spec.DNSPolicy = tc.dnsPolicy
 
-			resDNSConfig, err := configurer.GetPodDNS(testPod)
+			resDNSConfig, err := configurer.GetPodDNS(ctx, testPod)
 			if err != nil {
 				t.Errorf("%s: GetPodDNS(%v), unexpected error: %v", tc.desc, testPod, err)
 			}
@@ -727,7 +703,7 @@ func dnsConfigsAreEqual(resConfig, expectedConfig *runtimeapi.DNSConfig) bool {
 		}
 	}
 	// Options order may be changed after conversion.
-	return sets.NewString(resConfig.Options...).Equal(sets.NewString(expectedConfig.Options...))
+	return sets.New[string](resConfig.Options...).Equal(sets.New[string](expectedConfig.Options...))
 }
 
 func newTestPods(count int) []*v1.Pod {

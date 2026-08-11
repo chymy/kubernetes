@@ -22,12 +22,15 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/server"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/rest"
+	"k8s.io/component-base/compatibility"
 	"k8s.io/component-base/featuregate"
 )
 
@@ -43,12 +46,13 @@ type AdmissionOptions struct {
 
 // NewAdmissionOptions creates a new instance of AdmissionOptions
 // Note:
-//  In addition it calls RegisterAllAdmissionPlugins to register
-//  all kube-apiserver admission plugins.
 //
-//  Provides the list of RecommendedPluginOrder that holds sane values
-//  that can be used by servers that don't care about admission chain.
-//  Servers that do care can overwrite/append that field after creation.
+//	In addition it calls RegisterAllAdmissionPlugins to register
+//	all kube-apiserver admission plugins.
+//
+//	Provides the list of RecommendedPluginOrder that holds sane values
+//	that can be used by servers that don't care about admission chain.
+//	Servers that do care can overwrite/append that field after creation.
 func NewAdmissionOptions() *AdmissionOptions {
 	options := genericoptions.NewAdmissionOptions()
 	// register all admission plugins
@@ -65,6 +69,10 @@ func NewAdmissionOptions() *AdmissionOptions {
 
 // AddFlags adds flags related to admission for kube-apiserver to the specified FlagSet
 func (a *AdmissionOptions) AddFlags(fs *pflag.FlagSet) {
+	if a == nil {
+		return
+	}
+	registerAllAdmissionPluginFlags(fs)
 	fs.StringSliceVar(&a.PluginNames, "admission-control", a.PluginNames, ""+
 		"Admission is divided into two phases. "+
 		"In the first phase, only mutating admission plugins run. "+
@@ -107,8 +115,10 @@ func (a *AdmissionOptions) Validate() []error {
 func (a *AdmissionOptions) ApplyTo(
 	c *server.Config,
 	informers informers.SharedInformerFactory,
-	kubeAPIServerClientConfig *rest.Config,
+	kubeClient kubernetes.Interface,
+	dynamicClient dynamic.Interface,
 	features featuregate.FeatureGate,
+	effectiveVersion compatibility.EffectiveVersion,
 	pluginInitializers ...admission.PluginInitializer,
 ) error {
 	if a == nil {
@@ -120,7 +130,7 @@ func (a *AdmissionOptions) ApplyTo(
 		a.GenericAdmission.EnablePlugins, a.GenericAdmission.DisablePlugins = computePluginNames(a.PluginNames, a.GenericAdmission.RecommendedPluginOrder)
 	}
 
-	return a.GenericAdmission.ApplyTo(c, informers, kubeAPIServerClientConfig, features, pluginInitializers...)
+	return a.GenericAdmission.ApplyTo(c, informers, kubeClient, dynamicClient, features, effectiveVersion, pluginInitializers...)
 }
 
 // explicitly disable all plugins that are not in the enabled list

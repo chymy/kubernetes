@@ -17,29 +17,64 @@ limitations under the License.
 package cached
 
 import (
+	"context"
 	"sync"
 
-	openapi_v3 "github.com/google/gnostic/openapiv3"
 	"k8s.io/client-go/openapi"
 )
 
 type groupversion struct {
-	delegate openapi.GroupVersion
-	once     sync.Once
-	doc      *openapi_v3.Document
-	err      error
+	delegate openapi.GroupVersionWithContext
+
+	lock sync.Mutex
+	docs map[string]docInfo
 }
 
-func newGroupVersion(delegate openapi.GroupVersion) *groupversion {
+var (
+	//nolint:staticcheck // Intentionally using the old interface here.
+	_ openapi.GroupVersion            = &groupversion{}
+	_ openapi.GroupVersionWithContext = &groupversion{}
+)
+
+type docInfo struct {
+	data []byte
+	err  error
+}
+
+func newGroupVersion(delegate openapi.GroupVersionWithContext) *groupversion {
 	return &groupversion{
 		delegate: delegate,
 	}
 }
 
-func (g *groupversion) Schema() (*openapi_v3.Document, error) {
-	g.once.Do(func() {
-		g.doc, g.err = g.delegate.Schema()
-	})
+// SchemaWithContext is a better alternative because it supports contextual logging and cancellation.
+//
+// Contextual logging: Use SchemaWithContext instead.
+func (g *groupversion) Schema(contentType string) ([]byte, error) {
+	return g.SchemaWithContext(context.Background(), contentType)
+}
 
-	return g.doc, g.err
+func (g *groupversion) SchemaWithContext(ctx context.Context, contentType string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
+	cachedInfo, ok := g.docs[contentType]
+	if !ok {
+		if g.docs == nil {
+			g.docs = make(map[string]docInfo)
+		}
+
+		cachedInfo.data, cachedInfo.err = g.delegate.SchemaWithContext(ctx, contentType)
+		g.docs[contentType] = cachedInfo
+	}
+
+	return cachedInfo.data, cachedInfo.err
+}
+
+func (c *groupversion) ServerRelativeURL() string {
+	return c.delegate.ServerRelativeURL()
 }

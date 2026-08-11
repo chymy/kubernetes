@@ -22,7 +22,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
@@ -39,7 +38,8 @@ import (
 
 // atomsToAttrs states which attributes of which tags require URL substitution.
 // Sources: http://www.w3.org/TR/REC-html40/index/attributes.html
-//          http://www.w3.org/html/wg/drafts/html/master/index.html#attributes-1
+//
+//	http://www.w3.org/html/wg/drafts/html/master/index.html#attributes-1
 var atomsToAttrs = map[atom.Atom]sets.String{
 	atom.A:          sets.NewString("href"),
 	atom.Applet:     sets.NewString("codebase"),
@@ -249,7 +249,7 @@ func (t *Transport) rewriteResponse(req *http.Request, resp *http.Response) (*ht
 		// This is fine
 	default:
 		// Some encoding we don't understand-- don't try to parse this
-		klog.Errorf("Proxy encountered encoding %v for text/html; can't understand this so not fixing links.", encoding)
+		klog.FromContext(req.Context()).Error(nil, "Proxy encountered unknown encoding for text/html, can't understand this so not fixing links", "encoding", encoding)
 		return resp, nil
 	}
 
@@ -258,11 +258,11 @@ func (t *Transport) rewriteResponse(req *http.Request, resp *http.Response) (*ht
 	}
 	err := rewriteHTML(reader, writer, urlRewriter)
 	if err != nil {
-		klog.Errorf("Failed to rewrite URLs: %v", err)
+		klog.FromContext(req.Context()).Error(err, "Failed to rewrite URLs")
 		return resp, err
 	}
 
-	resp.Body = ioutil.NopCloser(newContent)
+	resp.Body = io.NopCloser(newContent)
 	// Update header node with new content-length
 	// TODO: Remove any hash/signature headers here?
 	resp.Header.Del("Content-Length")

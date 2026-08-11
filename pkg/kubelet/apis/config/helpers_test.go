@@ -30,11 +30,11 @@ func TestKubeletConfigurationPathFields(t *testing.T) {
 	if i := kubeletConfigurationPathFieldPaths.Intersection(kubeletConfigurationNonPathFieldPaths); len(i) > 0 {
 		t.Fatalf("expect the intersection of kubeletConfigurationPathFieldPaths and "+
 			"KubeletConfigurationNonPathFields to be empty, got:\n%s",
-			strings.Join(i.List(), "\n"))
+			strings.Join(sets.List(i), "\n"))
 	}
 
 	// ensure that kubeletConfigurationPathFields U kubeletConfigurationNonPathFields == allPrimitiveFieldPaths(KubeletConfiguration)
-	expect := sets.NewString().Union(kubeletConfigurationPathFieldPaths).Union(kubeletConfigurationNonPathFieldPaths)
+	expect := sets.New[string]().Union(kubeletConfigurationPathFieldPaths).Union(kubeletConfigurationNonPathFieldPaths)
 	result := allPrimitiveFieldPaths(t, expect, reflect.TypeOf(&KubeletConfiguration{}), nil)
 	if !expect.Equal(result) {
 		// expected fields missing from result
@@ -46,38 +46,38 @@ func TestKubeletConfigurationPathFields(t *testing.T) {
 				"If the field has been removed, please remove it from the kubeletConfigurationPathFieldPaths set "+
 				"and the KubeletConfigurationPathRefs function, "+
 				"or remove it from the kubeletConfigurationNonPathFieldPaths set, as appropriate:\n%s",
-				strings.Join(missing.List(), "\n"))
+				strings.Join(sets.List(missing), "\n"))
 		}
 		if len(unexpected) > 0 {
 			t.Errorf("the following fields were in the result, but unexpected. "+
 				"If the field is new, please add it to the kubeletConfigurationPathFieldPaths set "+
 				"and the KubeletConfigurationPathRefs function, "+
 				"or add it to the kubeletConfigurationNonPathFieldPaths set, as appropriate:\n%s",
-				strings.Join(unexpected.List(), "\n"))
+				strings.Join(sets.List(unexpected), "\n"))
 		}
 	}
 }
 
 // allPrimitiveFieldPaths returns the set of field paths in type `tp`, rooted at `path`.
 // It recursively descends into the definition of type `tp` accumulating paths to primitive leaf fields or paths in `skipRecurseList`.
-func allPrimitiveFieldPaths(t *testing.T, skipRecurseList sets.String, tp reflect.Type, path *field.Path) sets.String {
+func allPrimitiveFieldPaths(t *testing.T, skipRecurseList sets.Set[string], tp reflect.Type, path *field.Path) sets.Set[string] {
 	// if the current field path is in the list of paths we should not recurse into,
 	// return here rather than descending and accumulating child field paths
 	if pathStr := path.String(); len(pathStr) > 0 && skipRecurseList.Has(pathStr) {
-		return sets.NewString(pathStr)
+		return sets.New[string](pathStr)
 	}
 
-	paths := sets.NewString()
+	paths := sets.New[string]()
 	switch tp.Kind() {
-	case reflect.Ptr:
-		paths.Insert(allPrimitiveFieldPaths(t, skipRecurseList, tp.Elem(), path).List()...)
+	case reflect.Pointer:
+		paths.Insert(sets.List(allPrimitiveFieldPaths(t, skipRecurseList, tp.Elem(), path))...)
 	case reflect.Struct:
 		for i := 0; i < tp.NumField(); i++ {
 			field := tp.Field(i)
-			paths.Insert(allPrimitiveFieldPaths(t, skipRecurseList, field.Type, path.Child(field.Name)).List()...)
+			paths.Insert(sets.List(allPrimitiveFieldPaths(t, skipRecurseList, field.Type, path.Child(field.Name)))...)
 		}
 	case reflect.Map, reflect.Slice:
-		paths.Insert(allPrimitiveFieldPaths(t, skipRecurseList, tp.Elem(), path.Key("*")).List()...)
+		paths.Insert(sets.List(allPrimitiveFieldPaths(t, skipRecurseList, tp.Elem(), path.Key("*")))...)
 	case reflect.Interface:
 		t.Fatalf("unexpected interface{} field %s", path.String())
 	default:
@@ -115,7 +115,7 @@ type bar struct {
 }
 
 func TestAllPrimitiveFieldPaths(t *testing.T) {
-	expect := sets.NewString(
+	expect := sets.New[string](
 		"str",
 		"strptr",
 		"ints[*]",
@@ -140,28 +140,30 @@ func TestAllPrimitiveFieldPaths(t *testing.T) {
 		unexpected := result.Difference(expect)
 
 		if len(missing) > 0 {
-			t.Errorf("the following fields were expected, but missing from the result:\n%s", strings.Join(missing.List(), "\n"))
+			t.Errorf("the following fields were expected, but missing from the result:\n%s", strings.Join(sets.List(missing), "\n"))
 		}
 		if len(unexpected) > 0 {
-			t.Errorf("the following fields were in the result, but unexpected:\n%s", strings.Join(unexpected.List(), "\n"))
+			t.Errorf("the following fields were in the result, but unexpected:\n%s", strings.Join(sets.List(unexpected), "\n"))
 		}
 	}
 }
 
 var (
 	// KubeletConfiguration fields that contain file paths. If you update this, also update KubeletConfigurationPathRefs!
-	kubeletConfigurationPathFieldPaths = sets.NewString(
+	kubeletConfigurationPathFieldPaths = sets.New[string](
 		"StaticPodPath",
 		"Authentication.X509.ClientCAFile",
 		"TLSCertFile",
 		"TLSPrivateKeyFile",
 		"ResolverConfig",
+		"PodLogsDir",
 	)
 
 	// KubeletConfiguration fields that do not contain file paths.
-	kubeletConfigurationNonPathFieldPaths = sets.NewString(
+	kubeletConfigurationNonPathFieldPaths = sets.New[string](
 		"Address",
 		"AllowedUnsafeSysctls[*]",
+		"DefaultPodSysctls[*]",
 		"Authentication.Anonymous.Enabled",
 		"Authentication.Webhook.CacheTTL.Duration",
 		"Authentication.Webhook.Enabled",
@@ -175,6 +177,7 @@ var (
 		"CPUManagerReconcilePeriod.Duration",
 		"TopologyManagerPolicy",
 		"TopologyManagerScope",
+		"TopologyManagerPolicyOptions[*]",
 		"QOSReserved[*]",
 		"CgroupDriver",
 		"CgroupRoot",
@@ -184,11 +187,14 @@ var (
 		"ConfigMapAndSecretChangeDetectionStrategy",
 		"ContainerLogMaxFiles",
 		"ContainerLogMaxSize",
+		"ContainerLogMaxWorkers",
+		"ContainerLogMonitorInterval",
 		"ContentType",
 		"EnableContentionProfiling",
 		"EnableControllerAttachDetach",
 		"EnableDebugFlagsHandler",
 		"EnableDebuggingHandlers",
+		"EnableSystemLogQuery",
 		"EnableProfilingHandler",
 		"EnableServer",
 		"EnableSystemLogHandler",
@@ -210,24 +216,36 @@ var (
 		"HealthzPort",
 		"Logging.FlushFrequency",
 		"Logging.Format",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.Format",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.d.Dec.scale",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.d.Dec.unscaled.abs[*]",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.d.Dec.unscaled.neg",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.i.scale",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.i.value",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.s",
-		"Logging.Options.JSON.SplitStream",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.Format",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.scale",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.abs[*]",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.neg",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.i.scale",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.i.value",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.s",
+		"Logging.Options.JSON.OutputRoutingOptions.SplitStream",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.Format",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.scale",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.abs[*]",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.neg",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.i.scale",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.i.value",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.s",
+		"Logging.Options.Text.OutputRoutingOptions.SplitStream",
 		"Logging.VModule[*].FilePattern",
 		"Logging.VModule[*].Verbosity",
+		"SingleProcessOOMKill",
 		"Logging.Verbosity",
 		"TLSCipherSuites[*]",
+		"TLSCurvePreferences[*]",
 		"TLSMinVersion",
 		"IPTablesDropBit",
 		"IPTablesMasqueradeBit",
 		"ImageGCHighThresholdPercent",
 		"ImageGCLowThresholdPercent",
 		"ImageMinimumGCAge.Duration",
+		"ImageMaximumGCAge.Duration",
+		"ImagePullCredentialsVerificationPolicy",
 		"KernelMemcgNotification",
 		"KubeAPIBurst",
 		"KubeAPIQPS",
@@ -243,6 +261,7 @@ var (
 		"MaxPods",
 		"MemoryManagerPolicy",
 		"MemorySwap.SwapBehavior",
+		"MergeDefaultEvictionSettings",
 		"NodeLeaseDurationSeconds",
 		"NodeStatusMaxImages",
 		"NodeStatusUpdateFrequency.Duration",
@@ -252,6 +271,7 @@ var (
 		"PodPidsLimit",
 		"PodsPerCore",
 		"Port",
+		"PreloadedImagesVerificationAllowlist[*]",
 		"ProtectKernelDefaults",
 		"ProviderID",
 		"ReadOnlyPort",
@@ -265,6 +285,7 @@ var (
 		"RunOnce",
 		"SeccompDefault",
 		"SerializeImagePulls",
+		"MaxParallelImagePulls",
 		"ShowHiddenMetricsForVersion",
 		"ShutdownGracePeriodByPodPriority[*].Priority",
 		"ShutdownGracePeriodByPodPriority[*].ShutdownGracePeriodSeconds",
@@ -280,5 +301,14 @@ var (
 		"ShutdownGracePeriod.Duration",
 		"ShutdownGracePeriodCriticalPods.Duration",
 		"MemoryThrottlingFactor",
+		"MemoryReservationPolicy",
+		"ContainerRuntimeEndpoint",
+		"ImageServiceEndpoint",
+		"Tracing.Endpoint",
+		"Tracing.SamplingRatePerMillion",
+		"LocalStorageCapacityIsolation",
+		"FailCgroupV1",
+		"CrashLoopBackOff.MaxContainerRestartPeriod",
+		"UserNamespaces.IDsPerPod",
 	)
 )

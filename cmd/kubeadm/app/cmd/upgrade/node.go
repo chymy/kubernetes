@@ -17,30 +17,36 @@ limitations under the License.
 package upgrade
 
 import (
+	"fmt"
 	"io"
-	"os"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
+	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/validation"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
+	commonphases "k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/upgrade"
 	phases "k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/upgrade/node"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/workflow"
+	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
-	"k8s.io/kubernetes/cmd/kubeadm/app/phases/uploadconfig"
 	configutil "k8s.io/kubernetes/cmd/kubeadm/app/util/config"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/output"
+	staticpodutil "k8s.io/kubernetes/cmd/kubeadm/app/util/staticpod"
 )
 
 // nodeOptions defines all the options exposed via flags by kubeadm upgrade node.
 // Please note that this structure includes the public kubeadm config API, but only a subset of the options
 // supported by this api will be exposed as a flag.
 type nodeOptions struct {
+	cfgPath               string
 	kubeConfigPath        string
 	etcdUpgrade           bool
 	renewCerts            bool
@@ -58,11 +64,13 @@ type nodeData struct {
 	etcdUpgrade           bool
 	renewCerts            bool
 	dryRun                bool
-	cfg                   *kubeadmapi.InitConfiguration
+	dryRunDir             string
+	cfg                   *kubeadmapi.UpgradeConfiguration
+	initCfg               *kubeadmapi.InitConfiguration
 	isControlPlaneNode    bool
 	client                clientset.Interface
 	patchesDir            string
-	ignorePreflightErrors sets.String
+	ignorePreflightErrors sets.Set[string]
 	kubeConfigPath        string
 	outputWriter          io.Writer
 }
@@ -76,7 +84,27 @@ func newCmdNode(out io.Writer) *cobra.Command {
 		Use:   "node",
 		Short: "Upgrade commands for a node in the cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return nodeRunner.Run(args)
+			if err := validation.ValidateMixedArguments(cmd.Flags()); err != nil {
+				return err
+			}
+
+			data, err := nodeRunner.InitData(args)
+			if err != nil {
+				return err
+			}
+			nodeData, ok := data.(*nodeData)
+			if !ok {
+				return errors.New("invalid data struct")
+			}
+			if err := nodeRunner.Run(args); err != nil {
+				return err
+			}
+			if nodeData.DryRun() {
+				fmt.Println("[upgrade/successful] Finished dryrunning successfully!")
+				return nil
+			}
+
+			return nil
 		},
 		Args: cobra.NoArgs,
 	}
@@ -84,17 +112,29 @@ func newCmdNode(out io.Writer) *cobra.Command {
 	// adds flags to the node command
 	// flags could be eventually inherited by the sub-commands automatically generated for phases
 	addUpgradeNodeFlags(cmd.Flags(), nodeOptions)
+	options.AddConfigFlag(cmd.Flags(), &nodeOptions.cfgPath)
 	options.AddPatchesFlag(cmd.Flags(), &nodeOptions.patchesDir)
 
 	// initialize the workflow runner with the list of phases
 	nodeRunner.AppendPhase(phases.NewPreflightPhase())
 	nodeRunner.AppendPhase(phases.NewControlPlane())
-	nodeRunner.AppendPhase(phases.NewKubeletConfigPhase())
+	nodeRunner.AppendPhase(phases.NewKubeconfigPhase())
+	nodeRunner.AppendPhase(commonphases.NewKubeletConfigPhase())
+	nodeRunner.AppendPhase(commonphases.NewAddonPhase())
+	nodeRunner.AppendPhase(commonphases.NewPostUpgradePhase())
 
 	// sets the data builder function, that will be used by the runner
 	// both when running the entire workflow or single phases
 	nodeRunner.SetDataInitializer(func(cmd *cobra.Command, args []string) (workflow.RunData, error) {
-		return newNodeData(cmd, args, nodeOptions, out)
+		data, err := newNodeData(cmd, nodeOptions, out)
+		if err != nil {
+			return nil, err
+		}
+		// If the flag for skipping phases was empty, use the values from config
+		if len(nodeRunner.Options.SkipPhases) == 0 {
+			nodeRunner.Options.SkipPhases = data.cfg.Node.SkipPhases
+		}
+		return data, nil
 	})
 
 	// binds the Runner to kubeadm upgrade node command by altering
@@ -107,7 +147,7 @@ func newCmdNode(out io.Writer) *cobra.Command {
 // newNodeOptions returns a struct ready for being used for creating cmd kubeadm upgrade node flags.
 func newNodeOptions() *nodeOptions {
 	return &nodeOptions{
-		kubeConfigPath: constants.GetKubeletKubeConfigPath(),
+		kubeConfigPath: "", // This is populated in newNodeData() on runtime
 		dryRun:         false,
 		renewCerts:     true,
 		etcdUpgrade:    true,
@@ -125,52 +165,79 @@ func addUpgradeNodeFlags(flagSet *flag.FlagSet, nodeOptions *nodeOptions) {
 // newNodeData returns a new nodeData struct to be used for the execution of the kubeadm upgrade node workflow.
 // This func takes care of validating nodeOptions passed to the command, and then it converts
 // options into the internal InitConfiguration type that is used as input all the phases in the kubeadm upgrade node workflow
-func newNodeData(cmd *cobra.Command, args []string, options *nodeOptions, out io.Writer) (*nodeData, error) {
-	client, err := getClient(options.kubeConfigPath, options.dryRun)
-	if err != nil {
-		return nil, errors.Wrapf(err, "couldn't create a Kubernetes client from file %q", options.kubeConfigPath)
+func newNodeData(cmd *cobra.Command, nodeOptions *nodeOptions, out io.Writer) (*nodeData, error) {
+	isControlPlaneNode := staticpodutil.IsControlPlaneNode()
+
+	if len(nodeOptions.kubeConfigPath) == 0 {
+		// Update the kubeconfig path depending on whether this is a control plane node or not.
+		nodeOptions.kubeConfigPath = constants.GetKubeletKubeConfigPath()
+		if isControlPlaneNode {
+			nodeOptions.kubeConfigPath = constants.GetAdminKubeConfigPath()
+		}
 	}
 
-	// isControlPlane checks if a node is a control-plane node by looking up
-	// the kube-apiserver manifest file
-	isControlPlaneNode := true
-	filepath := constants.GetStaticPodFilepath(constants.KubeAPIServer, constants.GetStaticPodDirectory())
-	if _, err := os.Stat(filepath); os.IsNotExist(err) {
-		isControlPlaneNode = false
-	}
-
-	// Fetches the cluster configuration
-	// NB in case of control-plane node, we are reading all the info for the node; in case of NOT control-plane node
-	//    (worker node), we are not reading local API address and the CRI socket from the node object
-	cfg, err := configutil.FetchInitConfigurationFromCluster(client, nil, "upgrade", !isControlPlaneNode, false)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to fetch the kubeadm-config ConfigMap")
-	}
-	// In case we fetch a configuration from the cluster, mutate the ImageRepository field
-	// to be 'registry.k8s.io', if it was 'k8s.gcr.io'. Don't mutate the in-cluster value by passing
-	// nil as the client field; this is done only on "apply".
-	// TODO: Remove this in 1.26
-	// https://github.com/kubernetes/kubeadm/issues/2671
-	_ = uploadconfig.MutateImageRepository(cfg, nil)
-
-	ignorePreflightErrorsSet, err := validation.ValidateIgnorePreflightErrors(options.ignorePreflightErrors, cfg.NodeRegistration.IgnorePreflightErrors)
+	externalCfg := &v1beta4.UpgradeConfiguration{}
+	opt := configutil.LoadOrDefaultConfigurationOptions{}
+	upgradeCfg, err := configutil.LoadOrDefaultUpgradeConfiguration(nodeOptions.cfgPath, externalCfg, opt)
 	if err != nil {
 		return nil, err
 	}
-	// Also set the union of pre-flight errors to JoinConfiguration, to provide a consistent view of the runtime configuration:
-	cfg.NodeRegistration.IgnorePreflightErrors = ignorePreflightErrorsSet.List()
+
+	dryRun, ok := cmdutil.ValueFromFlagsOrConfig(cmd.Flags(), options.DryRun, upgradeCfg.Node.DryRun, &nodeOptions.dryRun).(*bool)
+	if !ok {
+		return nil, cmdutil.TypeMismatchErr("dryRun", "bool")
+	}
+
+	// If dry running creates a temporary directory for saving kubeadm generated files.
+	dryRunDir := ""
+	if *dryRun {
+		if dryRunDir, err = constants.GetDryRunDir(constants.EnvVarUpgradeDryRunDir, "kubeadm-upgrade-node-dryrun", klog.Warningf); err != nil {
+			return nil, errors.Wrap(err, "could not create a temporary directory on dryrun")
+		}
+	}
+
+	printer := &output.TextPrinter{}
+	client, err := getClient(nodeOptions.kubeConfigPath, *dryRun, printer)
+	if err != nil {
+		return nil, errors.Wrapf(err, "couldn't create a Kubernetes client from file %q", nodeOptions.kubeConfigPath)
+	}
+
+	// Fetches the cluster configuration
+	getNodeRegistration := true
+	getAPIEndpoint := isControlPlaneNode
+	getComponentConfigs := true
+	initCfg, err := configutil.FetchInitConfigurationFromCluster(client, nil, "upgrade", getNodeRegistration, getAPIEndpoint, getComponentConfigs, false)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to fetch the kubeadm-config ConfigMap")
+	}
+
+	ignorePreflightErrorsSet, err := validation.ValidateIgnorePreflightErrors(nodeOptions.ignorePreflightErrors, upgradeCfg.Node.IgnorePreflightErrors)
+	if err != nil {
+		return nil, err
+	}
+	// Also set the union of pre-flight errors to InitConfiguration, to provide a consistent view of the runtime configuration:
+	initCfg.NodeRegistration.IgnorePreflightErrors = sets.List(ignorePreflightErrorsSet)
+
+	var patchesDir string
+	if upgradeCfg.Node.Patches != nil {
+		patchesDir = cmdutil.ValueFromFlagsOrConfig(cmd.Flags(), options.Patches, upgradeCfg.Node.Patches.Directory, nodeOptions.patchesDir).(string)
+	} else {
+		patchesDir = nodeOptions.patchesDir
+	}
 
 	return &nodeData{
-		etcdUpgrade:           options.etcdUpgrade,
-		renewCerts:            options.renewCerts,
-		dryRun:                options.dryRun,
-		cfg:                   cfg,
+		cfg:                   upgradeCfg,
+		dryRun:                *dryRun,
+		dryRunDir:             dryRunDir,
+		initCfg:               initCfg,
 		client:                client,
 		isControlPlaneNode:    isControlPlaneNode,
-		patchesDir:            options.patchesDir,
 		ignorePreflightErrors: ignorePreflightErrorsSet,
-		kubeConfigPath:        options.kubeConfigPath,
+		kubeConfigPath:        nodeOptions.kubeConfigPath,
 		outputWriter:          out,
+		patchesDir:            patchesDir,
+		etcdUpgrade:           *cmdutil.ValueFromFlagsOrConfig(cmd.Flags(), options.EtcdUpgrade, upgradeCfg.Node.EtcdUpgrade, &nodeOptions.etcdUpgrade).(*bool),
+		renewCerts:            *cmdutil.ValueFromFlagsOrConfig(cmd.Flags(), options.CertificateRenewal, upgradeCfg.Node.CertificateRenewal, &nodeOptions.renewCerts).(*bool),
 	}, nil
 }
 
@@ -189,9 +256,14 @@ func (d *nodeData) RenewCerts() bool {
 	return d.renewCerts
 }
 
-// Cfg returns initConfiguration.
-func (d *nodeData) Cfg() *kubeadmapi.InitConfiguration {
+// Cfg returns upgradeConfiguration.
+func (d *nodeData) Cfg() *kubeadmapi.UpgradeConfiguration {
 	return d.cfg
+}
+
+// InitCfg returns the InitConfiguration.
+func (d *nodeData) InitCfg() *kubeadmapi.InitConfiguration {
+	return d.initCfg
 }
 
 // IsControlPlaneNode returns the isControlPlaneNode flag.
@@ -210,15 +282,31 @@ func (d *nodeData) PatchesDir() string {
 }
 
 // IgnorePreflightErrors returns the list of preflight errors to ignore.
-func (d *nodeData) IgnorePreflightErrors() sets.String {
+func (d *nodeData) IgnorePreflightErrors() sets.Set[string] {
 	return d.ignorePreflightErrors
 }
 
-// KubeconfigPath returns the path to the user kubeconfig file.
+// KubeConfigPath returns the path to the user kubeconfig file.
 func (d *nodeData) KubeConfigPath() string {
 	return d.kubeConfigPath
 }
 
 func (d *nodeData) OutputWriter() io.Writer {
 	return d.outputWriter
+}
+
+// KubeConfigDir returns the Kubernetes configuration directory or the temporary directory if DryRun is true.
+func (j *nodeData) KubeConfigDir() string {
+	if j.dryRun {
+		return j.dryRunDir
+	}
+	return constants.KubernetesDir
+}
+
+// KubeletDir returns the kubelet configuration directory or the temporary directory if DryRun is true.
+func (j *nodeData) KubeletDir() string {
+	if j.dryRun {
+		return j.dryRunDir
+	}
+	return constants.KubeletRunDirectory
 }

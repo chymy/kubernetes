@@ -17,6 +17,8 @@ limitations under the License.
 package collectors
 
 import (
+	"context"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/component-base/metrics"
 	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
@@ -61,12 +63,6 @@ var (
 		[]string{"namespace", "persistentvolumeclaim"}, nil,
 		metrics.ALPHA, "",
 	)
-
-	volumeStatsHealthAbnormalDesc = metrics.NewDesc(
-		metrics.BuildFQName("", kubeletmetrics.KubeletSubsystem, kubeletmetrics.VolumeStatsHealthStatusAbnormalKey),
-		"Abnormal volume health status. The count is either 1 or 0. 1 indicates the volume is unhealthy, 0 indicates volume is healthy",
-		[]string{"namespace", "persistentvolumeclaim"}, nil,
-		metrics.ALPHA, "")
 )
 
 type volumeStatsCollector struct {
@@ -91,12 +87,14 @@ func (collector *volumeStatsCollector) DescribeWithStability(ch chan<- *metrics.
 	ch <- volumeStatsInodesDesc
 	ch <- volumeStatsInodesFreeDesc
 	ch <- volumeStatsInodesUsedDesc
-	ch <- volumeStatsHealthAbnormalDesc
 }
 
 // CollectWithStability implements the metrics.StableCollector interface.
 func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Metric) {
-	podStats, err := collector.statsProvider.ListPodStats()
+	// Use context.TODO() because we currently do not have a proper context to pass in.
+	// Replace this with an appropriate context when refactoring this function to accept a context parameter.
+	ctx := context.TODO()
+	podStats, err := collector.statsProvider.ListPodStats(ctx)
 	if err != nil {
 		return
 	}
@@ -104,7 +102,7 @@ func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Me
 		lv = append([]string{pvcRef.Namespace, pvcRef.Name}, lv...)
 		ch <- metrics.NewLazyConstMetric(desc, metrics.GaugeValue, v, lv...)
 	}
-	allPVCs := sets.String{}
+	allPVCs := sets.Set[stats.PVCReference]{}
 	for _, podStat := range podStats {
 		if podStat.VolumeStats == nil {
 			continue
@@ -115,8 +113,7 @@ func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Me
 				// ignore if no PVC reference
 				continue
 			}
-			pvcUniqStr := pvcRef.Namespace + "/" + pvcRef.Name
-			if allPVCs.Has(pvcUniqStr) {
+			if allPVCs.Has(*pvcRef) {
 				// ignore if already collected
 				continue
 			}
@@ -126,18 +123,7 @@ func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Me
 			addGauge(volumeStatsInodesDesc, pvcRef, float64(*volumeStat.Inodes))
 			addGauge(volumeStatsInodesFreeDesc, pvcRef, float64(*volumeStat.InodesFree))
 			addGauge(volumeStatsInodesUsedDesc, pvcRef, float64(*volumeStat.InodesUsed))
-			if volumeStat.VolumeHealthStats != nil {
-				addGauge(volumeStatsHealthAbnormalDesc, pvcRef, convertBoolToFloat64(volumeStat.VolumeHealthStats.Abnormal))
-			}
-			allPVCs.Insert(pvcUniqStr)
+			allPVCs.Insert(*pvcRef)
 		}
 	}
-}
-
-func convertBoolToFloat64(boolVal bool) float64 {
-	if boolVal {
-		return 1
-	}
-
-	return 0
 }

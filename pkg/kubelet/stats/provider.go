@@ -17,35 +17,48 @@ limitations under the License.
 package stats
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
-	cadvisorapiv1 "github.com/google/cadvisor/info/v1"
+	cadvisormemory "github.com/google/cadvisor/lib/cache/memory"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	internalapi "k8s.io/cri-api/pkg/apis"
+	"k8s.io/klog/v2"
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
+	"k8s.io/kubernetes/pkg/kubelet/cm"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-	kubepod "k8s.io/kubernetes/pkg/kubelet/pod"
 	"k8s.io/kubernetes/pkg/kubelet/server/stats"
 	"k8s.io/kubernetes/pkg/kubelet/stats/pidlimit"
 	"k8s.io/kubernetes/pkg/kubelet/status"
+	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/utils/ptr"
 )
+
+// PodManager is the subset of methods the manager needs to observe the actual state of the kubelet.
+// See pkg/k8s.io/kubernetes/pkg/kubelet/pod.Manager for method godoc.
+type PodManager interface {
+	TranslatePodUID(uid types.UID) kubetypes.ResolvedPodUID
+}
 
 // NewCRIStatsProvider returns a Provider that provides the node stats
 // from cAdvisor and the container stats from CRI.
 func NewCRIStatsProvider(
 	cadvisor cadvisor.Interface,
 	resourceAnalyzer stats.ResourceAnalyzer,
-	podManager kubepod.Manager,
-	runtimeCache kubecontainer.RuntimeCache,
+	podManager PodManager,
 	runtimeService internalapi.RuntimeService,
 	imageService internalapi.ImageManagerService,
 	hostStatsProvider HostStatsProvider,
-	disableAcceleratorUsageMetrics, podAndContainerStatsFromCRI bool,
+	podAndContainerStatsFromCRI bool,
+	podSandboxStatsUnimplemented bool,
+	fallbackStatsProvider containerStatsProvider,
 ) *Provider {
-	return newStatsProvider(cadvisor, podManager, runtimeCache, newCRIStatsProvider(cadvisor, resourceAnalyzer,
-		runtimeService, imageService, hostStatsProvider, disableAcceleratorUsageMetrics, podAndContainerStatsFromCRI))
+	return newStatsProvider(cadvisor, podManager, newCRIStatsProvider(cadvisor, resourceAnalyzer,
+		runtimeService, imageService, hostStatsProvider, podAndContainerStatsFromCRI, podSandboxStatsUnimplemented, fallbackStatsProvider))
 }
 
 // NewCadvisorStatsProvider returns a containerStatsProvider that provides both
@@ -53,52 +66,46 @@ func NewCRIStatsProvider(
 func NewCadvisorStatsProvider(
 	cadvisor cadvisor.Interface,
 	resourceAnalyzer stats.ResourceAnalyzer,
-	podManager kubepod.Manager,
-	runtimeCache kubecontainer.RuntimeCache,
+	podManager PodManager,
 	imageService kubecontainer.ImageService,
 	statusProvider status.PodStatusProvider,
 	hostStatsProvider HostStatsProvider,
+	containerManager cm.ContainerManager,
 ) *Provider {
-	return newStatsProvider(cadvisor, podManager, runtimeCache, newCadvisorStatsProvider(cadvisor, resourceAnalyzer, imageService, statusProvider, hostStatsProvider))
+	return newStatsProvider(cadvisor, podManager, newCadvisorStatsProvider(cadvisor, resourceAnalyzer, imageService, statusProvider, hostStatsProvider, containerManager))
 }
 
 // newStatsProvider returns a new Provider that provides node stats from
 // cAdvisor and the container stats using the containerStatsProvider.
 func newStatsProvider(
 	cadvisor cadvisor.Interface,
-	podManager kubepod.Manager,
-	runtimeCache kubecontainer.RuntimeCache,
+	podManager PodManager,
 	containerStatsProvider containerStatsProvider,
 ) *Provider {
 	return &Provider{
 		cadvisor:               cadvisor,
 		podManager:             podManager,
-		runtimeCache:           runtimeCache,
 		containerStatsProvider: containerStatsProvider,
 	}
 }
 
 // Provider provides the stats of the node and the pod-managed containers.
 type Provider struct {
-	cadvisor     cadvisor.Interface
-	podManager   kubepod.Manager
-	runtimeCache kubecontainer.RuntimeCache
+	cadvisor   cadvisor.Interface
+	podManager PodManager
 	containerStatsProvider
-	rlimitStatsProvider
 }
 
 // containerStatsProvider is an interface that provides the stats of the
 // containers managed by pods.
 type containerStatsProvider interface {
-	ListPodStats() ([]statsapi.PodStats, error)
-	ListPodStatsAndUpdateCPUNanoCoreUsage() ([]statsapi.PodStats, error)
-	ListPodCPUAndMemoryStats() ([]statsapi.PodStats, error)
-	ImageFsStats() (*statsapi.FsStats, error)
-	ImageFsDevice() (string, error)
-}
-
-type rlimitStatsProvider interface {
-	RlimitStats() (*statsapi.RlimitStats, error)
+	// PodCPUAndMemoryStats gets the latest CPU & Memory stats for the pod and all its running containers.
+	PodCPUAndMemoryStats(context.Context, *v1.Pod, *kubecontainer.PodStatus) (*statsapi.PodStats, error)
+	ListPodStats(ctx context.Context) ([]statsapi.PodStats, error)
+	ListPodStatsAndUpdateCPUNanoCoreUsage(ctx context.Context) ([]statsapi.PodStats, error)
+	ListPodCPUAndMemoryStats(ctx context.Context) ([]statsapi.PodStats, error)
+	ImageFsStats(ctx context.Context) (*statsapi.FsStats, *statsapi.FsStats, error)
+	ImageFsDevice(ctx context.Context) (string, error)
 }
 
 // RlimitStats returns base information about process count
@@ -108,13 +115,17 @@ func (p *Provider) RlimitStats() (*statsapi.RlimitStats, error) {
 
 // GetCgroupStats returns the stats of the cgroup with the cgroupName. Note that
 // this function doesn't generate filesystem stats.
-func (p *Provider) GetCgroupStats(cgroupName string, updateStats bool) (*statsapi.ContainerStats, *statsapi.NetworkStats, error) {
+func (p *Provider) GetCgroupStats(ctx context.Context, cgroupName string, updateStats bool) (*statsapi.ContainerStats, *statsapi.NetworkStats, error) {
 	info, err := getCgroupInfo(p.cadvisor, cgroupName, updateStats)
 	if err != nil {
+		if errors.Is(err, cadvisormemory.ErrDataNotFound) {
+			return nil, nil, fmt.Errorf("cgroup stats not found for %q: %w", cgroupName, cadvisormemory.ErrDataNotFound)
+		}
 		return nil, nil, fmt.Errorf("failed to get cgroup stats for %q: %v", cgroupName, err)
 	}
+	logger := klog.FromContext(ctx)
 	// Rootfs and imagefs doesn't make sense for raw cgroup.
-	s := cadvisorInfoToContainerStats(cgroupName, info, nil, nil)
+	s := cadvisorInfoToContainerStats(logger, cgroupName, info, nil, nil)
 	n := cadvisorInfoToNetworkStats(info)
 	return s, n, nil
 }
@@ -124,6 +135,9 @@ func (p *Provider) GetCgroupStats(cgroupName string, updateStats bool) (*statsap
 func (p *Provider) GetCgroupCPUAndMemoryStats(cgroupName string, updateStats bool) (*statsapi.ContainerStats, error) {
 	info, err := getCgroupInfo(p.cadvisor, cgroupName, updateStats)
 	if err != nil {
+		if errors.Is(err, cadvisormemory.ErrDataNotFound) {
+			return nil, fmt.Errorf("cgroup stats not found for %q: %w", cgroupName, cadvisormemory.ErrDataNotFound)
+		}
 		return nil, fmt.Errorf("failed to get cgroup stats for %q: %v", cgroupName, err)
 	}
 	// Rootfs and imagefs doesn't make sense for raw cgroup.
@@ -162,47 +176,10 @@ func (p *Provider) RootFsStats() (*statsapi.FsStats, error) {
 	}, nil
 }
 
-// GetContainerInfo returns stats (from cAdvisor) for a container.
-func (p *Provider) GetContainerInfo(podFullName string, podUID types.UID, containerName string, req *cadvisorapiv1.ContainerInfoRequest) (*cadvisorapiv1.ContainerInfo, error) {
-	// Resolve and type convert back again.
-	// We need the static pod UID but the kubecontainer API works with types.UID.
-	podUID = types.UID(p.podManager.TranslatePodUID(podUID))
-
-	pods, err := p.runtimeCache.GetPods()
-	if err != nil {
-		return nil, err
-	}
-	pod := kubecontainer.Pods(pods).FindPod(podFullName, podUID)
-	container := pod.FindContainerByName(containerName)
-	if container == nil {
-		return nil, kubecontainer.ErrContainerNotFound
-	}
-
-	ci, err := p.cadvisor.DockerContainer(container.ID.ID, req)
-	if err != nil {
-		return nil, err
-	}
-	return &ci, nil
-}
-
-// GetRawContainerInfo returns the stats (from cadvisor) for a non-Kubernetes
-// container.
-func (p *Provider) GetRawContainerInfo(containerName string, req *cadvisorapiv1.ContainerInfoRequest, subcontainers bool) (map[string]*cadvisorapiv1.ContainerInfo, error) {
-	if subcontainers {
-		return p.cadvisor.SubcontainerInfo(containerName, req)
-	}
-	containerInfo, err := p.cadvisor.ContainerInfo(containerName, req)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]*cadvisorapiv1.ContainerInfo{
-		containerInfo.Name: containerInfo,
-	}, nil
-}
-
 // HasDedicatedImageFs returns true if a dedicated image filesystem exists for storing images.
-func (p *Provider) HasDedicatedImageFs() (bool, error) {
-	device, err := p.containerStatsProvider.ImageFsDevice()
+// KEP Issue Number 4191: Enhanced this to allow for the containers to be separate from images.
+func (p *Provider) HasDedicatedImageFs(ctx context.Context) (bool, error) {
+	device, err := p.containerStatsProvider.ImageFsDevice(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -210,5 +187,52 @@ func (p *Provider) HasDedicatedImageFs() (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// KEP Enhancement: DedicatedImageFs can mean either container or image fs are separate from root
+	// CAdvisor reports this a bit differently than Container runtimes
+	if device == rootFsInfo.Device {
+		imageFs, containerFs, err := p.ImageFsStats(ctx)
+		if err != nil {
+			return false, err
+		}
+		if !equalFileSystems(imageFs, containerFs) {
+			return true, nil
+		}
+	}
 	return device != rootFsInfo.Device, nil
+}
+
+// HasDedicatedImageFs returns true if a dedicated image filesystem exists for storing images.
+// KEP Issue Number 4191: Enhanced this to allow for the containers to be separate from images.
+func (p *Provider) HasDedicatedContainerFs(ctx context.Context) (bool, error) {
+	imageFs, err := p.cadvisor.ImagesFsInfo(ctx)
+	if err != nil {
+		return false, err
+	}
+	containerFs, err := p.cadvisor.ContainerFsInfo(ctx)
+	if err != nil {
+		return false, err
+	}
+	return imageFs.Device != containerFs.Device, nil
+}
+
+func equalFileSystems(a, b *statsapi.FsStats) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if !ptr.Equal(a.AvailableBytes, b.AvailableBytes) {
+		return false
+	}
+	if !ptr.Equal(a.CapacityBytes, b.CapacityBytes) {
+		return false
+	}
+	if !ptr.Equal(a.InodesUsed, b.InodesUsed) {
+		return false
+	}
+	if !ptr.Equal(a.InodesFree, b.InodesFree) {
+		return false
+	}
+	if !ptr.Equal(a.Inodes, b.Inodes) {
+		return false
+	}
+	return true
 }

@@ -1,5 +1,4 @@
 //go:build !linux
-// +build !linux
 
 /*
 Copyright 2017 The Kubernetes Authors.
@@ -26,6 +25,10 @@ type unsupportedImageFsInfoProvider struct{}
 // ImageFsInfoLabel returns the image fs label for the configured runtime.
 // For remote runtimes, it handles additional runtimes natively understood by cAdvisor.
 func (i *unsupportedImageFsInfoProvider) ImageFsInfoLabel() (string, error) {
+	return "", errors.New("unsupported")
+}
+
+func (i *unsupportedImageFsInfoProvider) ContainerFsInfoLabel() (string, error) {
 	return "", errors.New("unsupported")
 }
 

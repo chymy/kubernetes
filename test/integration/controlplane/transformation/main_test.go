@@ -17,11 +17,23 @@ limitations under the License.
 package transformation
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	encryptionconfigcontroller "k8s.io/apiserver/pkg/server/options/encryptionconfig/controller"
 	"k8s.io/kubernetes/test/integration/framework"
 )
 
 func TestMain(m *testing.M) {
+	// Speed up encryption config reload from the default 1 minute to 1 second.
+	// This variable is exported specifically for integration tests.
+	encryptionconfigcontroller.EncryptionConfigFileChangePollDuration = time.Second
 	framework.EtcdMain(m.Run)
+}
+
+func testContext(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }

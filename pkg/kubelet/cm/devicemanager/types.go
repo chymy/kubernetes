@@ -17,9 +17,15 @@ limitations under the License.
 package devicemanager
 
 import (
+	"context"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/server/healthz"
+	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
+	"k8s.io/kubernetes/pkg/kubelet/cm/resourceupdates"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -31,14 +37,14 @@ import (
 // Manager manages all the Device Plugins running on a node.
 type Manager interface {
 	// Start starts device plugin registration service.
-	Start(activePods ActivePodsFunc, sourcesReady config.SourcesReady) error
+	Start(logger klog.Logger, activePods ActivePodsFunc, sourcesReady config.SourcesReady, initialContainers containermap.ContainerMap, initialContainerRunningSet sets.Set[string]) error
 
 	// Allocate configures and assigns devices to a container in a pod. From
 	// the requested device resources, Allocate will communicate with the
 	// owning device plugin to allow setup procedures to take place, and for
 	// the device plugin to provide runtime settings to use the device
 	// (environment variables, mount points and device files).
-	Allocate(pod *v1.Pod, container *v1.Container) error
+	Allocate(ctx context.Context, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error
 
 	// UpdatePluginResources updates node resources based on devices already
 	// allocated to pods. The node object is provided for the device manager to
@@ -46,23 +52,29 @@ type Manager interface {
 	UpdatePluginResources(node *schedulerframework.NodeInfo, attrs *lifecycle.PodAdmitAttributes) error
 
 	// Stop stops the manager.
-	Stop() error
+	Stop(logger klog.Logger) error
 
 	// GetDeviceRunContainerOptions checks whether we have cached containerDevices
 	// for the passed-in <pod, container> and returns its DeviceRunContainerOptions
 	// for the found one. An empty struct is returned in case no cached state is found.
-	GetDeviceRunContainerOptions(pod *v1.Pod, container *v1.Container) (*DeviceRunContainerOptions, error)
+	GetDeviceRunContainerOptions(ctx context.Context, pod *v1.Pod, container *v1.Container) (*DeviceRunContainerOptions, error)
 
 	// GetCapacity returns the amount of available device plugin resource capacity, resource allocatable
 	// and inactive device plugin resources previously registered on the node.
-	GetCapacity() (v1.ResourceList, v1.ResourceList, []string)
+	GetCapacity(logger klog.Logger) (v1.ResourceList, v1.ResourceList, []string)
+
+	// GetWatcherHandler returns the plugin handler for the device manager.
 	GetWatcherHandler() cache.PluginHandler
+	GetHealthChecker() healthz.HealthChecker
 
 	// GetDevices returns information about the devices assigned to pods and containers
 	GetDevices(podUID, containerName string) ResourceDeviceInstances
 
+	// UpdateAllocatedResourcesStatus updates the status of allocated resources for the pod.
+	UpdateAllocatedResourcesStatus(logger klog.Logger, pod *v1.Pod, status *v1.PodStatus)
+
 	// GetAllocatableDevices returns information about all the devices known to the manager
-	GetAllocatableDevices() ResourceDeviceInstances
+	GetAllocatableDevices(logger klog.Logger) ResourceDeviceInstances
 
 	// ShouldResetExtendedResourceCapacity returns whether the extended resources should be reset or not,
 	// depending on the checkpoint file availability. Absence of the checkpoint file strongly indicates
@@ -71,14 +83,20 @@ type Manager interface {
 
 	// TopologyManager HintProvider provider indicates the Device Manager implements the Topology Manager Interface
 	// and is consulted to make Topology aware resource alignments
-	GetTopologyHints(pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint
+	GetTopologyHints(logger klog.Logger, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint
 
 	// TopologyManager HintProvider provider indicates the Device Manager implements the Topology Manager Interface
 	// and is consulted to make Topology aware resource alignments per Pod
-	GetPodTopologyHints(pod *v1.Pod) map[string][]topologymanager.TopologyHint
+	GetPodTopologyHints(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint
+
+	// AllocatePod is called to trigger the allocation of resources to a pod.
+	AllocatePod(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) error
 
 	// UpdateAllocatedDevices frees any Devices that are bound to terminated pods.
-	UpdateAllocatedDevices()
+	UpdateAllocatedDevices(logger klog.Logger)
+
+	// Updates returns a channel that receives an Update when the device changed its status.
+	Updates() <-chan resourceupdates.Update
 }
 
 // DeviceRunContainerOptions contains the combined container runtime settings to consume its allocated devices.
@@ -91,6 +109,8 @@ type DeviceRunContainerOptions struct {
 	Devices []kubecontainer.DeviceInfo
 	// The Annotations for the container
 	Annotations []kubecontainer.Annotation
+	// CDI Devices for the container
+	CDIDevices []kubecontainer.CDIDevice
 }
 
 // TODO: evaluate whether we need this error definition.

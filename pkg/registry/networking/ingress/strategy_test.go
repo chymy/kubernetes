@@ -17,11 +17,11 @@ limitations under the License.
 package ingress
 
 import (
+	"context"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
-	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/networking"
 )
 
@@ -62,8 +62,8 @@ func newIngress() networking.Ingress {
 			},
 		},
 		Status: networking.IngressStatus{
-			LoadBalancer: api.LoadBalancerStatus{
-				Ingress: []api.LoadBalancerIngress{
+			LoadBalancer: networking.IngressLoadBalancerStatus{
+				Ingress: []networking.IngressLoadBalancerIngress{
 					{IP: "127.0.0.1"},
 				},
 			},
@@ -81,7 +81,7 @@ func TestIngressStrategy(t *testing.T) {
 	if !Strategy.NamespaceScoped() {
 		t.Errorf("Ingress must be namespace scoped")
 	}
-	if Strategy.AllowCreateOnUpdate() {
+	if Strategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("Ingress should not allow create on update")
 	}
 
@@ -112,7 +112,7 @@ func TestIngressStatusStrategy(t *testing.T) {
 	if !StatusStrategy.NamespaceScoped() {
 		t.Errorf("Ingress must be namespace scoped")
 	}
-	if StatusStrategy.AllowCreateOnUpdate() {
+	if StatusStrategy.AllowCreateOnUpdate(context.Background()) {
 		t.Errorf("Ingress should not allow create on update")
 	}
 	oldIngress := newIngress()
@@ -121,8 +121,8 @@ func TestIngressStatusStrategy(t *testing.T) {
 	newIngress.ResourceVersion = "4"
 	newIngress.Spec.DefaultBackend.Service.Name = "ignore"
 	newIngress.Status = networking.IngressStatus{
-		LoadBalancer: api.LoadBalancerStatus{
-			Ingress: []api.LoadBalancerIngress{
+		LoadBalancer: networking.IngressLoadBalancerStatus{
+			Ingress: []networking.IngressLoadBalancerIngress{
 				{IP: "127.0.0.2"},
 			},
 		},
@@ -137,5 +137,16 @@ func TestIngressStatusStrategy(t *testing.T) {
 	errs := StatusStrategy.ValidateUpdate(ctx, &newIngress, &oldIngress)
 	if len(errs) != 0 {
 		t.Errorf("Unexpected error %v", errs)
+	}
+
+	warnings := StatusStrategy.WarningsOnUpdate(ctx, &newIngress, &oldIngress)
+	if len(warnings) != 0 {
+		t.Errorf("Unexpected warnings %v", errs)
+	}
+
+	newIngress.Status.LoadBalancer.Ingress[0].IP = "127.000.000.002"
+	warnings = StatusStrategy.WarningsOnUpdate(ctx, &newIngress, &oldIngress)
+	if len(warnings) != 1 {
+		t.Errorf("Did not get warning for bad IP")
 	}
 }

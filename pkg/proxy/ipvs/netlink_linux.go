@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
 Copyright 2017 The Kubernetes Authors.
@@ -23,12 +22,13 @@ import (
 	"fmt"
 	"net"
 
-	"k8s.io/apimachinery/pkg/util/sets"
-	utilproxy "k8s.io/kubernetes/pkg/proxy/util"
-	netutils "k8s.io/utils/net"
-
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
+	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
+	netutils "k8s.io/utils/net"
 )
 
 type netlinkHandle struct {
@@ -129,18 +129,18 @@ func (h *netlinkHandle) ListBindAddress(devName string) ([]string, error) {
 // GetAllLocalAddresses return all local addresses on the node.
 // Only the addresses of the current family are returned.
 // IPv6 link-local and loopback addresses are excluded.
-func (h *netlinkHandle) GetAllLocalAddresses() (sets.String, error) {
+func (h *netlinkHandle) GetAllLocalAddresses() (sets.Set[string], error) {
 	addr, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, fmt.Errorf("Could not get addresses: %v", err)
 	}
-	return utilproxy.AddressSet(h.isValidForSet, addr), nil
+	return proxyutil.AddressSet(h.isValidForSet, addr), nil
 }
 
 // GetLocalAddresses return all local addresses for an interface.
 // Only the addresses of the current family are returned.
 // IPv6 link-local and loopback addresses are excluded.
-func (h *netlinkHandle) GetLocalAddresses(dev string) (sets.String, error) {
+func (h *netlinkHandle) GetLocalAddresses(dev string) (sets.Set[string], error) {
 	ifi, err := net.InterfaceByName(dev)
 	if err != nil {
 		return nil, fmt.Errorf("Could not get interface %s: %v", dev, err)
@@ -149,7 +149,7 @@ func (h *netlinkHandle) GetLocalAddresses(dev string) (sets.String, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Can't get addresses from %s: %v", ifi.Name, err)
 	}
-	return utilproxy.AddressSet(h.isValidForSet, addr), nil
+	return proxyutil.AddressSet(h.isValidForSet, addr), nil
 }
 
 func (h *netlinkHandle) isValidForSet(ip net.IP) bool {
@@ -163,4 +163,53 @@ func (h *netlinkHandle) isValidForSet(ip net.IP) bool {
 		return false
 	}
 	return true
+}
+
+// GetAllLocalAddressesExcept return all local addresses on the node,
+// except from the passed dev.  This is not the same as to take the
+// diff between GetAllLocalAddresses and GetLocalAddresses since an
+// address can be assigned to many interfaces. This problem raised
+// https://github.com/kubernetes/kubernetes/issues/114815
+func (h *netlinkHandle) GetAllLocalAddressesExcept(dev string) (sets.Set[string], error) {
+	// We previously iterated over net.Interfaces() and called iface.Addrs()
+	// for each interface, but iface.Addrs() internally performs a full
+	// RTM_GETADDR netlink dump for the entire node and then filters in user
+	// space. With many interfaces and many addresses (for example tens of
+	// thousands of ClusterIPs bound to kube-ipvs0) the cost is
+	// O(N_interfaces * N_addresses) and dominates syncProxyRules latency.
+	//
+	// Instead, dump every address on the node in a single AF_UNSPEC
+	// RTM_GETADDR call and skip the ones whose LinkIndex matches dev. This
+	// makes the call O(N_addresses) and avoids the per-interface fan-out.
+	devLink, err := netlink.LinkByName(dev)
+	if err != nil {
+		klog.ErrorS(err, "Could not look up link", "dev", dev)
+		return nil, fmt.Errorf("could not look up link %q: %w", dev, err)
+	}
+	devIndex := devLink.Attrs().Index
+
+	addrs, err := netlink.AddrList(nil, unix.AF_UNSPEC)
+	if err != nil {
+		klog.ErrorS(err, "Failed to dump node addresses")
+		return nil, fmt.Errorf("could not list node addresses: %w", err)
+	}
+
+	return proxyutil.AddressSet(h.isValidForSet, filterAddrsExcept(addrs, devIndex)), nil
+}
+
+// filterAddrsExcept returns the addresses whose LinkIndex is not devIndex.
+// It is extracted so it can be unit tested without requiring root privileges
+// or a real network namespace.
+func filterAddrsExcept(addrs []netlink.Addr, devIndex int) []net.Addr {
+	out := make([]net.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		if a.LinkIndex == devIndex {
+			continue
+		}
+		if a.IPNet == nil {
+			continue
+		}
+		out = append(out, a.IPNet)
+	}
+	return out
 }

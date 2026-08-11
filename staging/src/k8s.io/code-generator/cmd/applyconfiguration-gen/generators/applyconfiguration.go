@@ -17,28 +17,36 @@ limitations under the License.
 package generators
 
 import (
+	"fmt"
 	"io"
+	"path"
+	"slices"
+	"sort"
 	"strings"
 
-	"k8s.io/gengo/generator"
-	"k8s.io/gengo/namer"
-	"k8s.io/gengo/types"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+	"k8s.io/gengo/v2/generator"
+	"k8s.io/gengo/v2/namer"
+	"k8s.io/gengo/v2/types"
 	"k8s.io/klog/v2"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/code-generator/cmd/client-gen/generators/util"
 	clientgentypes "k8s.io/code-generator/cmd/client-gen/types"
 )
 
 // applyConfigurationGenerator produces apply configurations for a given GroupVersion and type.
 type applyConfigurationGenerator struct {
-	generator.DefaultGen
-	outputPackage string
-	localPackage  types.Name
-	groupVersion  clientgentypes.GroupVersion
-	applyConfig   applyConfig
-	imports       namer.ImportTracker
-	refGraph      refGraph
-	openAPIType   *string // if absent, extraction function cannot be generated
+	generator.GoGenerator
+	// outPkgBase is the base package, under which the "internal" and GV-specific subdirs live
+	outPkgBase   string // must be a Go import-path
+	localPkg     string
+	groupVersion clientgentypes.GroupVersion
+	applyConfig  applyConfig
+	imports      namer.ImportTracker
+	refGraph     refGraph
+	openAPIType  *string // if absent, extraction function cannot be generated
 }
 
 var _ generator.Generator = &applyConfigurationGenerator{}
@@ -49,7 +57,7 @@ func (g *applyConfigurationGenerator) Filter(_ *generator.Context, t *types.Type
 
 func (g *applyConfigurationGenerator) Namers(*generator.Context) namer.NameSystems {
 	return namer.NameSystems{
-		"raw":          namer.NewRawNamer(g.localPackage.Package, g.imports),
+		"raw":          namer.NewRawNamer(g.localPkg, g.imports),
 		"singularKind": namer.NewPublicNamer(0),
 	}
 }
@@ -90,11 +98,13 @@ func (g *applyConfigurationGenerator) GenerateType(c *generator.Context, t *type
 		Tags:        genclientTags(t),
 		APIVersion:  g.groupVersion.ToAPIVersion(),
 		ExtractInto: extractInto,
-		ParserFunc:  types.Ref(g.outputPackage+"/internal", "Parser"),
+		ParserFunc:  types.Ref(path.Join(g.outPkgBase, "internal"), "Parser"),
 		OpenAPIType: g.openAPIType,
 	}
 
-	g.generateStruct(sw, typeParams)
+	if err := g.generateStruct(sw, typeParams); err != nil {
+		return fmt.Errorf("failed to generate apply configuration struct for %s: %w", t.Name, err)
+	}
 
 	if typeParams.Tags.GenerateClient {
 		if typeParams.Tags.NonNamespaced {
@@ -103,7 +113,7 @@ func (g *applyConfigurationGenerator) GenerateType(c *generator.Context, t *type
 			sw.Do(clientgenTypeConstructorNamespaced, typeParams)
 		}
 		if typeParams.OpenAPIType != nil {
-			g.generateClientgenExtract(sw, typeParams, !typeParams.Tags.NoStatus)
+			g.generateClientgenExtract(sw, typeParams)
 		}
 	} else {
 		if hasTypeMetaField(t) {
@@ -112,13 +122,18 @@ func (g *applyConfigurationGenerator) GenerateType(c *generator.Context, t *type
 			sw.Do(constructor, typeParams)
 		}
 	}
-	g.generateWithFuncs(t, typeParams, sw, nil)
+
+	if typeParams.Tags.GenerateClient || hasTypeMetaField(t) {
+		g.generateIsApplyConfiguration(typeParams.ApplyConfig.ApplyConfiguration, sw)
+	}
+	g.generateWithFuncs(t, typeParams, sw, nil, &[]string{})
+	g.generateGetters(t, typeParams, sw, nil)
 	return sw.Error()
 }
 
 func hasTypeMetaField(t *types.Type) bool {
 	for _, member := range t.Members {
-		if typeMeta.Name == member.Type.Name {
+		if typeMeta.Name == member.Type.Name && member.Embedded {
 			return true
 		}
 	}
@@ -139,7 +154,13 @@ func blocklisted(t *types.Type, member types.Member) bool {
 	return false
 }
 
-func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParams TypeParams, sw *generator.SnippetWriter, embed *memberParams) {
+func needsGetter(t *types.Type, member types.Member) bool {
+	// Needed when applying an ApplyConfiguration
+	return (objectMeta.Name == t.Name && (member.Name == "Name" || member.Name == "Namespace")) ||
+		(typeMeta.Name == t.Name && (member.Name == "Kind" || member.Name == "APIVersion"))
+}
+
+func (g *applyConfigurationGenerator) generateGetters(t *types.Type, typeParams TypeParams, sw *generator.SnippetWriter, embed *memberParams) {
 	for _, member := range t.Members {
 		if blocklisted(t, member) {
 			continue
@@ -157,20 +178,55 @@ func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParam
 				EmbeddedIn: embed,
 			}
 			if memberParams.Member.Embedded {
+				g.generateGetters(member.Type, typeParams, sw, &memberParams)
+				continue
+			}
 
-				g.generateWithFuncs(member.Type, typeParams, sw, &memberParams)
+			if needsGetter(t, member) {
+				g.generateMemberGetter(sw, memberParams)
+			}
+		}
+	}
+}
+
+func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParams TypeParams, sw *generator.SnippetWriter, embed *memberParams,
+	generated *[]string) {
+	for _, member := range t.Members {
+		if blocklisted(t, member) {
+			continue
+		}
+		memberType := g.refGraph.applyConfigForType(member.Type)
+		if g.refGraph.isApplyConfig(member.Type) {
+			memberType = &types.Type{Kind: types.Pointer, Elem: memberType}
+		}
+		if jsonTags, ok := lookupJSONTags(member); ok {
+			if slices.Contains(*generated, member.Name) {
+				klog.V(5).Infof("With%s already generated on %s, skipping\n", member.Name, t.Name)
+				continue
+			}
+			*generated = append(*generated, member.Name)
+			memberParams := memberParams{
+				TypeParams: typeParams,
+				Member:     member,
+				MemberType: memberType,
+				JSONTags:   jsonTags,
+				EmbeddedIn: embed,
+			}
+			if memberParams.Member.Embedded {
+				g.generateWithFuncs(member.Type, typeParams, sw, &memberParams, generated)
 				if !jsonTags.inline {
 					// non-inlined embeds are nillable and need a "ensure exists" utility function
 					sw.Do(ensureEmbedExists, memberParams)
 				}
 				continue
 			}
+
 			// For slices where the items are generated apply configuration types, accept varargs of
 			// pointers of the type as "with" function arguments so the "with" function can be used like so:
 			// WithFoos(Foo().WithName("x"), Foo().WithName("y"))
 			if t := deref(member.Type); t.Kind == types.Slice && g.refGraph.isApplyConfig(t.Elem) {
 				memberParams.ArgType = &types.Type{Kind: types.Pointer, Elem: memberType.Elem}
-				g.generateMemberWithForSlice(sw, memberParams)
+				g.generateMemberWithForSlice(sw, member, memberParams)
 				continue
 			}
 			// Note: There are no maps where the values are generated apply configurations (because
@@ -182,7 +238,7 @@ func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParam
 			switch memberParams.Member.Type.Kind {
 			case types.Slice:
 				memberParams.ArgType = memberType.Elem
-				g.generateMemberWithForSlice(sw, memberParams)
+				g.generateMemberWithForSlice(sw, member, memberParams)
 			case types.Map:
 				g.generateMemberWithForMap(sw, memberParams)
 			default:
@@ -192,9 +248,16 @@ func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParam
 	}
 }
 
-func (g *applyConfigurationGenerator) generateStruct(sw *generator.SnippetWriter, typeParams TypeParams) {
-	sw.Do("// $.ApplyConfig.ApplyConfiguration|public$ represents an declarative configuration of the $.ApplyConfig.Type|public$ type for use\n", typeParams)
+func (g *applyConfigurationGenerator) generateStruct(sw *generator.SnippetWriter, typeParams TypeParams) error {
+	sw.Do("// $.ApplyConfig.ApplyConfiguration|public$ represents a declarative configuration of the $.ApplyConfig.Type|public$ type for use\n", typeParams)
 	sw.Do("// with apply.\n", typeParams)
+	structComments := commentsWithoutMarkers(append(typeParams.Struct.SecondClosestCommentLines, typeParams.Struct.CommentLines...))
+	if len(structComments) > 0 {
+		sw.Do("//\n", typeParams)
+		if err := sw.Append(strings.NewReader(structComments)); err != nil {
+			return fmt.Errorf("failed to write comments for struct %s: %w", typeParams.Struct.Name, err)
+		}
+	}
 	sw.Do("type $.ApplyConfig.ApplyConfiguration|public$ struct {\n", typeParams)
 	for _, structMember := range typeParams.Struct.Members {
 		if blocklisted(typeParams.Struct, structMember) {
@@ -210,6 +273,10 @@ func (g *applyConfigurationGenerator) generateStruct(sw *generator.SnippetWriter
 				MemberType: g.refGraph.applyConfigForType(structMember.Type),
 				JSONTags:   structMemberTags,
 			}
+
+			if err := sw.Append(strings.NewReader(commentsWithoutMarkers(structMember.CommentLines))); err != nil {
+				return fmt.Errorf("failed to write comments for member %s: %w", structMember.Name, err)
+			}
 			if structMember.Embedded {
 				if structMemberTags.inline {
 					sw.Do("$.MemberType|raw$ `json:\"$.JSONTags$\"`\n", params)
@@ -224,6 +291,14 @@ func (g *applyConfigurationGenerator) generateStruct(sw *generator.SnippetWriter
 		}
 	}
 	sw.Do("}\n", typeParams)
+
+	return nil
+}
+
+func (g *applyConfigurationGenerator) generateIsApplyConfiguration(t *types.Type, sw *generator.SnippetWriter) {
+	sw.Do(`
+func (b $.|public$) IsApplyConfiguration() {}
+`, t)
 }
 
 func deref(t *types.Type) *types.Type {
@@ -237,35 +312,81 @@ func isNillable(t *types.Type) bool {
 	return t.Kind == types.Slice || t.Kind == types.Map
 }
 
+// commentsWithoutMarkers removes comment lines that start with '+' as they are codegen markers
+// and ensures all comments have the proper // prefix
+func commentsWithoutMarkers(comments []string) string {
+	b := strings.Builder{}
+	for _, comment := range comments {
+		trimmed := strings.TrimSpace(comment)
+		if strings.HasPrefix(trimmed, "+") {
+			continue
+		}
+
+		b.WriteString("// " + trimmed + "\n")
+	}
+	return b.String()
+}
+
 func (g *applyConfigurationGenerator) generateMemberWith(sw *generator.SnippetWriter, memberParams memberParams) {
 	sw.Do("// With$.Member.Name$ sets the $.Member.Name$ field in the declarative configuration to the given value\n", memberParams)
 	sw.Do("// and returns the receiver, so that objects can be built by chaining \"With\" function invocations.\n", memberParams)
 	sw.Do("// If called multiple times, the $.Member.Name$ field is set to the value of the last call.\n", memberParams)
 	sw.Do("func (b *$.ApplyConfig.ApplyConfiguration|public$) With$.Member.Name$(value $.MemberType|raw$) *$.ApplyConfig.ApplyConfiguration|public$ {\n", memberParams)
-	g.ensureEnbedExistsIfApplicable(sw, memberParams)
+	g.ensureEmbedExistsIfApplicable(sw, memberParams)
 	if g.refGraph.isApplyConfig(memberParams.Member.Type) || isNillable(memberParams.Member.Type) {
-		sw.Do("b.$.Member.Name$ = value\n", memberParams)
+		sw.Do("b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = value\n", memberParams)
 	} else {
-		sw.Do("b.$.Member.Name$ = &value\n", memberParams)
+		sw.Do("b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = &value\n", memberParams)
 	}
 	sw.Do("  return b\n", memberParams)
 	sw.Do("}\n", memberParams)
 }
 
-func (g *applyConfigurationGenerator) generateMemberWithForSlice(sw *generator.SnippetWriter, memberParams memberParams) {
+func (g *applyConfigurationGenerator) generateMemberGetter(sw *generator.SnippetWriter, memberParams memberParams) {
+	sw.Do("// Get$.Member.Name$ retrieves the value of the $.Member.Name$ field in the declarative configuration.\n", memberParams)
+	if g.refGraph.isApplyConfig(memberParams.Member.Type) || isNillable(memberParams.Member.Type) {
+		sw.Do("func (b *$.ApplyConfig.ApplyConfiguration|public$) Get$.Member.Name$() $.MemberType|raw$ {\n", memberParams)
+	} else {
+		sw.Do("func (b *$.ApplyConfig.ApplyConfiguration|public$) Get$.Member.Name$() *$.MemberType|raw$ {\n", memberParams)
+	}
+	g.ensureEmbedExistsIfApplicable(sw, memberParams)
+	sw.Do("  return b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$\n", memberParams)
+	sw.Do("}\n", memberParams)
+}
+
+func (g *applyConfigurationGenerator) generateMemberWithForSlice(sw *generator.SnippetWriter, member types.Member, memberParams memberParams) {
+	memberIsPointerToSlice := member.Type.Kind == types.Pointer
+	if memberIsPointerToSlice {
+		sw.Do(ensureNonEmbedSliceExists, memberParams)
+	}
+
 	sw.Do("// With$.Member.Name$ adds the given value to the $.Member.Name$ field in the declarative configuration\n", memberParams)
 	sw.Do("// and returns the receiver, so that objects can be build by chaining \"With\" function invocations.\n", memberParams)
 	sw.Do("// If called multiple times, values provided by each call will be appended to the $.Member.Name$ field.\n", memberParams)
 	sw.Do("func (b *$.ApplyConfig.ApplyConfiguration|public$) With$.Member.Name$(values ...$.ArgType|raw$) *$.ApplyConfig.ApplyConfiguration|public$ {\n", memberParams)
-	g.ensureEnbedExistsIfApplicable(sw, memberParams)
+	g.ensureEmbedExistsIfApplicable(sw, memberParams)
+
+	if memberIsPointerToSlice {
+		sw.Do("b.ensure$.MemberType.Elem|public$Exists()\n", memberParams)
+	}
+
 	sw.Do("  for i := range values {\n", memberParams)
 	if memberParams.ArgType.Kind == types.Pointer {
 		sw.Do("if values[i] == nil {\n", memberParams)
 		sw.Do("  panic(\"nil value passed to With$.Member.Name$\")\n", memberParams)
 		sw.Do("}\n", memberParams)
-		sw.Do("b.$.Member.Name$ = append(b.$.Member.Name$, *values[i])\n", memberParams)
+
+		if memberIsPointerToSlice {
+			sw.Do("*b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = append(*b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$, *values[i])\n", memberParams)
+		} else {
+			sw.Do("b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = append(b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$, *values[i])\n", memberParams)
+		}
 	} else {
-		sw.Do("b.$.Member.Name$ = append(b.$.Member.Name$, values[i])\n", memberParams)
+		if memberIsPointerToSlice {
+			sw.Do("*b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = append(*b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$, values[i])\n", memberParams)
+		} else {
+			sw.Do("b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = append(b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$, values[i])\n", memberParams)
+		}
 	}
 	sw.Do("  }\n", memberParams)
 	sw.Do("  return b\n", memberParams)
@@ -278,18 +399,18 @@ func (g *applyConfigurationGenerator) generateMemberWithForMap(sw *generator.Sni
 	sw.Do("// If called multiple times, the entries provided by each call will be put on the $.Member.Name$ field,\n", memberParams)
 	sw.Do("// overwriting an existing map entries in $.Member.Name$ field with the same key.\n", memberParams)
 	sw.Do("func (b *$.ApplyConfig.ApplyConfiguration|public$) With$.Member.Name$(entries $.MemberType|raw$) *$.ApplyConfig.ApplyConfiguration|public$ {\n", memberParams)
-	g.ensureEnbedExistsIfApplicable(sw, memberParams)
-	sw.Do("  if b.$.Member.Name$ == nil && len(entries) > 0 {\n", memberParams)
-	sw.Do("    b.$.Member.Name$ = make($.MemberType|raw$, len(entries))\n", memberParams)
+	g.ensureEmbedExistsIfApplicable(sw, memberParams)
+	sw.Do("  if b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ == nil && len(entries) > 0 {\n", memberParams)
+	sw.Do("    b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$ = make($.MemberType|raw$, len(entries))\n", memberParams)
 	sw.Do("  }\n", memberParams)
 	sw.Do("  for k, v := range entries {\n", memberParams)
-	sw.Do("    b.$.Member.Name$[k] = v\n", memberParams)
+	sw.Do("    b$if ne .EmbeddedIn nil$$if ne .EmbeddedIn.MemberType.Name.Name \"\"$.$.EmbeddedIn.MemberType.Name.Name$$else if ne .EmbeddedIn.MemberType.Elem nil$.$.EmbeddedIn.MemberType.Elem.Name.Name$$end$$end$.$.Member.Name$[k] = v\n", memberParams)
 	sw.Do("  }\n", memberParams)
 	sw.Do("  return b\n", memberParams)
 	sw.Do("}\n", memberParams)
 }
 
-func (g *applyConfigurationGenerator) ensureEnbedExistsIfApplicable(sw *generator.SnippetWriter, memberParams memberParams) {
+func (g *applyConfigurationGenerator) ensureEmbedExistsIfApplicable(sw *generator.SnippetWriter, memberParams memberParams) {
 	// Embedded types that are not inlined must be nillable so they are not included in the apply configuration
 	// when all their fields are omitted.
 	if memberParams.EmbeddedIn != nil && !memberParams.EmbeddedIn.JSONTags.inline {
@@ -305,9 +426,17 @@ func (b *$.ApplyConfig.ApplyConfiguration|public$) ensure$.MemberType.Elem|publi
 }
 `
 
+var ensureNonEmbedSliceExists = `
+func (b *$.ApplyConfig.ApplyConfiguration|public$) ensure$.MemberType.Elem|public$Exists() {
+  if b.$.Member.Name$ == nil {
+    b.$.Member.Name$ = &[]$.MemberType.Elem|raw${}
+  }
+}
+`
+
 var clientgenTypeConstructorNamespaced = `
-// $.ApplyConfig.Type|public$ constructs an declarative configuration of the $.ApplyConfig.Type|public$ type for use with
-// apply. 
+// $.ApplyConfig.Type|public$ constructs a declarative configuration of the $.ApplyConfig.Type|public$ type for use with
+// apply.
 func $.ApplyConfig.Type|public$(name, namespace string) *$.ApplyConfig.ApplyConfiguration|public$ {
   b := &$.ApplyConfig.ApplyConfiguration|public${}
   b.WithName(name)
@@ -319,7 +448,7 @@ func $.ApplyConfig.Type|public$(name, namespace string) *$.ApplyConfig.ApplyConf
 `
 
 var clientgenTypeConstructorNonNamespaced = `
-// $.ApplyConfig.Type|public$ constructs an declarative configuration of the $.ApplyConfig.Type|public$ type for use with
+// $.ApplyConfig.Type|public$ constructs a declarative configuration of the $.ApplyConfig.Type|public$ type for use with
 // apply.
 func $.ApplyConfig.Type|public$(name string) *$.ApplyConfig.ApplyConfiguration|public$ {
   b := &$.ApplyConfig.ApplyConfiguration|public${}
@@ -331,7 +460,7 @@ func $.ApplyConfig.Type|public$(name string) *$.ApplyConfig.ApplyConfiguration|p
 `
 
 var constructorWithTypeMeta = `
-// $.ApplyConfig.ApplyConfiguration|public$ constructs an declarative configuration of the $.ApplyConfig.Type|public$ type for use with
+// $.ApplyConfig.ApplyConfiguration|public$ constructs a declarative configuration of the $.ApplyConfig.Type|public$ type for use with
 // apply.
 func $.ApplyConfig.Type|public$() *$.ApplyConfig.ApplyConfiguration|public$ {
   b := &$.ApplyConfig.ApplyConfiguration|public${}
@@ -341,15 +470,45 @@ func $.ApplyConfig.Type|public$() *$.ApplyConfig.ApplyConfiguration|public$ {
 }
 `
 
+var titler = cases.Title(language.Und)
+
 var constructor = `
-// $.ApplyConfig.ApplyConfiguration|public$ constructs an declarative configuration of the $.ApplyConfig.Type|public$ type for use with
+// $.ApplyConfig.ApplyConfiguration|public$ constructs a declarative configuration of the $.ApplyConfig.Type|public$ type for use with
 // apply.
 func $.ApplyConfig.Type|public$() *$.ApplyConfig.ApplyConfiguration|public$ {
   return &$.ApplyConfig.ApplyConfiguration|public${}
 }
 `
 
-func (g *applyConfigurationGenerator) generateClientgenExtract(sw *generator.SnippetWriter, typeParams TypeParams, includeStatus bool) {
+func (g *applyConfigurationGenerator) generateClientgenExtract(sw *generator.SnippetWriter, typeParams TypeParams) {
+	subresources := g.collectSubresources(typeParams)
+
+	sw.Do(`
+// Extract$.ApplyConfig.Type|public$From extracts the applied configuration owned by fieldManager from
+// $.Struct|private$ for the specified subresource. Pass an empty string for subresource to extract 
+// the main resource. Common subresources include "status", "scale", etc.
+// $.Struct|private$ must be a unmodified $.Struct|public$ API object that was retrieved from the Kubernetes API.
+// Extract$.ApplyConfig.Type|public$From provides a way to perform a extract/modify-in-place/apply workflow.
+// Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
+// applied if another fieldManager has updated or force applied any of the previously applied fields.
+func Extract$.ApplyConfig.Type|public$From($.Struct|private$ *$.Struct|raw$, fieldManager string, subresource string) (*$.ApplyConfig.ApplyConfiguration|public$, error) {
+	b := &$.ApplyConfig.ApplyConfiguration|public${}
+	err := $.ExtractInto|raw$($.Struct|private$, $.ParserFunc|raw$().Type("$.OpenAPIType$"), fieldManager, b, subresource)
+	if err != nil {
+		return nil, err
+	}
+	b.WithName($.Struct|private$.Name)
+`, typeParams)
+	if !typeParams.Tags.NonNamespaced {
+		sw.Do("	b.WithNamespace($.Struct|private$.Namespace)\n", typeParams)
+	}
+	sw.Do(`
+	b.WithKind("$.ApplyConfig.Type|singularKind$")
+	b.WithAPIVersion("$.APIVersion$")
+	return b, nil
+}
+`, typeParams)
+
 	sw.Do(`
 // Extract$.ApplyConfig.Type|public$ extracts the applied configuration owned by fieldManager from
 // $.Struct|private$. If no managedFields are found in $.Struct|private$ for fieldManager, a
@@ -361,36 +520,46 @@ func (g *applyConfigurationGenerator) generateClientgenExtract(sw *generator.Sni
 // Extract$.ApplyConfig.Type|public$ provides a way to perform a extract/modify-in-place/apply workflow.
 // Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
-// Experimental!
 func Extract$.ApplyConfig.Type|public$($.Struct|private$ *$.Struct|raw$, fieldManager string) (*$.ApplyConfig.ApplyConfiguration|public$, error) {
-	return extract$.ApplyConfig.Type|public$($.Struct|private$, fieldManager, "")
-}`, typeParams)
-	if includeStatus {
+	return Extract$.ApplyConfig.Type|public$From($.Struct|private$, fieldManager, "")
+}
+`, typeParams)
+
+	for _, subresource := range subresources {
 		sw.Do(`
-// Extract$.ApplyConfig.Type|public$Status is the same as Extract$.ApplyConfig.Type|public$ except
-// that it extracts the status subresource applied configuration.
-// Experimental!
-func Extract$.ApplyConfig.Type|public$Status($.Struct|private$ *$.Struct|raw$, fieldManager string) (*$.ApplyConfig.ApplyConfiguration|public$, error) {
-	return extract$.ApplyConfig.Type|public$($.Struct|private$, fieldManager, "status")
+// Extract$.ApplyConfig.Type|public$$.SubresourceName$ extracts the applied configuration owned by fieldManager from
+// $.Struct|private$ for the $.Subresource$ subresource.
+func Extract$.ApplyConfig.Type|public$$.SubresourceName$($.Struct|private$ *$.Struct|raw$, fieldManager string) (*$.ApplyConfig.ApplyConfiguration|public$, error) {
+	return Extract$.ApplyConfig.Type|public$From($.Struct|private$, fieldManager, "$.Subresource$")
 }
-`, typeParams)
+`, map[string]interface{}{
+			"ApplyConfig":     typeParams.ApplyConfig,
+			"Struct":          typeParams.Struct,
+			"SubresourceName": titler.String(subresource),
+			"Subresource":     subresource,
+		})
 	}
-	sw.Do(`
-func extract$.ApplyConfig.Type|public$($.Struct|private$ *$.Struct|raw$, fieldManager string, subresource string) (*$.ApplyConfig.ApplyConfiguration|public$, error) {
-	b := &$.ApplyConfig.ApplyConfiguration|public${}
-	err := $.ExtractInto|raw$($.Struct|private$, $.ParserFunc|raw$().Type("$.OpenAPIType$"), fieldManager, b, subresource)
-	if err != nil {
-		return nil, err
-	}
-	b.WithName($.Struct|private$.Name)
-`, typeParams)
-	if !typeParams.Tags.NonNamespaced {
-		sw.Do("b.WithNamespace($.Struct|private$.Namespace)\n", typeParams)
-	}
-	sw.Do(`
-	b.WithKind("$.ApplyConfig.Type|singularKind$")
-	b.WithAPIVersion("$.APIVersion$")
-	return b, nil
 }
-`, typeParams)
+
+func (g *applyConfigurationGenerator) collectSubresources(typeParams TypeParams) []string {
+	subresources := sets.New[string]()
+	if !typeParams.Tags.NoStatus {
+		// Do we even have a status?
+		for _, member := range typeParams.Struct.Members {
+			if member.Name == "Status" {
+				subresources.Insert("status")
+				break
+			}
+		}
+	}
+
+	for _, ext := range typeParams.Tags.Extensions {
+		if ext.SubResourcePath != "" {
+			subresources.Insert(ext.SubResourcePath)
+		}
+	}
+
+	sorted := subresources.UnsortedList()
+	sort.Strings(sorted)
+	return sorted
 }

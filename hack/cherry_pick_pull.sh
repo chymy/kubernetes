@@ -29,7 +29,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 declare -r REPO_ROOT
 cd "${REPO_ROOT}"
 
-STARTINGBRANCH=$(git symbolic-ref --short HEAD)
+STARTINGBRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse HEAD)
 declare -r STARTINGBRANCH
 declare -r REBASEMAGIC="${REPO_ROOT}/.git/rebase-apply"
 DRY_RUN=${DRY_RUN:-""}
@@ -133,6 +133,8 @@ function return_to_kansas {
 trap return_to_kansas EXIT
 
 SUBJECTS=()
+RELEASE_NOTES=()
+KIND_LABELS=()
 function make-a-pr() {
   local rel
   rel="$(basename "${BRANCH}")"
@@ -141,6 +143,16 @@ function make-a-pr() {
 
   local numandtitle
   numandtitle=$(printf '%s\n' "${SUBJECTS[@]}")
+
+  local kind_commands=""
+  if [[ ${#KIND_LABELS[@]} -gt 0 ]]; then
+    while IFS= read -r label; do
+      if [[ -n "${label}" ]]; then
+        kind_commands+="/kind ${label#kind/}"$'\n'
+      fi
+    done < <(printf '%s\n' "${KIND_LABELS[@]}" | sort -u)
+  fi
+
   prtext=$(cat <<EOF
 Cherry pick of ${PULLSUBJ} on ${rel}.
 
@@ -148,8 +160,11 @@ ${numandtitle}
 
 For details on the cherry pick process, see the [cherry pick requests](https://git.k8s.io/community/contributors/devel/sig-release/cherry-picks.md) page.
 
-\`\`\`release-note
+#### What type of PR is this?
+${kind_commands}
 
+\`\`\`release-note
+$(printf '%s\n' "${RELEASE_NOTES[@]}")
 \`\`\`
 EOF
 )
@@ -164,7 +179,7 @@ gitamcleanup=true
 for pull in "${PULLS[@]}"; do
   echo "+++ Downloading patch to /tmp/${pull}.patch (in case you need to do this again)"
 
-  curl -o "/tmp/${pull}.patch" -sSL "https://github.com/${MAIN_REPO_ORG}/${MAIN_REPO_NAME}/pull/${pull}.patch"
+  gh pr diff "${pull}" --patch --repo="${MAIN_REPO_ORG}/${MAIN_REPO_NAME}" > "/tmp/${pull}.patch"
   echo
   echo "+++ About to attempt cherry pick of PR. To reattempt:"
   echo "  $ git am -3 /tmp/${pull}.patch"
@@ -180,7 +195,7 @@ for pull in "${PULLS[@]}"; do
       (git status --porcelain | grep ^U) || echo "!!! None. Did you git am --continue?"
       echo
       echo "+++ Please resolve the conflicts in another window (and remember to 'git add / git am --continue')"
-      read -p "+++ Proceed (anything but 'y' aborts the cherry-pick)? [y/n] " -r
+      read -p "+++ Proceed (anything other than 'y' aborts the cherry-pick)? [y/n] " -r
       echo
       if ! [[ "${REPLY}" =~ ^[yY]$ ]]; then
         echo "Aborting." >&2
@@ -195,8 +210,19 @@ for pull in "${PULLS[@]}"; do
   }
 
   # set the subject
-  subject=$(grep -m 1 "^Subject" "/tmp/${pull}.patch" | sed -e 's/Subject: \[PATCH//g' | sed 's/.*] //')
+  subject=$(gh pr view "$pull" --json title --jq '.["title"]')
   SUBJECTS+=("#${pull}: ${subject}")
+
+  # set the release note
+  release_note=$(gh pr view "$pull" --json body --jq '.["body"]' | awk '/```release-note/{f=1;next} /```/{f=0} f')
+  RELEASE_NOTES+=("${release_note}")
+
+  # collect kind/* labels from the original PR
+  while IFS= read -r label; do
+    if [[ -n "${label}" ]]; then
+      KIND_LABELS+=("${label}")
+    fi
+  done < <(gh pr view "$pull" --json labels --jq '.labels[].name | select(startswith("kind/"))')
 
   # remove the patch file from /tmp
   rm -f "/tmp/${pull}.patch"
@@ -247,7 +273,7 @@ echo "+++ I'm about to do the following to push to GitHub (and I'm assuming ${FO
 echo
 echo "  git push ${FORK_REMOTE} ${NEWBRANCHUNIQ}:${NEWBRANCH}"
 echo
-read -p "+++ Proceed (anything but 'y' aborts the cherry-pick)? [y/n] " -r
+read -p "+++ Proceed (anything other than 'y' aborts the cherry-pick)? [y/n] " -r
 if ! [[ "${REPLY}" =~ ^[yY]$ ]]; then
   echo "Aborting." >&2
   exit 1

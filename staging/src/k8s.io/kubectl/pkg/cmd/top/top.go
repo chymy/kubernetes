@@ -17,10 +17,12 @@ limitations under the License.
 package top
 
 import (
+	"slices"
+
 	"github.com/spf13/cobra"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
@@ -34,22 +36,48 @@ const (
 
 var (
 	supportedMetricsAPIVersions = []string{
+		"v1",
 		"v1beta1",
 	}
 	topLong = templates.LongDesc(i18n.T(`
-		Display Resource (CPU/Memory) usage.
+		Display resource (CPU/memory) usage.
 
-		The top command allows you to see the resource consumption for nodes or pods.
+		This command provides a view of recent resource consumption for nodes and pods.
+		It fetches metrics from the Metrics Server, which aggregates this data from the
+		kubelet on each node. The Metrics Server must be installed and running in the
+		cluster for this command to work.
 
-		This command requires Metrics Server to be correctly configured and working on the server. `))
+		The metrics shown are specifically optimized for Kubernetes autoscaling
+		decisions, such as those made by the Horizontal Pod Autoscaler (HPA) and
+		Vertical Pod Autoscaler (VPA). Because of this, the values may not match those
+		from standard OS tools like 'top', as the metrics are designed to provide a
+		stable signal for autoscalers rather than for pinpoint accuracy.
+        
+		FAQ for Metrics Server: https://github.com/kubernetes-sigs/metrics-server/blob/master/FAQ.md
+
+		When to use this command:
+
+		* For on-the-fly spot-checks of resource usage (e.g. identify which pods
+		  are consuming the most resources at a glance, or get a quick sense of the load
+		  on your nodes)
+		* Understand current resource consumption patterns
+		* Validate the behavior of your HPA or VPA configurations by seeing the metrics
+		  they use for scaling decisions.
+
+		It is not intended to be a replacement for full-featured monitoring solutions.
+		Its primary design goal is to provide a low-overhead signal for autoscalers,
+		not to be a perfectly accurate monitoring tool. For high-accuracy reporting,
+		historical analysis, dashboarding, or alerting, you should use a dedicated
+		monitoring solution.`))
 )
 
-func NewCmdTop(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdTop(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "top",
-		Short: i18n.T("Display resource (CPU/memory) usage"),
-		Long:  topLong,
-		Run:   cmdutil.DefaultSubCommandRun(streams.ErrOut),
+		Use:        "top",
+		Short:      i18n.T("Display resource (CPU/memory) usage"),
+		Long:       topLong,
+		Run:        cmdutil.DefaultSubCommandRun(streams.ErrOut),
+		SuggestFor: []string{"stats"},
 	}
 
 	// create subcommands
@@ -59,18 +87,16 @@ func NewCmdTop(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Co
 	return cmd
 }
 
-func SupportedMetricsAPIVersionAvailable(discoveredAPIGroups *metav1.APIGroupList) bool {
+func SupportedMetricsAPIVersionAvailable(discoveredAPIGroups *metav1.APIGroupList) string {
 	for _, discoveredAPIGroup := range discoveredAPIGroups.Groups {
 		if discoveredAPIGroup.Name != metricsapi.GroupName {
 			continue
 		}
 		for _, version := range discoveredAPIGroup.Versions {
-			for _, supportedVersion := range supportedMetricsAPIVersions {
-				if version.Version == supportedVersion {
-					return true
-				}
+			if slices.Contains(supportedMetricsAPIVersions, version.Version) {
+				return version.Version
 			}
 		}
 	}
-	return false
+	return ""
 }

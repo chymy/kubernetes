@@ -30,7 +30,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	auditapi "k8s.io/apiserver/pkg/apis/audit"
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/testutil"
@@ -245,16 +244,16 @@ func TestCheckForHostnameError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create an http request: %v", err)
 			}
-			auditCtx := &audit.AuditContext{Event: &auditapi.Event{Level: auditapi.LevelMetadata}}
-			req = req.WithContext(audit.WithAuditContext(req.Context(), auditCtx))
+			req = req.WithContext(audit.WithAuditContext(req.Context()))
+			auditCtx := audit.AuditContextFrom(req.Context())
 
 			_, err = client.Transport.RoundTrip(req)
 
 			if sanChecker.CheckRoundTripError(err) {
 				sanChecker.IncreaseMetricsCounter(req)
-
-				if len(auditCtx.Event.Annotations["missing-san.invalid-cert.kubernetes.io/"+req.URL.Hostname()]) == 0 {
-					t.Errorf("expected audit annotations, got %#v", auditCtx.Event.Annotations)
+				annotations := auditCtx.GetEventAnnotations()
+				if len(annotations["missing-san.invalid-cert.kubernetes.io/"+req.URL.Hostname()]) == 0 {
+					t.Errorf("expected audit annotations, got %#v", annotations)
 				}
 			}
 
@@ -387,8 +386,8 @@ func TestCheckForInsecureAlgorithmError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create an http request: %v", err)
 			}
-			auditCtx := &audit.AuditContext{Event: &auditapi.Event{Level: auditapi.LevelMetadata}}
-			req = req.WithContext(audit.WithAuditContext(req.Context(), auditCtx))
+			req = req.WithContext(audit.WithAuditContext(req.Context()))
+			auditCtx := audit.AuditContextFrom(req.Context())
 
 			// can't use tlsServer.Client() as it contains the server certificate
 			// in tls.Config.Certificates. The signatures are, however, only checked
@@ -412,9 +411,9 @@ func TestCheckForInsecureAlgorithmError(t *testing.T) {
 
 			if sha1checker.CheckRoundTripError(err) {
 				sha1checker.IncreaseMetricsCounter(req)
-
-				if len(auditCtx.Event.Annotations["insecure-sha1.invalid-cert.kubernetes.io/"+req.URL.Hostname()]) == 0 {
-					t.Errorf("expected audit annotations, got %#v", auditCtx.Event.Annotations)
+				annotations := auditCtx.GetEventAnnotations()
+				if len(annotations["insecure-sha1.invalid-cert.kubernetes.io/"+req.URL.Hostname()]) == 0 {
+					t.Errorf("expected audit annotations, got %#v", annotations)
 				}
 			}
 

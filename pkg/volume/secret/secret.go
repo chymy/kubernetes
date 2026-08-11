@@ -17,6 +17,7 @@ limitations under the License.
 package secret
 
 import (
+	"errors"
 	"fmt"
 
 	"k8s.io/klog/v2"
@@ -24,9 +25,11 @@ import (
 	utilstrings "k8s.io/utils/strings"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
@@ -89,22 +92,21 @@ func (plugin *secretPlugin) SupportsMountOption() bool {
 	return false
 }
 
-func (plugin *secretPlugin) SupportsBulkVolumeVerification() bool {
-	return false
+func (plugin *secretPlugin) SupportsSELinuxContextMount(spec *volume.Spec) (bool, error) {
+	return false, nil
 }
 
-func (plugin *secretPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod, opts volume.VolumeOptions) (volume.Mounter, error) {
+func (plugin *secretPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod) (volume.Mounter, error) {
 	return &secretVolumeMounter{
 		secretVolume: &secretVolume{
 			spec.Name(),
 			pod.UID,
 			plugin,
-			plugin.host.GetMounter(plugin.GetPluginName()),
+			plugin.host.GetMounter(),
 			volume.NewCachedMetrics(volume.NewMetricsDu(getPath(pod.UID, spec.Name(), plugin.host))),
 		},
 		source:    *spec.Volume.Secret,
 		pod:       *pod,
-		opts:      &opts,
 		getSecret: plugin.getSecret,
 	}, nil
 }
@@ -115,13 +117,13 @@ func (plugin *secretPlugin) NewUnmounter(volName string, podUID types.UID) (volu
 			volName,
 			podUID,
 			plugin,
-			plugin.host.GetMounter(plugin.GetPluginName()),
+			plugin.host.GetMounter(),
 			volume.NewCachedMetrics(volume.NewMetricsDu(getPath(podUID, volName, plugin.host))),
 		},
 	}, nil
 }
 
-func (plugin *secretPlugin) ConstructVolumeSpec(volName, mountPath string) (*volume.Spec, error) {
+func (plugin *secretPlugin) ConstructVolumeSpec(volName, mountPath string) (volume.ReconstructedVolume, error) {
 	secretVolume := &v1.Volume{
 		Name: volName,
 		VolumeSource: v1.VolumeSource{
@@ -130,7 +132,9 @@ func (plugin *secretPlugin) ConstructVolumeSpec(volName, mountPath string) (*vol
 			},
 		},
 	}
-	return volume.NewSpecFromVolume(secretVolume), nil
+	return volume.ReconstructedVolume{
+		Spec: volume.NewSpecFromVolume(secretVolume),
+	}, nil
 }
 
 type secretVolume struct {
@@ -154,7 +158,6 @@ type secretVolumeMounter struct {
 
 	source    v1.SecretVolumeSource
 	pod       v1.Pod
-	opts      *volume.VolumeOptions
 	getSecret func(namespace, name string) (*v1.Secret, error)
 }
 
@@ -176,7 +179,7 @@ func (b *secretVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs
 	klog.V(3).Infof("Setting up volume %v for pod %v at %v", b.volName, b.pod.UID, dir)
 
 	// Wrap EmptyDir, let it do the setup.
-	wrapped, err := b.plugin.host.NewWrapperMounter(b.volName, wrappedVolumeSpec(), &b.pod, *b.opts)
+	wrapped, err := b.plugin.host.NewWrapperMounter(b.volName, wrappedVolumeSpec(), &b.pod)
 	if err != nil {
 		return err
 	}
@@ -184,7 +187,7 @@ func (b *secretVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs
 	optional := b.source.Optional != nil && *b.source.Optional
 	secret, err := b.getSecret(b.pod.Namespace, b.source.SecretName)
 	if err != nil {
-		if !(errors.IsNotFound(err) && optional) {
+		if !(apierrors.IsNotFound(err) && optional) {
 			klog.Errorf("Couldn't get secret %v/%v: %v", b.pod.Namespace, b.source.SecretName, err)
 			return err
 		}
@@ -203,7 +206,7 @@ func (b *secretVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs
 		len(secret.Data),
 		totalBytes)
 
-	payload, err := MakePayload(b.source.Items, secret, b.source.DefaultMode, optional)
+	payload, err := MakePayload(b.source.Items, secret, b.source.DefaultMode, b.source.DefaultUser, optional)
 	if err != nil {
 		return err
 	}
@@ -226,7 +229,7 @@ func (b *secretVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs
 			}
 			tearDownErr := unmounter.TearDown()
 			if tearDownErr != nil {
-				klog.Errorf("error tearing down volume %s with : %v", b.volName, tearDownErr)
+				klog.Errorf("error tearing down volume %s: %v", b.volName, tearDownErr)
 			}
 		}
 	}()
@@ -238,23 +241,24 @@ func (b *secretVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs
 		return err
 	}
 
-	err = writer.Write(payload)
+	setPerms := func(_ string) error {
+		// This may be the first time writing and new files get created outside the timestamp subdirectory:
+		// change the permissions on the whole volume and not only in the timestamp directory.
+		ownershipChanger := volume.NewVolumeOwnership(b, dir, mounterArgs.FsGroup, nil /*fsGroupChangePolicy*/, volumeutil.FSGroupCompleteHook(b.plugin, nil))
+		return ownershipChanger.ChangePermissions()
+	}
+	err = writer.Write(payload, setPerms)
 	if err != nil {
 		klog.Errorf("Error writing payload to dir: %v", err)
 		return err
 	}
 
-	err = volume.SetVolumeOwnership(b, mounterArgs.FsGroup, nil /*fsGroupChangePolicy*/, volumeutil.FSGroupCompleteHook(b.plugin, nil))
-	if err != nil {
-		klog.Errorf("Error applying volume ownership settings for group: %v", mounterArgs.FsGroup)
-		return err
-	}
 	setupSuccess = true
 	return nil
 }
 
 // MakePayload function is exported so that it can be called from the projection volume driver
-func MakePayload(mappings []v1.KeyToPath, secret *v1.Secret, defaultMode *int32, optional bool) (map[string]volumeutil.FileProjection, error) {
+func MakePayload(mappings []v1.KeyToPath, secret *v1.Secret, defaultMode *int32, defaultUser *int64, optional bool) (map[string]volumeutil.FileProjection, error) {
 	if defaultMode == nil {
 		return nil, fmt.Errorf("no defaultMode used, not even the default value for it")
 	}
@@ -266,6 +270,9 @@ func MakePayload(mappings []v1.KeyToPath, secret *v1.Secret, defaultMode *int32,
 		for name, data := range secret.Data {
 			fileProjection.Data = []byte(data)
 			fileProjection.Mode = *defaultMode
+			if utilfeature.DefaultFeatureGate.Enabled(features.AtomicWriteVolumeUserFields) {
+				fileProjection.FsUser = defaultUser
+			}
 			payload[name] = fileProjection
 		}
 	} else {
@@ -276,16 +283,18 @@ func MakePayload(mappings []v1.KeyToPath, secret *v1.Secret, defaultMode *int32,
 					continue
 				}
 				errMsg := fmt.Sprintf("references non-existent secret key: %s", ktp.Key)
-				klog.Errorf(errMsg)
-				return nil, fmt.Errorf(errMsg)
+				klog.Error(errMsg)
+				return nil, errors.New(errMsg)
 			}
 
 			fileProjection.Data = []byte(content)
+			fileProjection.FsUser = volumeutil.ResolvesFsUser(defaultUser, ktp.User)
 			if ktp.Mode != nil {
 				fileProjection.Mode = *ktp.Mode
 			} else {
 				fileProjection.Mode = *defaultMode
 			}
+
 			payload[ktp.Path] = fileProjection
 		}
 	}

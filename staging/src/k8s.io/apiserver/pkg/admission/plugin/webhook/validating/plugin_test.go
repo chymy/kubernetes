@@ -24,12 +24,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apiserver/pkg/endpoints/request"
-	clocktesting "k8s.io/utils/clock/testing"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	admissionmetrics "k8s.io/apiserver/pkg/admission/metrics"
 	webhooktesting "k8s.io/apiserver/pkg/admission/plugin/webhook/testing"
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
+	"k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/component-base/metrics/testutil"
+	clocktesting "k8s.io/utils/clock/testing"
 )
 
 // BenchmarkValidate tests that ValidatingWebhook#Validate works as expected
@@ -38,7 +40,7 @@ func BenchmarkValidate(b *testing.B) {
 	if len(testServerURL) == 0 {
 		b.Log("warning, WEBHOOK_TEST_SERVER_URL not set, starting in-process server, benchmarks will include webhook cost.")
 		b.Log("to run a standalone server, run:")
-		b.Log("go run ./vendor/k8s.io/apiserver/pkg/admission/plugin/webhook/testing/main/main.go")
+		b.Log("go run k8s.io/apiserver/pkg/admission/plugin/webhook/testing/main/main.go")
 		testServer := webhooktesting.NewTestServer(b)
 		testServer.StartTLS()
 		defer testServer.Close()
@@ -76,13 +78,13 @@ func BenchmarkValidate(b *testing.B) {
 			wh.SetExternalKubeClientSet(client)
 			wh.SetExternalKubeInformerFactory(informer)
 
-			informer.Start(stopCh)
-			informer.WaitForCacheSync(stopCh)
-
 			if err = wh.ValidateInitialization(); err != nil {
 				b.Errorf("%s: failed to validate initialization: %v", tt.Name, err)
 				return
 			}
+
+			informer.Start(stopCh)
+			informer.WaitForCacheSync(stopCh)
 
 			attr := webhooktesting.NewAttribute(ns, nil, tt.IsDryRun)
 
@@ -127,12 +129,16 @@ func TestValidate(t *testing.T) {
 		wh.SetExternalKubeClientSet(client)
 		wh.SetExternalKubeInformerFactory(informer)
 
-		informer.Start(stopCh)
-		informer.WaitForCacheSync(stopCh)
-
 		if err = wh.ValidateInitialization(); err != nil {
 			t.Errorf("%s: failed to validate initialization: %v", tt.Name, err)
 			continue
+		}
+
+		informer.Start(stopCh)
+		informer.WaitForCacheSync(stopCh)
+
+		if len(tt.ExpectRejectionMetrics) > 0 {
+			admissionmetrics.Metrics.WebhookRejectionGathererForTest().Reset()
 		}
 
 		attr := webhooktesting.NewAttribute(ns, nil, tt.IsDryRun)
@@ -148,6 +154,15 @@ func TestValidate(t *testing.T) {
 		}
 		if _, isStatusErr := err.(*errors.StatusError); err != nil && !isStatusErr {
 			t.Errorf("%s: expected a StatusError, got %T", tt.Name, err)
+		}
+		if len(tt.ExpectRejectionMetrics) > 0 {
+			expectedMetrics := `
+# HELP apiserver_admission_webhook_rejection_count [ALPHA] Admission webhook rejection count, identified by name and broken out for each admission type (validating or admit) and operation. Additional labels specify an error type (calling_webhook_error or apiserver_internal_error if an error occurred; no_error otherwise) and optionally a non-zero rejection code if the webhook rejects the request with an HTTP status code (honored by the apiserver when the code is greater or equal to 400). Codes greater than 600 are truncated to 600, to keep the metrics cardinality bounded.
+# TYPE apiserver_admission_webhook_rejection_count counter
+` + tt.ExpectRejectionMetrics + "\n"
+			if err := testutil.CollectAndCompare(admissionmetrics.Metrics.WebhookRejectionGathererForTest(), strings.NewReader(expectedMetrics), "apiserver_admission_webhook_rejection_count"); err != nil {
+				t.Errorf("unexpected collecting result:\n%s", err)
+			}
 		}
 		fakeAttr, ok := attr.(*webhooktesting.FakeAttributes)
 		if !ok {
@@ -193,13 +208,13 @@ func TestValidateCachedClient(t *testing.T) {
 		wh.SetExternalKubeClientSet(client)
 		wh.SetExternalKubeInformerFactory(informer)
 
-		informer.Start(stopCh)
-		informer.WaitForCacheSync(stopCh)
-
 		if err = wh.ValidateInitialization(); err != nil {
 			t.Errorf("%s: failed to validate initialization: %v", tt.Name, err)
 			continue
 		}
+
+		informer.Start(stopCh)
+		informer.WaitForCacheSync(stopCh)
 
 		err = wh.Validate(context.TODO(), webhooktesting.NewAttribute(ns, nil, false), objectInterfaces)
 		if tt.ExpectAllow != (err == nil) {
@@ -252,13 +267,13 @@ func TestValidateWebhookDuration(ts *testing.T) {
 			wh.SetExternalKubeClientSet(client)
 			wh.SetExternalKubeInformerFactory(informer)
 
-			informer.Start(stopCh)
-			informer.WaitForCacheSync(stopCh)
-
 			if err = wh.ValidateInitialization(); err != nil {
 				t.Errorf("failed to validate initialization: %v", err)
 				return
 			}
+
+			informer.Start(stopCh)
+			informer.WaitForCacheSync(stopCh)
 
 			_ = wh.Validate(ctx, webhooktesting.NewAttribute(ns, nil, test.IsDryRun), objectInterfaces)
 			wd, ok := request.LatencyTrackersFrom(ctx)
@@ -313,13 +328,13 @@ func TestValidatePanicHandling(t *testing.T) {
 		wh.SetExternalKubeClientSet(client)
 		wh.SetExternalKubeInformerFactory(informer)
 
-		informer.Start(stopCh)
-		informer.WaitForCacheSync(stopCh)
-
 		if err = wh.ValidateInitialization(); err != nil {
 			t.Errorf("%s: failed to validate initialization: %v", tt.Name, err)
 			continue
 		}
+
+		informer.Start(stopCh)
+		informer.WaitForCacheSync(stopCh)
 
 		attr := webhooktesting.NewAttribute(ns, nil, tt.IsDryRun)
 		err = wh.Validate(context.TODO(), attr, objectInterfaces)

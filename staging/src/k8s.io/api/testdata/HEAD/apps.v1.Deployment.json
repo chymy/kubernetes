@@ -112,7 +112,8 @@
             },
             "emptyDir": {
               "medium": "mediumValue",
-              "sizeLimit": "0"
+              "sizeLimit": "0",
+              "mode": 3
             },
             "gcePersistentDisk": {
               "pdName": "pdNameValue",
@@ -137,11 +138,13 @@
                 {
                   "key": "keyValue",
                   "path": "pathValue",
-                  "mode": 3
+                  "mode": 3,
+                  "user": 4
                 }
               ],
               "defaultMode": 3,
-              "optional": true
+              "optional": true,
+              "defaultUser": 5
             },
             "nfs": {
               "server": "serverValue",
@@ -236,10 +239,12 @@
                     "resource": "resourceValue",
                     "divisor": "0"
                   },
-                  "mode": 4
+                  "mode": 4,
+                  "user": 5
                 }
               ],
-              "defaultMode": 2
+              "defaultMode": 2,
+              "defaultUser": 3
             },
             "fc": {
               "targetWWNs": [
@@ -263,11 +268,13 @@
                 {
                   "key": "keyValue",
                   "path": "pathValue",
-                  "mode": 3
+                  "mode": 3,
+                  "user": 4
                 }
               ],
               "defaultMode": 3,
-              "optional": true
+              "optional": true,
+              "defaultUser": 5
             },
             "vsphereVolume": {
               "volumePath": "volumePathValue",
@@ -304,7 +311,8 @@
                       {
                         "key": "keyValue",
                         "path": "pathValue",
-                        "mode": 3
+                        "mode": 3,
+                        "user": 4
                       }
                     ],
                     "optional": true
@@ -322,7 +330,8 @@
                           "resource": "resourceValue",
                           "divisor": "0"
                         },
-                        "mode": 4
+                        "mode": 4,
+                        "user": 5
                       }
                     ]
                   },
@@ -332,7 +341,8 @@
                       {
                         "key": "keyValue",
                         "path": "pathValue",
-                        "mode": 3
+                        "mode": 3,
+                        "user": 4
                       }
                     ],
                     "optional": true
@@ -340,11 +350,46 @@
                   "serviceAccountToken": {
                     "audience": "audienceValue",
                     "expirationSeconds": 2,
-                    "path": "pathValue"
+                    "path": "pathValue",
+                    "user": 4
+                  },
+                  "clusterTrustBundle": {
+                    "name": "nameValue",
+                    "signerName": "signerNameValue",
+                    "labelSelector": {
+                      "matchLabels": {
+                        "matchLabelsKey": "matchLabelsValue"
+                      },
+                      "matchExpressions": [
+                        {
+                          "key": "keyValue",
+                          "operator": "operatorValue",
+                          "values": [
+                            "valuesValue"
+                          ]
+                        }
+                      ]
+                    },
+                    "optional": true,
+                    "path": "pathValue",
+                    "user": 6
+                  },
+                  "podCertificate": {
+                    "signerName": "signerNameValue",
+                    "keyType": "keyTypeValue",
+                    "maxExpirationSeconds": 3,
+                    "credentialBundlePath": "credentialBundlePathValue",
+                    "keyPath": "keyPathValue",
+                    "certificateChainPath": "certificateChainPathValue",
+                    "userAnnotations": {
+                      "userAnnotationsKey": "userAnnotationsValue"
+                    },
+                    "user": 8
                   }
                 }
               ],
-              "defaultMode": 2
+              "defaultMode": 2,
+              "defaultUser": 3
             },
             "portworxVolume": {
               "volumeID": "volumeIDValue",
@@ -466,10 +511,16 @@
                   "dataSourceRef": {
                     "apiGroup": "apiGroupValue",
                     "kind": "kindValue",
-                    "name": "nameValue"
-                  }
+                    "name": "nameValue",
+                    "namespace": "namespaceValue"
+                  },
+                  "volumeAttributesClassName": "volumeAttributesClassNameValue"
                 }
               }
+            },
+            "image": {
+              "reference": "referenceValue",
+              "pullPolicy": "pullPolicyValue"
             }
           }
         ],
@@ -529,6 +580,12 @@
                     "name": "nameValue",
                     "key": "keyValue",
                     "optional": true
+                  },
+                  "fileKeyRef": {
+                    "volumeName": "volumeNameValue",
+                    "path": "pathValue",
+                    "key": "keyValue",
+                    "optional": true
                   }
                 }
               }
@@ -539,16 +596,44 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue",
+                  "request": "requestValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
+            "restartPolicy": "restartPolicyValue",
+            "restartPolicyRules": [
+              {
+                "action": "actionValue",
+                "exitCodes": {
+                  "operator": "operatorValue",
+                  "values": [
+                    2
+                  ]
+                }
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
                 "readOnly": true,
+                "recursiveReadOnly": "recursiveReadOnlyValue",
                 "mountPath": "mountPathValue",
                 "subPath": "subPathValue",
                 "mountPropagation": "mountPropagationValue",
-                "subPathExpr": "subPathExprValue"
+                "subPathExpr": "subPathExprValue",
+                "bindMountOptions": [
+                  "bindMountOptionsValue"
+                ]
               }
             ],
             "volumeDevices": [
@@ -573,7 +658,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -581,7 +667,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -606,7 +693,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -614,7 +702,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -639,7 +728,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -647,7 +737,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -673,11 +764,15 @@
                       "name": "nameValue",
                       "value": "valueValue"
                     }
-                  ]
+                  ],
+                  "protocol": "protocolValue"
                 },
                 "tcpSocket": {
                   "port": "portValue",
                   "host": "hostValue"
+                },
+                "sleep": {
+                  "seconds": 1
                 }
               },
               "preStop": {
@@ -696,13 +791,18 @@
                       "name": "nameValue",
                       "value": "valueValue"
                     }
-                  ]
+                  ],
+                  "protocol": "protocolValue"
                 },
                 "tcpSocket": {
                   "port": "portValue",
                   "host": "hostValue"
+                },
+                "sleep": {
+                  "seconds": 1
                 }
-              }
+              },
+              "stopSignal": "stopSignalValue"
             },
             "terminationMessagePath": "terminationMessagePathValue",
             "terminationMessagePolicy": "terminationMessagePolicyValue",
@@ -736,6 +836,10 @@
               "allowPrivilegeEscalation": true,
               "procMount": "procMountValue",
               "seccompProfile": {
+                "type": "typeValue",
+                "localhostProfile": "localhostProfileValue"
+              },
+              "appArmorProfile": {
                 "type": "typeValue",
                 "localhostProfile": "localhostProfileValue"
               }
@@ -801,6 +905,12 @@
                     "name": "nameValue",
                     "key": "keyValue",
                     "optional": true
+                  },
+                  "fileKeyRef": {
+                    "volumeName": "volumeNameValue",
+                    "path": "pathValue",
+                    "key": "keyValue",
+                    "optional": true
                   }
                 }
               }
@@ -811,16 +921,44 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue",
+                  "request": "requestValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
+            "restartPolicy": "restartPolicyValue",
+            "restartPolicyRules": [
+              {
+                "action": "actionValue",
+                "exitCodes": {
+                  "operator": "operatorValue",
+                  "values": [
+                    2
+                  ]
+                }
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
                 "readOnly": true,
+                "recursiveReadOnly": "recursiveReadOnlyValue",
                 "mountPath": "mountPathValue",
                 "subPath": "subPathValue",
                 "mountPropagation": "mountPropagationValue",
-                "subPathExpr": "subPathExprValue"
+                "subPathExpr": "subPathExprValue",
+                "bindMountOptions": [
+                  "bindMountOptionsValue"
+                ]
               }
             ],
             "volumeDevices": [
@@ -845,7 +983,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -853,7 +992,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -878,7 +1018,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -886,7 +1027,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -911,7 +1053,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -919,7 +1062,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -945,11 +1089,15 @@
                       "name": "nameValue",
                       "value": "valueValue"
                     }
-                  ]
+                  ],
+                  "protocol": "protocolValue"
                 },
                 "tcpSocket": {
                   "port": "portValue",
                   "host": "hostValue"
+                },
+                "sleep": {
+                  "seconds": 1
                 }
               },
               "preStop": {
@@ -968,13 +1116,18 @@
                       "name": "nameValue",
                       "value": "valueValue"
                     }
-                  ]
+                  ],
+                  "protocol": "protocolValue"
                 },
                 "tcpSocket": {
                   "port": "portValue",
                   "host": "hostValue"
+                },
+                "sleep": {
+                  "seconds": 1
                 }
-              }
+              },
+              "stopSignal": "stopSignalValue"
             },
             "terminationMessagePath": "terminationMessagePathValue",
             "terminationMessagePolicy": "terminationMessagePolicyValue",
@@ -1008,6 +1161,10 @@
               "allowPrivilegeEscalation": true,
               "procMount": "procMountValue",
               "seccompProfile": {
+                "type": "typeValue",
+                "localhostProfile": "localhostProfileValue"
+              },
+              "appArmorProfile": {
                 "type": "typeValue",
                 "localhostProfile": "localhostProfileValue"
               }
@@ -1073,6 +1230,12 @@
                     "name": "nameValue",
                     "key": "keyValue",
                     "optional": true
+                  },
+                  "fileKeyRef": {
+                    "volumeName": "volumeNameValue",
+                    "path": "pathValue",
+                    "key": "keyValue",
+                    "optional": true
                   }
                 }
               }
@@ -1083,16 +1246,44 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue",
+                  "request": "requestValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
+            "restartPolicy": "restartPolicyValue",
+            "restartPolicyRules": [
+              {
+                "action": "actionValue",
+                "exitCodes": {
+                  "operator": "operatorValue",
+                  "values": [
+                    2
+                  ]
+                }
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
                 "readOnly": true,
+                "recursiveReadOnly": "recursiveReadOnlyValue",
                 "mountPath": "mountPathValue",
                 "subPath": "subPathValue",
                 "mountPropagation": "mountPropagationValue",
-                "subPathExpr": "subPathExprValue"
+                "subPathExpr": "subPathExprValue",
+                "bindMountOptions": [
+                  "bindMountOptionsValue"
+                ]
               }
             ],
             "volumeDevices": [
@@ -1117,7 +1308,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -1125,7 +1317,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -1150,7 +1343,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -1158,7 +1352,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -1183,7 +1378,8 @@
                     "name": "nameValue",
                     "value": "valueValue"
                   }
-                ]
+                ],
+                "protocol": "protocolValue"
               },
               "tcpSocket": {
                 "port": "portValue",
@@ -1191,7 +1387,8 @@
               },
               "grpc": {
                 "port": 1,
-                "service": "serviceValue"
+                "service": "serviceValue",
+                "mode": "modeValue"
               },
               "initialDelaySeconds": 2,
               "timeoutSeconds": 3,
@@ -1217,11 +1414,15 @@
                       "name": "nameValue",
                       "value": "valueValue"
                     }
-                  ]
+                  ],
+                  "protocol": "protocolValue"
                 },
                 "tcpSocket": {
                   "port": "portValue",
                   "host": "hostValue"
+                },
+                "sleep": {
+                  "seconds": 1
                 }
               },
               "preStop": {
@@ -1240,13 +1441,18 @@
                       "name": "nameValue",
                       "value": "valueValue"
                     }
-                  ]
+                  ],
+                  "protocol": "protocolValue"
                 },
                 "tcpSocket": {
                   "port": "portValue",
                   "host": "hostValue"
+                },
+                "sleep": {
+                  "seconds": 1
                 }
-              }
+              },
+              "stopSignal": "stopSignalValue"
             },
             "terminationMessagePath": "terminationMessagePathValue",
             "terminationMessagePolicy": "terminationMessagePolicyValue",
@@ -1280,6 +1486,10 @@
               "allowPrivilegeEscalation": true,
               "procMount": "procMountValue",
               "seccompProfile": {
+                "type": "typeValue",
+                "localhostProfile": "localhostProfileValue"
+              },
+              "appArmorProfile": {
                 "type": "typeValue",
                 "localhostProfile": "localhostProfileValue"
               }
@@ -1324,6 +1534,7 @@
           "supplementalGroups": [
             4
           ],
+          "supplementalGroupsPolicy": "supplementalGroupsPolicyValue",
           "fsGroup": 5,
           "sysctls": [
             {
@@ -1335,7 +1546,12 @@
           "seccompProfile": {
             "type": "typeValue",
             "localhostProfile": "localhostProfileValue"
-          }
+          },
+          "appArmorProfile": {
+            "type": "typeValue",
+            "localhostProfile": "localhostProfileValue"
+          },
+          "seLinuxChangePolicy": "seLinuxChangePolicyValue"
         },
         "imagePullSecrets": [
           {
@@ -1430,7 +1646,13 @@
                       ]
                     }
                   ]
-                }
+                },
+                "matchLabelKeys": [
+                  "matchLabelKeysValue"
+                ],
+                "mismatchLabelKeys": [
+                  "mismatchLabelKeysValue"
+                ]
               }
             ],
             "preferredDuringSchedulingIgnoredDuringExecution": [
@@ -1468,7 +1690,13 @@
                         ]
                       }
                     ]
-                  }
+                  },
+                  "matchLabelKeys": [
+                    "matchLabelKeysValue"
+                  ],
+                  "mismatchLabelKeys": [
+                    "mismatchLabelKeysValue"
+                  ]
                 }
               }
             ]
@@ -1507,7 +1735,13 @@
                       ]
                     }
                   ]
-                }
+                },
+                "matchLabelKeys": [
+                  "matchLabelKeysValue"
+                ],
+                "mismatchLabelKeys": [
+                  "mismatchLabelKeysValue"
+                ]
               }
             ],
             "preferredDuringSchedulingIgnoredDuringExecution": [
@@ -1545,7 +1779,13 @@
                         ]
                       }
                     ]
-                  }
+                  },
+                  "matchLabelKeys": [
+                    "matchLabelKeysValue"
+                  ],
+                  "mismatchLabelKeys": [
+                    "mismatchLabelKeysValue"
+                  ]
                 }
               }
             ]
@@ -1617,13 +1857,53 @@
             },
             "minDomains": 5,
             "nodeAffinityPolicy": "nodeAffinityPolicyValue",
-            "nodeTaintsPolicy": "nodeTaintsPolicyValue"
+            "nodeTaintsPolicy": "nodeTaintsPolicyValue",
+            "matchLabelKeys": [
+              "matchLabelKeysValue"
+            ]
           }
         ],
         "setHostnameAsFQDN": true,
         "os": {
           "name": "nameValue"
-        }
+        },
+        "hostUsers": true,
+        "schedulingGates": [
+          {
+            "name": "nameValue"
+          }
+        ],
+        "resourceClaims": [
+          {
+            "name": "nameValue",
+            "resourceClaimName": "resourceClaimNameValue",
+            "resourceClaimTemplateName": "resourceClaimTemplateNameValue"
+          }
+        ],
+        "resources": {
+          "limits": {
+            "limitsKey": "0"
+          },
+          "requests": {
+            "requestsKey": "0"
+          },
+          "claims": [
+            {
+              "name": "nameValue",
+              "request": "requestValue"
+            }
+          ]
+        },
+        "hostnameOverride": "hostnameOverrideValue",
+        "schedulingGroup": {
+          "podGroupName": "podGroupNameValue"
+        },
+        "evictionResponders": [
+          {
+            "name": "nameValue",
+            "priority": 2
+          }
+        ]
       }
     },
     "strategy": {
@@ -1645,6 +1925,7 @@
     "readyReplicas": 7,
     "availableReplicas": 4,
     "unavailableReplicas": 5,
+    "terminatingReplicas": 9,
     "conditions": [
       {
         "type": "typeValue",

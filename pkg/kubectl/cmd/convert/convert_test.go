@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/rest/fake"
 	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
 )
@@ -62,41 +62,22 @@ func TestConvertObject(t *testing.T) {
 			},
 		},
 		{
-			name:          "v1 HPA to v2beta1 HPA",
-			file:          "../../../../test/fixtures/pkg/kubectl/cmd/convert/v1HPA.yaml",
-			outputVersion: "autoscaling/v2beta1",
-			fields: []checkField{
-				{
-					expected: "apiVersion: autoscaling/v2beta1",
-				},
-				{
-					expected: "name: cpu",
-				},
-				{
-					expected: "targetAverageUtilization: 50",
-				},
-			},
-		},
-		{
-			name:          "v2beta1 HPA to v1 HPA",
-			file:          "../../../../test/fixtures/pkg/kubectl/cmd/convert/v2beta1HPA.yaml",
-			outputVersion: "autoscaling/v1",
-			fields: []checkField{
-				{
-					expected: "apiVersion: autoscaling/v1",
-				},
-				{
-					expected: "targetCPUUtilizationPercentage: 50",
-				},
-			},
-		},
-		{
 			name:          "v1beta1 Ingress to extensions Ingress",
 			file:          "../../../../test/fixtures/pkg/kubectl/cmd/convert/v1beta1ingress.yaml",
 			outputVersion: "extensions/v1beta1",
 			fields: []checkField{
 				{
 					expected: "apiVersion: extensions/v1beta1",
+				},
+			},
+		},
+		{
+			name:          "converting multiple including service to neworking.k8s.io/v1",
+			file:          "../../../../test/fixtures/pkg/kubectl/cmd/convert/serviceandingress.yaml",
+			outputVersion: "networking.k8s.io/v1",
+			fields: []checkField{
+				{
+					expected: "apiVersion: networking.k8s.io/v1",
 				},
 			},
 		},
@@ -116,7 +97,7 @@ func TestConvertObject(t *testing.T) {
 				}
 
 				buf := bytes.NewBuffer([]byte{})
-				cmd := NewCmdConvert(tf, genericclioptions.IOStreams{Out: buf, ErrOut: buf})
+				cmd := NewCmdConvert(tf, genericiooptions.IOStreams{Out: buf, ErrOut: buf})
 				cmd.Flags().Set("filename", tc.file)
 				cmd.Flags().Set("output-version", tc.outputVersion)
 				cmd.Flags().Set("local", "true")

@@ -44,6 +44,9 @@ spec:
   podCIDR: podCIDRValue
   podCIDRs:
   - podCIDRsValue
+  podPreemptionPolicy:
+    disableResizePreemption:
+    - disableResizePreemptionValue
   providerID: providerIDValue
   taints:
   - effect: effectValue
@@ -92,6 +95,10 @@ status:
   daemonEndpoints:
     kubeletEndpoint:
       Port: 1
+  declaredFeatures:
+  - declaredFeaturesValue
+  features:
+    supplementalGroupsPolicy: true
   images:
   - names:
     - namesValue
@@ -106,8 +113,16 @@ status:
     machineID: machineIDValue
     operatingSystem: operatingSystemValue
     osImage: osImageValue
+    runningInUserNamespace: true
+    swap:
+      capacity: 1
     systemUUID: systemUUIDValue
   phase: phaseValue
+  runtimeHandlers:
+  - features:
+      recursiveReadOnlyMounts: true
+      userNamespaces: true
+    name: nameValue
   volumesAttached:
   - devicePath: devicePathValue
     name: nameValue

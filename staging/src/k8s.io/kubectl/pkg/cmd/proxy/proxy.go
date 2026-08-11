@@ -26,9 +26,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/proxy"
 	"k8s.io/kubectl/pkg/util/i18n"
@@ -56,7 +58,7 @@ type ProxyOptions struct {
 	clientConfig *rest.Config
 	filter       *proxy.FilterServer
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 const (
@@ -98,7 +100,7 @@ var (
 )
 
 // NewProxyOptions creates the options for proxy
-func NewProxyOptions(ioStreams genericclioptions.IOStreams) *ProxyOptions {
+func NewProxyOptions(ioStreams genericiooptions.IOStreams) *ProxyOptions {
 	return &ProxyOptions{
 		IOStreams:     ioStreams,
 		staticPrefix:  defaultStaticPrefix,
@@ -113,7 +115,7 @@ func NewProxyOptions(ioStreams genericclioptions.IOStreams) *ProxyOptions {
 }
 
 // NewCmdProxy returns the proxy Cobra command
-func NewCmdProxy(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdProxy(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewProxyOptions(ioStreams)
 
 	cmd := &cobra.Command{
@@ -176,6 +178,9 @@ func (o *ProxyOptions) Complete(f cmdutil.Factory) error {
 		}
 		o.filter = nil
 	} else {
+		if o.rejectPaths == "" || o.rejectMethods == "" {
+			klog.Warning("Request filter has been relaxed, your proxy may be vulnerable to attacks, please be cautious")
+		}
 		o.filter = &proxy.FilterServer{
 			AcceptPaths:   proxy.MakeRegexpArrayOrDie(o.acceptPaths),
 			RejectPaths:   proxy.MakeRegexpArrayOrDie(o.rejectPaths),

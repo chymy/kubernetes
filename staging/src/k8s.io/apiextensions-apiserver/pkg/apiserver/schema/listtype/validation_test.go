@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
+	"k8s.io/utils/ptr"
 )
 
 func TestValidateListSetsAndMaps(t *testing.T) {
@@ -68,7 +69,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 				Properties: map[string]schema.Structural{
 					"array": {
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Generic: schema.Generic{
 							Type: "array",
@@ -88,7 +89,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 				Properties: map[string]schema.Structural{
 					"array": {
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Generic: schema.Generic{
 							Type: "array",
@@ -111,7 +112,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 				Properties: map[string]schema.Structural{
 					"array": {
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Generic: schema.Generic{
 							Type: "array",
@@ -131,7 +132,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 				Properties: map[string]schema.Structural{
 					"array": {
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Generic: schema.Generic{
 							Type: "array",
@@ -181,7 +182,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							Type: "array",
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Items: &schema.Structural{
 							Generic: schema.Generic{
@@ -202,18 +203,18 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 			schema: &schema.Structural{
 				Generic: schema.Generic{
 					Type: "object",
-					AdditionalProperties: &schema.StructuralOrBool{
-						Structural: &schema.Structural{
+				},
+				AdditionalProperties: &schema.StructuralOrBool{
+					Structural: &schema.Structural{
+						Generic: schema.Generic{
+							Type: "array",
+						},
+						Extensions: schema.Extensions{
+							XListType: ptr.To("set"),
+						},
+						Items: &schema.Structural{
 							Generic: schema.Generic{
-								Type: "array",
-							},
-							Extensions: schema.Extensions{
-								XListType: strPtr("set"),
-							},
-							Items: &schema.Structural{
-								Generic: schema.Generic{
-									Type: "string",
-								},
+								Type: "string",
 							},
 						},
 					},
@@ -244,7 +245,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 								Type: "array",
 							},
 							Extensions: schema.Extensions{
-								XListType: strPtr("set"),
+								XListType: ptr.To("set"),
 							},
 							Items: &schema.Structural{
 								Generic: schema.Generic{
@@ -277,14 +278,14 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							Type: "array",
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "array",
 							},
 							Extensions: schema.Extensions{
-								XListType: strPtr("set"),
+								XListType: ptr.To("set"),
 							},
 						},
 					},
@@ -325,7 +326,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"integers": {
@@ -338,7 +339,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"booleans": {
@@ -351,7 +352,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"float64": {
@@ -364,7 +365,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"nil": {
@@ -377,7 +378,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"empty maps": {
@@ -387,17 +388,17 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type: "string",
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type: "string",
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"map values": {
@@ -407,17 +408,17 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type: "string",
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type: "string",
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"nil values": {
@@ -427,18 +428,18 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type:     "string",
-											Nullable: true,
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type:     "string",
+										Nullable: true,
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"array": {
@@ -456,7 +457,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"nil array": {
@@ -475,7 +476,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 					"multiple duplicates": {
@@ -485,17 +486,17 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type: "string",
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type: "string",
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 					},
 				},
@@ -528,7 +529,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							Type: "array",
 						},
 						Extensions: schema.Extensions{
-							XListType: strPtr("set"),
+							XListType: ptr.To("set"),
 						},
 						Items: &schema.Structural{
 							Generic: schema.Generic{
@@ -583,7 +584,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -597,7 +598,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -611,7 +612,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -625,7 +626,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -640,7 +641,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -659,7 +660,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -670,17 +671,17 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type: "string",
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type: "string",
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -691,17 +692,17 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type: "string",
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type: "string",
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a", "b"},
 						},
 					},
@@ -712,17 +713,17 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type: "string",
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type: "string",
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a", "b"},
 						},
 					},
@@ -733,18 +734,18 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type:     "string",
-											Nullable: true,
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type:     "string",
+										Nullable: true,
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -776,7 +777,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -808,7 +809,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -845,7 +846,7 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a", "b"},
 						},
 					},
@@ -856,18 +857,18 @@ func TestValidateListSetsAndMaps(t *testing.T) {
 						Items: &schema.Structural{
 							Generic: schema.Generic{
 								Type: "object",
-								AdditionalProperties: &schema.StructuralOrBool{
-									Structural: &schema.Structural{
-										Generic: schema.Generic{
-											Type:     "string",
-											Nullable: true,
-										},
+							},
+							AdditionalProperties: &schema.StructuralOrBool{
+								Structural: &schema.Structural{
+									Generic: schema.Generic{
+										Type:     "string",
+										Nullable: true,
 									},
 								},
 							},
 						},
 						Extensions: schema.Extensions{
-							XListType:    strPtr("map"),
+							XListType:    ptr.To("map"),
 							XListMapKeys: []string{"a"},
 						},
 					},
@@ -936,5 +937,3 @@ func duplicate(path ...string) validationMatch {
 func invalid(path ...string) validationMatch {
 	return validationMatch{path: field.NewPath(path[0], path[1:]...), errorType: field.ErrorTypeInvalid}
 }
-
-func strPtr(s string) *string { return &s }

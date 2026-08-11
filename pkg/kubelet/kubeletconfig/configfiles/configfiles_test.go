@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -27,9 +28,10 @@ import (
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	kubeletscheme "k8s.io/kubernetes/pkg/kubelet/apis/config/scheme"
-	utilfiles "k8s.io/kubernetes/pkg/kubelet/kubeletconfig/util/files"
 	utiltest "k8s.io/kubernetes/pkg/kubelet/kubeletconfig/util/test"
 	utilfs "k8s.io/kubernetes/pkg/util/filesystem"
+	"k8s.io/kubernetes/test/utils/ktesting"
+	"k8s.io/utils/ptr"
 )
 
 const configDir = "/test-config-dir"
@@ -37,12 +39,14 @@ const relativePath = "relative/path/test"
 const kubeletFile = "kubelet"
 
 func TestLoad(t *testing.T) {
+	tCtx := ktesting.Init(t)
 	cases := []struct {
-		desc      string
-		file      *string
-		expect    *kubeletconfig.KubeletConfiguration
-		err       string
-		strictErr bool
+		desc          string
+		file          *string
+		expect        *kubeletconfig.KubeletConfiguration
+		err           string
+		strictErr     bool
+		skipOnWindows bool
 	}{
 		// missing file
 		{
@@ -52,59 +56,61 @@ func TestLoad(t *testing.T) {
 		// empty file
 		{
 			desc: "empty file",
-			file: newString(``),
+			file: ptr.To(``),
 			err:  "was empty",
 		},
 		// invalid format
 		{
 			desc: "invalid yaml",
-			file: newString(`*`),
+			file: ptr.To(`*`),
 			err:  "failed to decode",
 		},
 		{
 			desc: "invalid json",
-			file: newString(`{*`),
+			file: ptr.To(`{*`),
 			err:  "failed to decode",
 		},
 		// invalid object
 		{
 			desc: "missing kind",
-			file: newString(`{"apiVersion":"kubelet.config.k8s.io/v1beta1"}`),
+			file: ptr.To(`{"apiVersion":"kubelet.config.k8s.io/v1beta1"}`),
 			err:  "failed to decode",
 		},
 		{
 			desc: "missing version",
-			file: newString(`{"kind":"KubeletConfiguration"}`),
+			file: ptr.To(`{"kind":"KubeletConfiguration"}`),
 			err:  "failed to decode",
 		},
 		{
 			desc: "unregistered kind",
-			file: newString(`{"kind":"BogusKind","apiVersion":"kubelet.config.k8s.io/v1beta1"}`),
+			file: ptr.To(`{"kind":"BogusKind","apiVersion":"kubelet.config.k8s.io/v1beta1"}`),
 			err:  "failed to decode",
 		},
 		{
 			desc: "unregistered version",
-			file: newString(`{"kind":"KubeletConfiguration","apiVersion":"bogusversion"}`),
+			file: ptr.To(`{"kind":"KubeletConfiguration","apiVersion":"bogusversion"}`),
 			err:  "failed to decode",
 		},
 
 		// empty object with correct kind and version should result in the defaults for that kind and version
 		{
 			desc: "default from yaml",
-			file: newString(`kind: KubeletConfiguration
+			file: ptr.To(`kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1`),
-			expect: newConfig(t),
+			expect:        newConfig(t),
+			skipOnWindows: true,
 		},
 		{
-			desc:   "default from json",
-			file:   newString(`{"kind":"KubeletConfiguration","apiVersion":"kubelet.config.k8s.io/v1beta1"}`),
-			expect: newConfig(t),
+			desc:          "default from json",
+			file:          ptr.To(`{"kind":"KubeletConfiguration","apiVersion":"kubelet.config.k8s.io/v1beta1"}`),
+			expect:        newConfig(t),
+			skipOnWindows: true,
 		},
 
 		// relative path
 		{
 			desc: "yaml, relative path is resolved",
-			file: newString(fmt.Sprintf(`kind: KubeletConfiguration
+			file: ptr.To(fmt.Sprintf(`kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 staticPodPath: %s`, relativePath)),
 			expect: func() *kubeletconfig.KubeletConfiguration {
@@ -112,20 +118,22 @@ staticPodPath: %s`, relativePath)),
 				kc.StaticPodPath = filepath.Join(configDir, relativePath)
 				return kc
 			}(),
+			skipOnWindows: true,
 		},
 		{
 			desc: "json, relative path is resolved",
-			file: newString(fmt.Sprintf(`{"kind":"KubeletConfiguration","apiVersion":"kubelet.config.k8s.io/v1beta1","staticPodPath":"%s"}`, relativePath)),
+			file: ptr.To(fmt.Sprintf(`{"kind":"KubeletConfiguration","apiVersion":"kubelet.config.k8s.io/v1beta1","staticPodPath":"%s"}`, relativePath)),
 			expect: func() *kubeletconfig.KubeletConfiguration {
 				kc := newConfig(t)
 				kc.StaticPodPath = filepath.Join(configDir, relativePath)
 				return kc
 			}(),
+			skipOnWindows: true,
 		},
 		{
 			// This should fail from v1beta2+
 			desc: "duplicate field",
-			file: newString(fmt.Sprintf(`kind: KubeletConfiguration
+			file: ptr.To(fmt.Sprintf(`kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 staticPodPath: %s
 staticPodPath: %s/foo`, relativePath, relativePath)),
@@ -136,21 +144,28 @@ staticPodPath: %s/foo`, relativePath, relativePath)),
 				kc.StaticPodPath = filepath.Join(configDir, relativePath, "foo")
 				return kc
 			}(),
+			skipOnWindows: true,
 		},
 		{
 			// This should fail from v1beta2+
 			desc: "unknown field",
-			file: newString(`kind: KubeletConfiguration
+			file: ptr.To(`kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 foo: bar`),
 			// err:       "found unknown field: foo",
 			// strictErr: true,
-			expect: newConfig(t),
+			expect:        newConfig(t),
+			skipOnWindows: true,
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
+			// Skip tests that fail on Windows, as discussed during the SIG Testing meeting from January 10, 2023
+			if c.skipOnWindows && goruntime.GOOS == "windows" {
+				t.Skip("Skipping test that fails on Windows")
+			}
+
 			fs := utilfs.NewTempFs()
 			fs.MkdirAll(configDir, 0777)
 			path := filepath.Join(configDir, kubeletFile)
@@ -163,7 +178,7 @@ foo: bar`),
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			kc, err := loader.Load()
+			kc, err := loader.Load(tCtx)
 
 			if c.strictErr && !runtime.IsStrictDecodingError(errors.Unwrap(err)) {
 				t.Fatalf("got error: %v, want strict decoding error", err)
@@ -181,13 +196,14 @@ foo: bar`),
 func TestResolveRelativePaths(t *testing.T) {
 	absolutePath := filepath.Join(configDir, "absolute")
 	cases := []struct {
-		desc   string
-		path   string
-		expect string
+		desc          string
+		path          string
+		expect        string
+		skipOnWindows bool
 	}{
-		{"empty path", "", ""},
-		{"absolute path", absolutePath, absolutePath},
-		{"relative path", relativePath, filepath.Join(configDir, relativePath)},
+		{"empty path", "", "", false},
+		{"absolute path", absolutePath, absolutePath, true},
+		{"relative path", relativePath, filepath.Join(configDir, relativePath), false},
 	}
 
 	paths := kubeletconfig.KubeletConfigurationPathRefs(newConfig(t))
@@ -196,6 +212,11 @@ func TestResolveRelativePaths(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
+			// Skip tests that fail on Windows, as discussed during the SIG Testing meeting from January 10, 2023
+			if c.skipOnWindows && goruntime.GOOS == "windows" {
+				t.Skip("Skipping test that fails on Windows")
+			}
+
 			// set the path, resolve it, and check if it resolved as we would expect
 			*(paths[0]) = c.path
 			resolveRelativePaths(paths, configDir)
@@ -206,15 +227,25 @@ func TestResolveRelativePaths(t *testing.T) {
 	}
 }
 
-func newString(s string) *string {
-	return &s
-}
-
-func addFile(fs utilfs.Filesystem, path string, file string) error {
-	if err := utilfiles.EnsureDir(fs, filepath.Dir(path)); err != nil {
-		return err
+func addFile(fs utilfs.Filesystem, path string, fileContent string) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := fs.TempFile(dir, "tmp_"+filepath.Base(path))
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	return utilfiles.ReplaceFile(fs, path, []byte(file))
+	tmpPath := tmpFile.Name()
+
+	if _, err = tmpFile.Write([]byte(fileContent)); err != nil {
+		_ = tmpFile.Close()
+		_ = fs.Remove(tmpPath)
+		return fmt.Errorf("failed to write to temp file: %w", err)
+	}
+	if err = tmpFile.Close(); err != nil {
+		_ = fs.Remove(tmpPath)
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	return fs.Rename(tmpPath, path)
 }
 
 func newConfig(t *testing.T) *kubeletconfig.KubeletConfiguration {

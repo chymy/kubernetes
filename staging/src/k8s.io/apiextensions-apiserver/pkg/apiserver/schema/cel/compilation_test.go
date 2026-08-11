@@ -22,8 +22,21 @@ import (
 	"strings"
 	"testing"
 
+	celgo "github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
+
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
+	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/model"
+	apiextensionsfeatures "k8s.io/apiextensions-apiserver/pkg/features"
+	"k8s.io/apimachinery/pkg/util/version"
+	celconfig "k8s.io/apiserver/pkg/apis/cel"
+	"k8s.io/apiserver/pkg/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -78,12 +91,12 @@ func (m fnMatcher) String() string {
 }
 
 type errorMatcher struct {
-	errorType ErrorType
+	errorType cel.ErrorType
 	contains  string
 }
 
 func invalidError(contains string) validationMatcher {
-	return errorMatcher{errorType: ErrorTypeInvalid, contains: contains}
+	return errorMatcher{errorType: cel.ErrorTypeInvalid, contains: contains}
 }
 
 func (v errorMatcher) matches(cr CompilationResult) bool {
@@ -92,6 +105,22 @@ func (v errorMatcher) matches(cr CompilationResult) bool {
 
 func (v errorMatcher) String() string {
 	return fmt.Sprintf("has error of type %q containing string %q", v.errorType, v.contains)
+}
+
+type messageExpressionErrorMatcher struct {
+	contains string
+}
+
+func messageExpressionError(contains string) validationMatcher {
+	return messageExpressionErrorMatcher{contains: contains}
+}
+
+func (m messageExpressionErrorMatcher) matches(cr CompilationResult) bool {
+	return cr.MessageExpressionError != nil && cr.MessageExpressionError.Type == cel.ErrorTypeInvalid && strings.Contains(cr.MessageExpressionError.Error(), m.contains)
+}
+
+func (m messageExpressionErrorMatcher) String() string {
+	return fmt.Sprintf("has messageExpression error containing string %q", m.contains)
 }
 
 type noErrorMatcher struct{}
@@ -115,7 +144,7 @@ func transitionRule(t bool) validationMatcher {
 }
 
 func (v transitionRuleMatcher) matches(cr CompilationResult) bool {
-	return cr.TransitionRule == bool(v)
+	return cr.UsesOldSelf == bool(v)
 }
 
 func (v transitionRuleMatcher) String() string {
@@ -126,11 +155,99 @@ func (v transitionRuleMatcher) String() string {
 }
 
 func TestCelCompilation(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, apiextensionsfeatures.CRDValidationRatcheting, true)
 	cases := []struct {
 		name            string
 		input           schema.Structural
 		expectedResults []validationMatcher
+		unmodified      bool
 	}{
+		{
+			name: "optional primitive transition rule type checking",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "integer",
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{Rule: "self >= oldSelf.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self >= oldSelf.orValue(1)", OptionalOldSelf: ptr.To(true)},
+						{Rule: "oldSelf.hasValue() ? self >= oldSelf.value() : true", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self >= oldSelf", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self >= oldSelf.orValue('')", OptionalOldSelf: ptr.To(true)},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(invalidError("optional")),
+				matchesAll(invalidError("orValue")),
+			},
+		},
+		{
+			name: "optional complex transition rule type checking",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "object",
+				},
+				Properties: map[string]schema.Structural{
+					"i": {Generic: schema.Generic{Type: "integer"}},
+					"b": {Generic: schema.Generic{Type: "boolean"}},
+					"s": {Generic: schema.Generic{Type: "string"}},
+					"a": {
+						Generic: schema.Generic{Type: "array"},
+						Items:   &schema.Structural{Generic: schema.Generic{Type: "integer"}},
+					},
+					"o": {
+						Generic: schema.Generic{Type: "object"},
+						Properties: map[string]schema.Structural{
+							"i": {Generic: schema.Generic{Type: "integer"}},
+							"b": {Generic: schema.Generic{Type: "boolean"}},
+							"s": {Generic: schema.Generic{Type: "string"}},
+							"a": {
+								Generic: schema.Generic{Type: "array"},
+								Items:   &schema.Structural{Generic: schema.Generic{Type: "integer"}},
+							},
+							"o": {
+								Generic: schema.Generic{Type: "object"},
+							},
+						},
+					},
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{Rule: "self.i >= oldSelf.i.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.s == oldSelf.s.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.b == oldSelf.b.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o == oldSelf.o.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.i >= oldSelf.o.i.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.s == oldSelf.o.s.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.b == oldSelf.o.b.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.o == oldSelf.o.o.value()", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.i >= oldSelf.o.i.orValue(1)", OptionalOldSelf: ptr.To(true)},
+						{Rule: "oldSelf.hasValue() ? self.o.i >= oldSelf.o.i.value() : true", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.i >= oldSelf.o.i", OptionalOldSelf: ptr.To(true)},
+						{Rule: "self.o.i >= oldSelf.o.s.orValue(0)", OptionalOldSelf: ptr.To(true)},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(noError(), transitionRule(true)),
+				matchesAll(invalidError("optional")),
+				matchesAll(invalidError("orValue")),
+			},
+		},
 		{
 			name: "valid object",
 			input: schema.Structural{
@@ -149,7 +266,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self.minReplicas < self.maxReplicas",
@@ -168,7 +285,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "string",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self.startsWith('s')",
@@ -190,7 +307,7 @@ func TestCelCompilation(t *testing.T) {
 				ValueValidation: &schema.ValueValidation{
 					Format: "byte",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "string(self).endsWith('s')",
@@ -209,7 +326,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "boolean",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self == true",
@@ -228,7 +345,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "integer",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self > 0",
@@ -247,7 +364,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "number",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self > 1.0",
@@ -283,7 +400,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self.nestedObj.val == 10",
@@ -319,7 +436,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self.nestedObj[0]) == 10",
@@ -353,7 +470,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self[0][0]) == 10",
@@ -394,7 +511,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "self[0].nestedObj.val == 10",
@@ -412,17 +529,17 @@ func TestCelCompilation(t *testing.T) {
 			input: schema.Structural{
 				Generic: schema.Generic{
 					Type: "object",
-					AdditionalProperties: &schema.StructuralOrBool{
-						Bool: true,
-						Structural: &schema.Structural{
-							Generic: schema.Generic{
-								Type:     "boolean",
-								Nullable: false,
-							},
+				},
+				AdditionalProperties: &schema.StructuralOrBool{
+					Bool: true,
+					Structural: &schema.Structural{
+						Generic: schema.Generic{
+							Type:     "boolean",
+							Nullable: false,
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self) > 0",
@@ -441,7 +558,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "number",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self) == 10",
@@ -460,7 +577,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "integer",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self) == 10",
@@ -506,7 +623,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self.__namespace__[0]) == 10",
@@ -560,7 +677,7 @@ func TestCelCompilation(t *testing.T) {
 						},
 					},
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{
 							Rule:    "size(self.namespace[0]) == 10",
@@ -576,8 +693,9 @@ func TestCelCompilation(t *testing.T) {
 				},
 			},
 			expectedResults: []validationMatcher{
-				invalidError("undefined field 'namespace'"),
-				invalidError("undefined field 'if'"),
+				// starting 1.32, the preserved keyword as field name would be supported.
+				noError(),
+				noError(),
 				invalidError("found no matching overload"),
 			},
 		},
@@ -587,7 +705,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "integer",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{Rule: "self > 0"},
 						{Rule: "self >= oldSelf"},
@@ -605,7 +723,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "object",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{Rule: " \t"},
 					},
@@ -628,7 +746,7 @@ func TestCelCompilation(t *testing.T) {
 				Generic: schema.Generic{
 					Type: "object",
 				},
-				Extensions: schema.Extensions{
+				ValidationExtensions: schema.ValidationExtensions{
 					XValidations: apiextensions.ValidationRules{
 						{Rule: "42"},
 					},
@@ -638,13 +756,116 @@ func TestCelCompilation(t *testing.T) {
 				invalidError("must evaluate to a bool"),
 			},
 		},
+		{
+			name: "messageExpression inclusion",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "string",
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{
+							Rule:              "self.startsWith('s')",
+							MessageExpression: `"scoped field should start with 's'"`,
+						},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				noError(),
+			},
+		},
+		{
+			name: "messageExpression must evaluate to a string",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "integer",
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{
+							Rule:              "self == 5",
+							MessageExpression: `42`,
+						},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				messageExpressionError("must evaluate to a string"),
+			},
+		},
+		{
+			name: "messageExpression syntax error",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "number",
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{
+							Rule:              "self < 32.0",
+							MessageExpression: `"abc`,
+						},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				messageExpressionError("messageExpression compilation failed"),
+			},
+		},
+		{
+			name: "unmodified expression may use CEL environment features planned to be added in future releases",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "object",
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{Rule: "fakeFunction('abc') == 'ABC'"},
+					},
+				},
+			},
+			unmodified: true,
+			expectedResults: []validationMatcher{
+				noError(),
+			},
+		},
+		{
+			name: "modified expressions may not use CEL environment features planned to be added in future releases",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "object",
+				},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{
+						{Rule: "fakeFunction('abc') == 'ABC'"},
+					},
+				},
+			},
+			unmodified: false,
+			expectedResults: []validationMatcher{
+				invalidError("undeclared reference to 'fakeFunction'"),
+			},
+		},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			compilationResults, err := Compile(&tt.input, false, PerCallLimit)
+			env, err := environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()).Extend(
+				environment.VersionedOptions{
+					IntroducedVersion: version.MajorMinor(1, 999),
+					EnvOptions:        []celgo.EnvOption{celgo.Lib(&fakeLib{})},
+				})
 			if err != nil {
-				t.Errorf("Expected no error, but got: %v", err)
+				t.Fatal(err)
+			}
+			loader := NewExpressionsEnvLoader()
+			if tt.unmodified {
+				loader = StoredExpressionsEnvLoader()
+			}
+			compilationResults, err := Compile(&tt.input, model.SchemaDeclType(&tt.input, false), celconfig.PerCallLimit, env, loader)
+			if err != nil {
+				t.Fatalf("Expected no error, but got: %v", err)
 			}
 
 			if len(compilationResults) != len(tt.input.XValidations) {
@@ -697,7 +918,7 @@ func genArrayWithRule(arrayType, rule string) func(maxItems *int64) *schema.Stru
 			ValueValidation: &schema.ValueValidation{
 				MaxItems: maxItems,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -727,7 +948,7 @@ func genArrayOfArraysWithRule(arrayType, rule string) func(maxItems *int64) *sch
 			ValueValidation: &schema.ValueValidation{
 				MaxItems: maxItems,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -767,7 +988,7 @@ func genObjectArrayWithRule(rule string) func(maxItems *int64) *schema.Structura
 			ValueValidation: &schema.ValueValidation{
 				MaxItems: maxItems,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -787,17 +1008,17 @@ func getMapArrayWithRule(mapType, rule string) func(maxItems *int64) *schema.Str
 			Items: &schema.Structural{
 				Generic: schema.Generic{
 					Type: "object",
-					AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
-						Generic: schema.Generic{
-							Type: mapType,
-						},
-					}},
 				},
+				AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
+					Generic: schema.Generic{
+						Type: mapType,
+					},
+				}},
 			},
 			ValueValidation: &schema.ValueValidation{
 				MaxItems: maxItems,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -814,22 +1035,22 @@ func genMapWithRule(mapType, rule string) func(maxProperties *int64) *schema.Str
 		return &schema.Structural{
 			Generic: schema.Generic{
 				Type: "object",
-				AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
-					Generic: schema.Generic{
-						Type: passedType,
-					},
-					ValueValidation: &schema.ValueValidation{
-						Format: passedFormat,
-					},
-					Extensions: schema.Extensions{
-						XIntOrString: xIntString,
-					},
-				}},
 			},
+			AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
+				Generic: schema.Generic{
+					Type: passedType,
+				},
+				ValueValidation: &schema.ValueValidation{
+					Format: passedFormat,
+				},
+				Extensions: schema.Extensions{
+					XIntOrString: xIntString,
+				},
+			}},
 			ValueValidation: &schema.ValueValidation{
 				MaxProperties: maxProperties,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -849,7 +1070,36 @@ func genStringWithRule(rule string) func(maxLength *int64) *schema.Structural {
 			ValueValidation: &schema.ValueValidation{
 				MaxLength: maxLength,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
+				XValidations: apiextensions.ValidationRules{
+					{
+						Rule: rule,
+					},
+				},
+			},
+		}
+	}
+}
+
+// genEnumWithRuleAndValues creates a function that accepts an optional maxLength
+// with given validation rule and a set of enum values, following the convention of existing tests.
+// The test has two checks, first with maxLength unset to check if maxLength can be concluded from enums,
+// second with maxLength set to ensure it takes precedence.
+func genEnumWithRuleAndValues(rule string, values ...string) func(maxLength *int64) *schema.Structural {
+	enums := make([]schema.JSON, 0, len(values))
+	for _, v := range values {
+		enums = append(enums, schema.JSON{Object: v})
+	}
+	return func(maxLength *int64) *schema.Structural {
+		return &schema.Structural{
+			Generic: schema.Generic{
+				Type: "string",
+			},
+			ValueValidation: &schema.ValueValidation{
+				MaxLength: maxLength,
+				Enum:      enums,
+			},
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -870,7 +1120,7 @@ func genBytesWithRule(rule string) func(maxLength *int64) *schema.Structural {
 				MaxLength: maxLength,
 				Format:    "byte",
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -886,19 +1136,19 @@ func genNestedSpecWithRule(rule string) func(maxLength *int64) *schema.Structura
 		return &schema.Structural{
 			Generic: schema.Generic{
 				Type: "object",
-				AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
-					Generic: schema.Generic{
-						Type: "string",
-					},
-					ValueValidation: &schema.ValueValidation{
-						MaxLength: maxLength,
-					},
-				}},
 			},
+			AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
+				Generic: schema.Generic{
+					Type: "string",
+				},
+				ValueValidation: &schema.ValueValidation{
+					MaxLength: maxLength,
+				},
+			}},
 			ValueValidation: &schema.ValueValidation{
 				MaxProperties: maxLength,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -918,28 +1168,28 @@ func genAllMaxNestedSpecWithRootRule(rule string) func(maxLength *int64) *schema
 			Items: &schema.Structural{
 				Generic: schema.Generic{
 					Type: "object",
-					AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
-						Generic: schema.Generic{
-							Type: "object",
-						},
-						ValueValidation: &schema.ValueValidation{
-							Required:      []string{"required"},
-							MaxProperties: maxLength,
-						},
-						Properties: map[string]schema.Structural{
-							"required": {
-								Generic: schema.Generic{
-									Type: "string",
-								},
-							},
-							"optional": {
-								Generic: schema.Generic{
-									Type: "string",
-								},
-							},
-						},
-					}},
 				},
+				AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
+					Generic: schema.Generic{
+						Type: "object",
+					},
+					ValueValidation: &schema.ValueValidation{
+						Required:      []string{"required"},
+						MaxProperties: maxLength,
+					},
+					Properties: map[string]schema.Structural{
+						"required": {
+							Generic: schema.Generic{
+								Type: "string",
+							},
+						},
+						"optional": {
+							Generic: schema.Generic{
+								Type: "string",
+							},
+						},
+					},
+				}},
 				ValueValidation: &schema.ValueValidation{
 					MaxProperties: maxLength,
 				},
@@ -947,7 +1197,7 @@ func genAllMaxNestedSpecWithRootRule(rule string) func(maxLength *int64) *schema
 			ValueValidation: &schema.ValueValidation{
 				MaxItems: maxLength,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -967,32 +1217,32 @@ func genOneMaxNestedSpecWithRootRule(rule string) func(maxLength *int64) *schema
 			Items: &schema.Structural{
 				Generic: schema.Generic{
 					Type: "object",
-					AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
-						Generic: schema.Generic{
-							Type: "object",
-						},
-						ValueValidation: &schema.ValueValidation{
-							Required: []string{"required"},
-						},
-						Properties: map[string]schema.Structural{
-							"required": {
-								Generic: schema.Generic{
-									Type: "string",
-								},
-							},
-							"optional": {
-								Generic: schema.Generic{
-									Type: "string",
-								},
-							},
-						},
-					}},
 				},
+				AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
+					Generic: schema.Generic{
+						Type: "object",
+					},
+					ValueValidation: &schema.ValueValidation{
+						Required: []string{"required"},
+					},
+					Properties: map[string]schema.Structural{
+						"required": {
+							Generic: schema.Generic{
+								Type: "string",
+							},
+						},
+						"optional": {
+							Generic: schema.Generic{
+								Type: "string",
+							},
+						},
+					},
+				}},
 				ValueValidation: &schema.ValueValidation{
 					MaxProperties: maxLength,
 				},
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -1043,12 +1293,12 @@ func genMapForMap() *schema.Structural {
 	return &schema.Structural{
 		Generic: schema.Generic{
 			Type: "object",
-			AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
-				Generic: schema.Generic{
-					Type: "number",
-				},
-			}},
 		},
+		AdditionalProperties: &schema.StructuralOrBool{Structural: &schema.Structural{
+			Generic: schema.Generic{
+				Type: "number",
+			},
+		}},
 	}
 }
 
@@ -1056,13 +1306,13 @@ func genMapWithCustomItemRule(item *schema.Structural, rule string) func(maxProp
 	return func(maxProperties *int64) *schema.Structural {
 		return &schema.Structural{
 			Generic: schema.Generic{
-				Type:                 "object",
-				AdditionalProperties: &schema.StructuralOrBool{Structural: item},
+				Type: "object",
 			},
+			AdditionalProperties: &schema.StructuralOrBool{Structural: item},
 			ValueValidation: &schema.ValueValidation{
 				MaxProperties: maxProperties,
 			},
-			Extensions: schema.Extensions{
+			ValidationExtensions: schema.ValidationExtensions{
 				XValidations: apiextensions.ValidationRules{
 					{
 						Rule: rule,
@@ -1078,12 +1328,12 @@ func genMapWithCustomItemRule(item *schema.Structural, rule string) func(maxProp
 // if expectedCostExceedsLimit is non-zero. Typically, only expectedCost or expectedCostExceedsLimit is non-zero, not both.
 func schemaChecker(schema *schema.Structural, expectedCost uint64, expectedCostExceedsLimit uint64, t *testing.T) func(t *testing.T) {
 	return func(t *testing.T) {
-		compilationResults, err := Compile(schema, false, PerCallLimit)
+		compilationResults, err := Compile(schema, model.SchemaDeclType(schema, false), celconfig.PerCallLimit, environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()), NewExpressionsEnvLoader())
 		if err != nil {
-			t.Errorf("Expected no error, got: %v", err)
+			t.Fatalf("Expected no error, got: %v", err)
 		}
 		if len(compilationResults) != 1 {
-			t.Errorf("Expected one rule, got: %d", len(compilationResults))
+			t.Fatalf("Expected one rule, got: %d", len(compilationResults))
 		}
 		result := compilationResults[0]
 		if result.Error != nil {
@@ -1554,17 +1804,19 @@ func TestCostEstimation(t *testing.T) {
 			name: "extended library replace",
 			schemaGenerator: func(max *int64) *schema.Structural {
 				strType := withMaxLength(primitiveType("string", ""), max)
+				beforeLen := int64(2)
+				afterLen := int64(4)
 				objType := objectType(map[string]schema.Structural{
 					"str":    strType,
-					"before": strType,
-					"after":  strType,
+					"before": withMaxLength(primitiveType("string", ""), &beforeLen),
+					"after":  withMaxLength(primitiveType("string", ""), &afterLen),
 				})
 				objType = withRule(objType, "self.str.replace(self.before, self.after) == 'does not matter'")
 				return &objType
 			},
-			expectedCalcCost: 629154,
-			setMaxElements:   10,
-			expectedSetCost:  16,
+			expectedCalcCost: 629154, // cost is based on the result size of the replace() call
+			setMaxElements:   4,
+			expectedSetCost:  12,
 		},
 		{
 			name: "extended library split",
@@ -1592,6 +1844,46 @@ func TestCostEstimation(t *testing.T) {
 			setMaxElements:   10,
 			expectedSetCost:  6,
 		},
+		{
+			name:             "check cost of size call",
+			schemaGenerator:  genMapWithRule("integer", "oldSelf.size() == self.size()"),
+			expectedCalcCost: 5,
+			setMaxElements:   10,
+			expectedSetCost:  5,
+		},
+		{
+			name:             "check cost of timestamp comparison",
+			schemaGenerator:  genMapWithRule("date-time", `self["a"] == self["b"]`),
+			expectedCalcCost: 8,
+			setMaxElements:   7,
+			expectedSetCost:  8,
+		},
+		{
+			name:             "check cost of duration comparison",
+			schemaGenerator:  genMapWithRule("duration", `self["c"] == self["d"]`),
+			expectedCalcCost: 8,
+			setMaxElements:   42,
+			expectedSetCost:  8,
+		},
+		{
+			name:             "enums with maxLength equals to the longest possible value",
+			schemaGenerator:  genEnumWithRuleAndValues("self.contains('A')", "A", "B", "C", "LongValue"),
+			expectedCalcCost: 2,
+			setMaxElements:   1000,
+			expectedSetCost:  401,
+		},
+		{
+			name: "IntOrString type with quantity rule",
+			schemaGenerator: func(max *int64) *schema.Structural {
+				intOrString := intOrStringType()
+				intOrString = withRule(intOrString, "isQuantity(self)")
+				intOrString = withMaxLength(intOrString, max)
+				return &intOrString
+			},
+			expectedCalcCost: 314574,
+			setMaxElements:   20,
+			expectedSetCost:  9,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1606,17 +1898,89 @@ func TestCostEstimation(t *testing.T) {
 }
 
 func BenchmarkCompile(b *testing.B) {
-	_, err := getBaseEnv() // prime the baseEnv
-	if err != nil {
-		b.Fatal(err)
-	}
+	env := environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()) // prepare the environment
 	s := genArrayWithRule("number", "true")(nil)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := Compile(s, false, uint64(math.MaxInt64))
+		_, err := Compile(s, model.SchemaDeclType(s, false), math.MaxInt64, env, NewExpressionsEnvLoader())
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+type fakeLib struct{}
+
+var testLibraryDecls = map[string][]celgo.FunctionOpt{
+	"fakeFunction": {
+		celgo.Overload("fakeFunction", []*celgo.Type{celgo.StringType}, celgo.StringType,
+			celgo.UnaryBinding(fakeFunction))},
+}
+
+func (*fakeLib) CompileOptions() []celgo.EnvOption {
+	options := make([]celgo.EnvOption, 0, len(testLibraryDecls))
+	for name, overloads := range testLibraryDecls {
+		options = append(options, celgo.Function(name, overloads...))
+	}
+	return options
+}
+
+func (*fakeLib) ProgramOptions() []celgo.ProgramOption {
+	return []celgo.ProgramOption{}
+}
+
+func fakeFunction(arg1 ref.Val) ref.Val {
+	arg, ok := arg1.Value().(string)
+	if !ok {
+		return types.MaybeNoSuchOverloadErr(arg1)
+	}
+
+	return types.String(strings.ToUpper(arg))
+}
+
+// TestMetadataNameCostIsBounded verifies that CEL rules referencing
+// self.metadata.name are cost-estimated using the bounded object-name length
+// rather than the full request size.
+func TestMetadataNameCostIsBounded(t *testing.T) {
+	const boundedCeiling = 10000
+	cases := []struct {
+		name string
+		rule apiextensions.ValidationRule
+	}{
+		{name: "name rule", rule: apiextensions.ValidationRule{Rule: "self.metadata.name.contains('x')"}},
+		{name: "generateName rule", rule: apiextensions.ValidationRule{Rule: "self.metadata.generateName.contains('x')"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &schema.Structural{
+				Generic: schema.Generic{Type: "object"},
+				ValidationExtensions: schema.ValidationExtensions{
+					XValidations: apiextensions.ValidationRules{tc.rule},
+				},
+			}
+			results, err := Compile(
+				s,
+				model.SchemaDeclType(s, true),
+				celconfig.PerCallLimit,
+				environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()),
+				StoredExpressionsEnvLoader(),
+			)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected 1 compilation result, got %d", len(results))
+			}
+			if results[0].Error != nil {
+				t.Fatalf("unexpected compile error: %v", results[0].Error)
+			}
+			if results[0].MaxCost == 0 {
+				t.Errorf("%s: expected a non-zero cost", tc.name)
+			}
+			if results[0].MaxCost > boundedCeiling {
+				t.Errorf("%s MaxCost = %d, expected it bounded (<= %d); an unbounded name would cost far more", tc.name, results[0].MaxCost, boundedCeiling)
+			}
+		})
 	}
 }

@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	apinamingtest "k8s.io/apimachinery/pkg/api/apitesting/naming"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -56,11 +58,10 @@ const (
 )
 
 var testingFuncs = map[string]testingFunc{
-	verifyTagNaming:                 verifyTagNamingFunc,
-	verifyGroupNameSuffix:           verifyGroupNameSuffixFunc,
-	verifyGroupNameMatch:            verifyGroupNameMatchFunc,
-	verifyCorrectGroupName:          verifyCorrectGroupNameFunc,
-	verifyComponentConfigKindExists: verifyComponentConfigKindExistsFunc,
+	verifyTagNaming:        verifyTagNamingFunc,
+	verifyGroupNameSuffix:  verifyGroupNameSuffixFunc,
+	verifyGroupNameMatch:   verifyGroupNameMatchFunc,
+	verifyCorrectGroupName: verifyCorrectGroupNameFunc,
 }
 
 // VerifyExternalTypePackage tests if external component config package is defined correctly
@@ -94,7 +95,8 @@ func VerifyInternalTypePackage(pkginfo *ComponentConfigPackage) error {
 		return fmt.Errorf("test setup error: %v", err)
 	}
 	extraFns := map[string]testingFunc{
-		verifyInternalAPIVersion: verifyInternalAPIVersionFunc,
+		verifyInternalAPIVersion:        verifyInternalAPIVersionFunc,
+		verifyComponentConfigKindExists: verifyComponentConfigKindExistsFunc,
 	}
 	return runFuncs(scheme, pkginfo, extraFns)
 }
@@ -201,7 +203,7 @@ func dashesToCapitalCase(str string) string {
 	segments := strings.Split(str, "-")
 	result := ""
 	for _, segment := range segments {
-		result += strings.Title(segment)
+		result += cases.Title(language.English).String(segment)
 	}
 	return result
 }

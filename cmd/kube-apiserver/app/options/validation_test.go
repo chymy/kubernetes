@@ -21,7 +21,13 @@ import (
 	"testing"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/version"
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	netutils "k8s.io/utils/net"
+
+	"k8s.io/kubernetes/pkg/features"
 )
 
 func makeOptionsWithCIDRs(serviceCIDR string, secondaryServiceCIDR string) *ServerRunOptions {
@@ -45,17 +51,22 @@ func makeOptionsWithCIDRs(serviceCIDR string, secondaryServiceCIDR string) *Serv
 		}
 	}
 	return &ServerRunOptions{
-		ServiceClusterIPRanges:         value,
-		PrimaryServiceClusterIPRange:   primaryCIDR,
-		SecondaryServiceClusterIPRange: secondaryCIDR,
+		Extra: Extra{
+			ServiceClusterIPRanges:         value,
+			PrimaryServiceClusterIPRange:   primaryCIDR,
+			SecondaryServiceClusterIPRange: secondaryCIDR,
+		},
 	}
 }
 
 func TestClusterServiceIPRange(t *testing.T) {
+	featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.33"))
 	testCases := []struct {
-		name         string
-		options      *ServerRunOptions
-		expectErrors bool
+		name                 string
+		options              *ServerRunOptions
+		expectErrors         bool
+		ipAllocatorGate      bool
+		disableDualWriteGate bool
 	}{
 		{
 			name:         "no service cidr",
@@ -83,11 +94,71 @@ func TestClusterServiceIPRange(t *testing.T) {
 			options:      makeOptionsWithCIDRs("10.0.0.0/8", ""),
 		},
 		{
+			name:                 "service cidr IPv4 is too big but gate enbled",
+			expectErrors:         true,
+			options:              makeOptionsWithCIDRs("10.0.0.0/8", ""),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: false,
+		},
+		{
+			name:                 "service cidr IPv6 is too big but only ipallocator gate enabled",
+			expectErrors:         true,
+			options:              makeOptionsWithCIDRs("2001:db8::/64", ""),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: false,
+		},
+		{
+			name:                 "service cidr IPv6 is too big but only ipallocator gate enabled",
+			expectErrors:         true,
+			options:              makeOptionsWithCIDRs("2001:db8::/12", ""),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: false,
+		},
+		{
+			name:                 "service cidr IPv4 is too big but gate enabled",
+			expectErrors:         false,
+			options:              makeOptionsWithCIDRs("10.0.0.0/8", ""),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: true,
+		},
+		{
+			name:                 "service cidr IPv6 is too big but gate enabled",
+			expectErrors:         false,
+			options:              makeOptionsWithCIDRs("2001:db8::/64", ""),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: true,
+		},
+		{
+			name:                 "service cidr IPv6 is too big and gate enabled",
+			expectErrors:         false,
+			options:              makeOptionsWithCIDRs("2001:db8::/12", ""),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: true,
+		},
+		{
 			name:         "dual-stack secondary cidr too big",
 			expectErrors: true,
 			options:      makeOptionsWithCIDRs("10.0.0.0/16", "3000::/64"),
 		},
-
+		{
+			name:                 "dual-stack secondary cidr too big but only ipallocator gate enabled",
+			expectErrors:         true,
+			options:              makeOptionsWithCIDRs("10.0.0.0/16", "3000::/48"),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: false,
+		},
+		{
+			name:                 "dual-stack secondary cidr too big gate enabled",
+			expectErrors:         false,
+			options:              makeOptionsWithCIDRs("10.0.0.0/16", "3000::/48"),
+			ipAllocatorGate:      true,
+			disableDualWriteGate: true,
+		},
+		{
+			name:         "more than two entries",
+			expectErrors: true,
+			options:      makeOptionsWithCIDRs("10.0.0.0/16,244.0.0.0/16", "3000::/108"),
+		},
 		/* success cases */
 		{
 			name:         "valid primary",
@@ -113,13 +184,151 @@ func TestClusterServiceIPRange(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := validateClusterIPFlags(tc.options)
+			if !tc.ipAllocatorGate {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.32"))
+			}
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.MultiCIDRServiceAllocator: tc.ipAllocatorGate,
+				features.DisableAllocatorDualWrite: tc.disableDualWriteGate,
+			})
+
+			errs := validateClusterIPFlags(tc.options.Extra)
 			if len(errs) > 0 && !tc.expectErrors {
 				t.Errorf("expected no errors, errors found %+v", errs)
 			}
 
 			if len(errs) == 0 && tc.expectErrors {
 				t.Errorf("expected errors, no errors found")
+			}
+		})
+	}
+}
+
+func TestValidatePublicIPServiceClusterIPRangeIPFamilies(t *testing.T) {
+	_, ipv4cidr, err := netutils.ParseCIDRSloppy("192.168.0.0/24")
+	if err != nil {
+		t.Fatalf("Unexpected error %v", err)
+	}
+
+	_, ipv6cidr, err := netutils.ParseCIDRSloppy("2001:db8::/112")
+	if err != nil {
+		t.Fatalf("Unexpected error %v", err)
+	}
+
+	ipv4address := netutils.ParseIPSloppy("192.168.1.1")
+	ipv6address := netutils.ParseIPSloppy("2001:db8::1")
+
+	tests := []struct {
+		name    string
+		generic apiserveroptions.ServerRunOptions
+		extra   Extra
+		wantErr bool
+	}{
+		{
+			name: "master endpoint reconciler - IPv4 families",
+			extra: Extra{
+				EndpointReconcilerType:       "master-count",
+				PrimaryServiceClusterIPRange: *ipv4cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv4address,
+			},
+			wantErr: false,
+		},
+		{
+			name: "master endpoint reconciler - IPv6 families",
+			extra: Extra{
+				EndpointReconcilerType:       "master-count",
+				PrimaryServiceClusterIPRange: *ipv6cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv6address,
+			},
+			wantErr: false,
+		},
+		{
+			name: "master endpoint reconciler - wrong IP families",
+			extra: Extra{
+				EndpointReconcilerType:       "master-count",
+				PrimaryServiceClusterIPRange: *ipv4cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv6address,
+			},
+			wantErr: true,
+		},
+		{
+			name: "master endpoint reconciler - wrong IP families",
+			extra: Extra{
+				EndpointReconcilerType:       "master-count",
+				PrimaryServiceClusterIPRange: *ipv6cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv4address,
+			},
+			wantErr: true,
+		},
+		{
+			name: "lease endpoint reconciler - IPv4 families",
+			extra: Extra{
+				EndpointReconcilerType:       "lease",
+				PrimaryServiceClusterIPRange: *ipv4cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv4address,
+			},
+			wantErr: false,
+		},
+		{
+			name: "lease endpoint reconciler - IPv6 families",
+			extra: Extra{
+				EndpointReconcilerType:       "lease",
+				PrimaryServiceClusterIPRange: *ipv6cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv6address,
+			},
+			wantErr: false,
+		},
+		{
+			name: "lease endpoint reconciler - wrong IP families",
+			extra: Extra{
+				EndpointReconcilerType:       "lease",
+				PrimaryServiceClusterIPRange: *ipv4cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv6address,
+			},
+			wantErr: true,
+		},
+		{
+			name: "lease endpoint reconciler - wrong IP families",
+			extra: Extra{
+				EndpointReconcilerType:       "lease",
+				PrimaryServiceClusterIPRange: *ipv6cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv4address,
+			},
+			wantErr: true,
+		},
+		{
+			name: "none endpoint reconciler - wrong IP families",
+			extra: Extra{
+				EndpointReconcilerType:       "none",
+				PrimaryServiceClusterIPRange: *ipv4cidr,
+			},
+			generic: apiserveroptions.ServerRunOptions{
+				AdvertiseAddress: ipv6address,
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validatePublicIPServiceClusterIPRangeIPFamilies(tt.extra, tt.generic)
+			if (len(errs) > 0) != tt.wantErr {
+				t.Fatalf("completedConfig.New() errors = %+v, wantErr %v", errs, tt.wantErr)
 			}
 		})
 	}
@@ -170,9 +379,9 @@ func TestValidateServiceNodePort(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateServiceNodePort(tc.options)
-			if err != nil && !tc.expectErrors {
-				t.Errorf("expected no errors, error found %+v", err)
+			errs := validateServiceNodePort(tc.options.Extra)
+			if errs != nil && !tc.expectErrors {
+				t.Errorf("expected no errors, error found %+v", errs)
 			}
 		})
 	}
@@ -184,8 +393,10 @@ func makeOptionsWithPort(kubernetesServiceNodePort int, base int, size int) *Ser
 		Size: size,
 	}
 	return &ServerRunOptions{
-		ServiceNodePortRange:      portRange,
-		KubernetesServiceNodePort: kubernetesServiceNodePort,
+		Extra: Extra{
+			ServiceNodePortRange:      portRange,
+			KubernetesServiceNodePort: kubernetesServiceNodePort,
+		},
 	}
 }
 
@@ -216,7 +427,7 @@ func TestValidateMaxCIDRRange(t *testing.T) {
 			expectErrors:         false,
 		},
 		{
-			name:                 "ipv4 cidr to big",
+			name:                 "ipv4 cidr too big",
 			cidr:                 *getIPnetFromCIDR("10.92.0.0/8"),
 			maxCIDRBits:          20,
 			cidrFlag:             "--service-cluster-ip-range",
@@ -224,7 +435,7 @@ func TestValidateMaxCIDRRange(t *testing.T) {
 			expectErrors:         true,
 		},
 		{
-			name:                 "ipv6 cidr to big",
+			name:                 "ipv6 cidr too big",
 			cidr:                 *getIPnetFromCIDR("3000::/64"),
 			maxCIDRBits:          20,
 			cidrFlag:             "--service-cluster-ip-range",

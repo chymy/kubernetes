@@ -22,24 +22,31 @@ import (
 	"strings"
 	"time"
 
-	"go.etcd.io/etcd/client/pkg/v3/transport"
-	"go.etcd.io/etcd/client/pkg/v3/types"
-	"go.etcd.io/etcd/pkg/v3/netutil"
-	"go.etcd.io/etcd/server/v3/datadir"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.uber.org/zap"
 
 	bolt "go.etcd.io/bbolt"
-	"go.uber.org/zap"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
+	"go.etcd.io/etcd/client/pkg/v3/types"
+	"go.etcd.io/etcd/pkg/v3/featuregate"
+	"go.etcd.io/etcd/pkg/v3/netutil"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
+	"go.etcd.io/etcd/server/v3/storage/datadir"
+)
+
+const (
+	grpcOverheadBytes = 512 * 1024
 )
 
 // ServerConfig holds the configuration of etcd as taken from the command line or discovery.
 type ServerConfig struct {
-	Name           string
-	DiscoveryURL   string
-	DiscoveryProxy string
-	ClientURLs     types.URLs
-	PeerURLs       types.URLs
-	DataDir        string
+	Name string
+
+	DiscoveryCfg v3discovery.DiscoveryConfig
+
+	ClientURLs types.URLs
+	PeerURLs   types.URLs
+	DataDir    string
 	// DedicatedWALDir config will make the etcd to write the WAL to the WALDir
 	// rather than the dataDir/member/wal.
 	DedicatedWALDir string
@@ -51,7 +58,6 @@ type ServerConfig struct {
 	// We expect the follower has a millisecond level latency with the leader.
 	// The max throughput is around 10K. Keep a 5K entries is enough for helping
 	// follower to catch up.
-	// WARNING: only change this for tests. Always use "DefaultSnapshotCatchUpEntries"
 	SnapshotCatchUpEntries uint64
 
 	MaxSnapFiles uint
@@ -114,13 +120,19 @@ type ServerConfig struct {
 	AutoCompactionRetention time.Duration
 	AutoCompactionMode      string
 	CompactionBatchLimit    int
+	CompactionSleepInterval time.Duration
 	QuotaBackendBytes       int64
 	MaxTxnOps               uint
 
 	// MaxRequestBytes is the maximum request size to send over raft.
 	MaxRequestBytes uint
 
-	WarningApplyDuration time.Duration
+	// MaxConcurrentStreams specifies the maximum number of concurrent
+	// streams that each client can open at a time.
+	MaxConcurrentStreams uint32
+
+	WarningApplyDuration        time.Duration
+	WarningUnaryRequestDuration time.Duration
 
 	StrictReconfigCheck bool
 
@@ -133,8 +145,9 @@ type ServerConfig struct {
 
 	// InitialCorruptCheck is true to check data corruption on boot
 	// before serving any peer/client traffic.
-	InitialCorruptCheck bool
-	CorruptCheckTime    time.Duration
+	InitialCorruptCheck  bool
+	CorruptCheckTime     time.Duration
+	CompactHashCheckTime time.Duration
 
 	// PreVote is true to enable Raft Pre-Vote.
 	PreVote bool
@@ -147,17 +160,15 @@ type ServerConfig struct {
 
 	ForceNewCluster bool
 
-	// EnableLeaseCheckpoint enables primary lessor to persist lease remainingTTL to prevent indefinite auto-renewal of long lived leases.
-	EnableLeaseCheckpoint bool
 	// LeaseCheckpointInterval time.Duration is the wait duration between lease checkpoints.
 	LeaseCheckpointInterval time.Duration
 
 	EnableGRPCGateway bool
 
-	// ExperimentalEnableDistributedTracing enables distributed tracing using OpenTelemetry protocol.
-	ExperimentalEnableDistributedTracing bool
-	// ExperimentalTracerOptions are options for OpenTelemetry gRPC interceptor.
-	ExperimentalTracerOptions []otelgrpc.Option
+	// EnableDistributedTracing enables distributed tracing using OpenTelemetry protocol.
+	EnableDistributedTracing bool
+	// TracerOptions are options for OpenTelemetry gRPC interceptor.
+	TracerOptions []otelgrpc.Option
 
 	WatchProgressNotifyInterval time.Duration
 
@@ -167,24 +178,32 @@ type ServerConfig struct {
 
 	DowngradeCheckTime time.Duration
 
-	// ExperimentalMemoryMlock enables mlocking of etcd owned memory pages.
+	// MemoryMlock enables mlocking of etcd owned memory pages.
 	// The setting improves etcd tail latency in environments were:
 	//   - memory pressure might lead to swapping pages to disk
 	//   - disk latency might be unstable
 	// Currently all etcd memory gets mlocked, but in future the flag can
 	// be refined to mlock in-use area of bbolt only.
-	ExperimentalMemoryMlock bool `json:"experimental-memory-mlock"`
+	MemoryMlock bool `json:"memory-mlock"`
 
-	// ExperimentalTxnModeWriteWithSharedBuffer enable write transaction to use
-	// a shared buffer in its readonly check operations.
-	ExperimentalTxnModeWriteWithSharedBuffer bool `json:"experimental-txn-mode-write-with-shared-buffer"`
-
-	// ExperimentalBootstrapDefragThresholdMegabytes is the minimum number of megabytes needed to be freed for etcd server to
+	// BootstrapDefragThresholdMegabytes is the minimum number of megabytes needed to be freed for etcd server to
 	// consider running defrag during bootstrap. Needs to be set to non-zero value to take effect.
-	ExperimentalBootstrapDefragThresholdMegabytes uint `json:"experimental-bootstrap-defrag-threshold-megabytes"`
+	BootstrapDefragThresholdMegabytes uint `json:"bootstrap-defrag-threshold-megabytes"`
+
+	// MaxLearners sets a limit to the number of learner members that can exist in the cluster membership.
+	MaxLearners int `json:"max-learners"`
 
 	// V2Deprecation defines a phase of v2store deprecation process.
 	V2Deprecation V2DeprecationEnum `json:"v2-deprecation"`
+
+	// LocalAddress is the local IP address to use when communicating with a peer.
+	LocalAddress string `json:"local-address"`
+
+	// ServerFeatureGate is a server level feature gate
+	ServerFeatureGate featuregate.FeatureGate
+
+	// Metrics types of metrics - should be either 'basic' or 'extensive'
+	Metrics string
 }
 
 // VerifyBootstrap sanity-checks the initial config for bootstrap case
@@ -199,8 +218,8 @@ func (c *ServerConfig) VerifyBootstrap() error {
 	if CheckDuplicateURL(c.InitialPeerURLsMap) {
 		return fmt.Errorf("initial cluster %s has duplicate url", c.InitialPeerURLsMap)
 	}
-	if c.InitialPeerURLsMap.String() == "" && c.DiscoveryURL == "" {
-		return fmt.Errorf("initial cluster unset and no discovery URL found")
+	if c.InitialPeerURLsMap.String() == "" && !c.ShouldDiscover() {
+		return fmt.Errorf("initial cluster unset and no discovery endpoints found")
 	}
 	return nil
 }
@@ -216,7 +235,7 @@ func (c *ServerConfig) VerifyJoinExisting() error {
 	if CheckDuplicateURL(c.InitialPeerURLsMap) {
 		return fmt.Errorf("initial cluster %s has duplicate url", c.InitialPeerURLsMap)
 	}
-	if c.DiscoveryURL != "" {
+	if c.ShouldDiscover() {
 		return fmt.Errorf("discovery URL should not be set when joining existing initial cluster")
 	}
 	return nil
@@ -250,7 +269,7 @@ func (c *ServerConfig) advertiseMatchesCluster() error {
 		initMap[url.String()] = struct{}{}
 	}
 
-	missing := []string{}
+	var missing []string
 	for url := range initMap {
 		if _, ok := apMap[url]; !ok {
 			missing = append(missing, url)
@@ -262,7 +281,7 @@ func (c *ServerConfig) advertiseMatchesCluster() error {
 		}
 		mstr := strings.Join(missing, ",")
 		apStr := strings.Join(apurls, ",")
-		return fmt.Errorf("--initial-cluster has %s but missing from --initial-advertise-peer-urls=%s (%v)", mstr, apStr, err)
+		return fmt.Errorf("--initial-cluster has %s but missing from --initial-advertise-peer-urls=%s (%w)", mstr, apStr, err)
 	}
 
 	for url := range apMap {
@@ -279,7 +298,7 @@ func (c *ServerConfig) advertiseMatchesCluster() error {
 	// resolved URLs from "--initial-advertise-peer-urls" and "--initial-cluster" did not match or failed
 	apStr := strings.Join(apurls, ",")
 	umap := types.URLsMap(map[string]types.URLs{c.Name: c.PeerURLs})
-	return fmt.Errorf("failed to resolve %s to match --initial-cluster=%s (%v)", apStr, umap.String(), err)
+	return fmt.Errorf("failed to resolve %s to match --initial-cluster=%s (%w)", apStr, umap.String(), err)
 }
 
 func (c *ServerConfig) MemberDir() string { return datadir.ToMemberDir(c.DataDir) }
@@ -288,12 +307,14 @@ func (c *ServerConfig) WALDir() string {
 	if c.DedicatedWALDir != "" {
 		return c.DedicatedWALDir
 	}
-	return datadir.ToWalDir(c.DataDir)
+	return datadir.ToWALDir(c.DataDir)
 }
 
 func (c *ServerConfig) SnapDir() string { return filepath.Join(c.MemberDir(), "snap") }
 
-func (c *ServerConfig) ShouldDiscover() bool { return c.DiscoveryURL != "" }
+func (c *ServerConfig) ShouldDiscover() bool {
+	return len(c.DiscoveryCfg.Endpoints) > 0
+}
 
 // ReqTimeout returns timeout for request to finish.
 func (c *ServerConfig) ReqTimeout() time.Duration {
@@ -333,3 +354,7 @@ func (c *ServerConfig) BootstrapTimeoutEffective() time.Duration {
 }
 
 func (c *ServerConfig) BackendPath() string { return datadir.ToBackendFileName(c.DataDir) }
+
+func (c *ServerConfig) MaxRequestBytesWithOverhead() uint {
+	return c.MaxRequestBytes + grpcOverheadBytes
+}

@@ -17,11 +17,10 @@ limitations under the License.
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
-
-	"github.com/pkg/errors"
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientset "k8s.io/client-go/kubernetes"
 	clientsetscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/yaml"
 
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	"k8s.io/kubernetes/cmd/kubeadm/app/componentconfigs"
@@ -38,6 +38,8 @@ import (
 	"k8s.io/kubernetes/cmd/kubeadm/app/images"
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/errors"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/patches"
 )
 
 const (
@@ -49,13 +51,13 @@ const (
 )
 
 // EnsureProxyAddon creates the kube-proxy addons
-func EnsureProxyAddon(cfg *kubeadmapi.ClusterConfiguration, localEndpoint *kubeadmapi.APIEndpoint, client clientset.Interface, out io.Writer, printManifest bool) error {
+func EnsureProxyAddon(cfg *kubeadmapi.ClusterConfiguration, localEndpoint *kubeadmapi.APIEndpoint, client clientset.Interface, patchesDir string, out io.Writer, printManifest bool) error {
 	cmByte, err := createKubeProxyConfigMap(cfg, localEndpoint, client, printManifest)
 	if err != nil {
 		return err
 	}
 
-	dsByte, err := createKubeProxyAddon(cfg, client, printManifest)
+	dsByte, err := createKubeProxyAddon(cfg, client, patchesDir, out, printManifest)
 	if err != nil {
 		return err
 	}
@@ -132,19 +134,19 @@ func printOrCreateKubeProxyObjects(cmByte []byte, dsByte []byte, client clientse
 
 	// Create the objects if printManifest is false
 	if !printManifest {
-		if err := apiclient.CreateOrUpdateServiceAccount(client, sa); err != nil {
+		if err := apiclient.CreateOrUpdate(client.CoreV1().ServiceAccounts(sa.GetNamespace()), sa); err != nil {
 			return errors.Wrap(err, "error when creating kube-proxy service account")
 		}
 
-		if err := apiclient.CreateOrUpdateClusterRoleBinding(client, crb); err != nil {
+		if err := apiclient.CreateOrUpdate(client.RbacV1().ClusterRoleBindings(), crb); err != nil {
 			return err
 		}
 
-		if err := apiclient.CreateOrUpdateRole(client, role); err != nil {
+		if err := apiclient.CreateOrUpdate(client.RbacV1().Roles(role.GetNamespace()), role); err != nil {
 			return err
 		}
 
-		if err := apiclient.CreateOrUpdateRoleBinding(client, rb); err != nil {
+		if err := apiclient.CreateOrUpdate(client.RbacV1().RoleBindings(rb.GetNamespace()), rb); err != nil {
 			return err
 		}
 
@@ -189,7 +191,7 @@ func printOrCreateKubeProxyObjects(cmByte []byte, dsByte []byte, client clientse
 }
 
 func createKubeProxyConfigMap(cfg *kubeadmapi.ClusterConfiguration, localEndpoint *kubeadmapi.APIEndpoint, client clientset.Interface, printManifest bool) ([]byte, error) {
-	// Generate ControlPlane Enpoint kubeconfig file
+	// Generate ControlPlane Endpoint kubeconfig file
 	controlPlaneEndpoint, err := kubeadmutil.GetControlPlaneEndpoint(cfg.ControlPlaneEndpoint, localEndpoint)
 	if err != nil {
 		return []byte(""), err
@@ -204,8 +206,14 @@ func createKubeProxyConfigMap(cfg *kubeadmapi.ClusterConfiguration, localEndpoin
 	if err != nil {
 		return []byte(""), errors.Wrap(err, "error when marshaling")
 	}
+
+	// Indent the proxy CM bytes with 4 spaces to comply with the location in the template.
 	var prefixBytes bytes.Buffer
-	apiclient.PrintBytesWithLinePrefix(&prefixBytes, proxyBytes, "    ")
+	scanner := bufio.NewScanner(bytes.NewReader(proxyBytes))
+	for scanner.Scan() {
+		fmt.Fprintf(&prefixBytes, "    %s\n", scanner.Text())
+	}
+
 	configMapBytes, err := kubeadmutil.ParseTemplate(KubeProxyConfigMap19,
 		struct {
 			ControlPlaneEndpoint string
@@ -236,10 +244,10 @@ func createKubeProxyConfigMap(cfg *kubeadmapi.ClusterConfiguration, localEndpoin
 	}
 
 	// Create the ConfigMap for kube-proxy or update it in case it already exists
-	return []byte(""), apiclient.CreateOrUpdateConfigMap(client, kubeproxyConfigMap)
+	return []byte(""), apiclient.CreateOrUpdate(client.CoreV1().ConfigMaps(kubeproxyConfigMap.GetNamespace()), kubeproxyConfigMap)
 }
 
-func createKubeProxyAddon(cfg *kubeadmapi.ClusterConfiguration, client clientset.Interface, printManifest bool) ([]byte, error) {
+func createKubeProxyAddon(cfg *kubeadmapi.ClusterConfiguration, client clientset.Interface, patchesDir string, output io.Writer, printManifest bool) ([]byte, error) {
 	daemonSetbytes, err := kubeadmutil.ParseTemplate(KubeProxyDaemonSet19, struct{ Image, ProxyConfigMap, ProxyConfigMapKey string }{
 		Image:             images.GetKubernetesImage(constants.KubeProxy, cfg),
 		ProxyConfigMap:    constants.KubeProxyConfigMap,
@@ -247,6 +255,13 @@ func createKubeProxyAddon(cfg *kubeadmapi.ClusterConfiguration, client clientset
 	})
 	if err != nil {
 		return []byte(""), errors.Wrap(err, "error when parsing kube-proxy daemonset template")
+	}
+
+	if len(patchesDir) != 0 {
+		daemonSetbytes, err = applyKubeProxyDaemonSetPatches(daemonSetbytes, patchesDir, output)
+		if err != nil {
+			return []byte(""), errors.Wrap(err, "could not apply patches to the kube-proxy DaemonSet")
+		}
 	}
 
 	if printManifest {
@@ -259,8 +274,32 @@ func createKubeProxyAddon(cfg *kubeadmapi.ClusterConfiguration, client clientset
 	}
 	// Propagate the http/https proxy host environment variables to the container
 	env := &kubeproxyDaemonSet.Spec.Template.Spec.Containers[0].Env
-	*env = append(*env, kubeadmutil.GetProxyEnvVars()...)
+	*env = append(*env, kubeadmutil.MergeKubeadmEnvVars(kubeadmutil.GetProxyEnvVars(nil))...)
 
 	// Create the DaemonSet for kube-proxy or update it in case it already exists
-	return []byte(""), apiclient.CreateOrUpdateDaemonSet(client, kubeproxyDaemonSet)
+	return []byte(""), apiclient.CreateOrUpdate(client.AppsV1().DaemonSets(kubeproxyDaemonSet.GetNamespace()), kubeproxyDaemonSet)
+}
+
+// applyKubeProxyDaemonSetPatches reads patches from a directory and applies them over the input kubeProxyDaemonSetBytes.
+func applyKubeProxyDaemonSetPatches(kubeProxyDaemonSetBytes []byte, patchesDir string, output io.Writer) ([]byte, error) {
+	patchManager, err := patches.GetPatchManagerForPath(patchesDir, patches.KnownTargets(), output)
+	if err != nil {
+		return nil, err
+	}
+
+	patchTarget := &patches.PatchTarget{
+		Name:                      patches.KubeProxyDaemonSet,
+		StrategicMergePatchObject: apps.DaemonSet{},
+		Data:                      kubeProxyDaemonSetBytes,
+	}
+	if err := patchManager.ApplyPatchesToTarget(patchTarget); err != nil {
+		return nil, err
+	}
+
+	kubeProxyDaemonSetBytes, err = yaml.JSONToYAML(patchTarget.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	return kubeProxyDaemonSetBytes, nil
 }

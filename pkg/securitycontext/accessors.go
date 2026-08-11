@@ -24,30 +24,28 @@ import (
 
 // PodSecurityContextAccessor allows reading the values of a PodSecurityContext object
 type PodSecurityContextAccessor interface {
-	HostNetwork() bool
-	HostPID() bool
-	HostIPC() bool
 	SELinuxOptions() *api.SELinuxOptions
 	RunAsUser() *int64
 	RunAsGroup() *int64
 	RunAsNonRoot() *bool
+	SeccompProfile() *api.SeccompProfile
 	SupplementalGroups() []int64
 	FSGroup() *int64
+	FSGroupChangePolicy() *api.PodFSGroupChangePolicy
 }
 
 // PodSecurityContextMutator allows reading and writing the values of a PodSecurityContext object
 type PodSecurityContextMutator interface {
 	PodSecurityContextAccessor
 
-	SetHostNetwork(bool)
-	SetHostPID(bool)
-	SetHostIPC(bool)
 	SetSELinuxOptions(*api.SELinuxOptions)
 	SetRunAsUser(*int64)
 	SetRunAsGroup(*int64)
 	SetRunAsNonRoot(*bool)
+	SetSeccompProfile(*api.SeccompProfile)
 	SetSupplementalGroups([]int64)
 	SetFSGroup(*int64)
+	SetFSGroupChangePolicy(*api.PodFSGroupChangePolicy)
 
 	// PodSecurityContext returns the current PodSecurityContext object
 	PodSecurityContext() *api.PodSecurityContext
@@ -79,45 +77,6 @@ func (w *podSecurityContextWrapper) ensurePodSC() {
 	}
 }
 
-func (w *podSecurityContextWrapper) HostNetwork() bool {
-	if w.podSC == nil {
-		return false
-	}
-	return w.podSC.HostNetwork
-}
-func (w *podSecurityContextWrapper) SetHostNetwork(v bool) {
-	if w.podSC == nil && v == false {
-		return
-	}
-	w.ensurePodSC()
-	w.podSC.HostNetwork = v
-}
-func (w *podSecurityContextWrapper) HostPID() bool {
-	if w.podSC == nil {
-		return false
-	}
-	return w.podSC.HostPID
-}
-func (w *podSecurityContextWrapper) SetHostPID(v bool) {
-	if w.podSC == nil && v == false {
-		return
-	}
-	w.ensurePodSC()
-	w.podSC.HostPID = v
-}
-func (w *podSecurityContextWrapper) HostIPC() bool {
-	if w.podSC == nil {
-		return false
-	}
-	return w.podSC.HostIPC
-}
-func (w *podSecurityContextWrapper) SetHostIPC(v bool) {
-	if w.podSC == nil && v == false {
-		return
-	}
-	w.ensurePodSC()
-	w.podSC.HostIPC = v
-}
 func (w *podSecurityContextWrapper) SELinuxOptions() *api.SELinuxOptions {
 	if w.podSC == nil {
 		return nil
@@ -171,6 +130,19 @@ func (w *podSecurityContextWrapper) SetRunAsNonRoot(v *bool) {
 	w.ensurePodSC()
 	w.podSC.RunAsNonRoot = v
 }
+func (w *podSecurityContextWrapper) SeccompProfile() *api.SeccompProfile {
+	if w.podSC == nil {
+		return nil
+	}
+	return w.podSC.SeccompProfile
+}
+func (w *podSecurityContextWrapper) SetSeccompProfile(p *api.SeccompProfile) {
+	if w.podSC == nil && p == nil {
+		return
+	}
+	w.ensurePodSC()
+	w.podSC.SeccompProfile = p
+}
 func (w *podSecurityContextWrapper) SupplementalGroups() []int64 {
 	if w.podSC == nil {
 		return nil
@@ -201,6 +173,23 @@ func (w *podSecurityContextWrapper) SetFSGroup(v *int64) {
 	w.podSC.FSGroup = v
 }
 
+func (w *podSecurityContextWrapper) FSGroupChangePolicy() *api.PodFSGroupChangePolicy {
+	if w.podSC == nil {
+		return nil
+	}
+
+	return w.podSC.FSGroupChangePolicy
+}
+
+func (w *podSecurityContextWrapper) SetFSGroupChangePolicy(v *api.PodFSGroupChangePolicy) {
+	if w.podSC == nil && v == nil {
+		return
+	}
+
+	w.ensurePodSC()
+	w.podSC.FSGroupChangePolicy = v
+}
+
 // ContainerSecurityContextAccessor allows reading the values of a SecurityContext object
 type ContainerSecurityContextAccessor interface {
 	Capabilities() *api.Capabilities
@@ -211,6 +200,7 @@ type ContainerSecurityContextAccessor interface {
 	RunAsGroup() *int64
 	RunAsNonRoot() *bool
 	ReadOnlyRootFilesystem() *bool
+	SeccompProfile() *api.SeccompProfile
 	AllowPrivilegeEscalation() *bool
 }
 
@@ -227,6 +217,7 @@ type ContainerSecurityContextMutator interface {
 	SetRunAsGroup(*int64)
 	SetRunAsNonRoot(*bool)
 	SetReadOnlyRootFilesystem(*bool)
+	SetSeccompProfile(*api.SeccompProfile)
 	SetAllowPrivilegeEscalation(*bool)
 }
 
@@ -357,6 +348,20 @@ func (w *containerSecurityContextWrapper) SetReadOnlyRootFilesystem(v *bool) {
 	w.ensureContainerSC()
 	w.containerSC.ReadOnlyRootFilesystem = v
 }
+func (w *containerSecurityContextWrapper) SeccompProfile() *api.SeccompProfile {
+	if w.containerSC == nil {
+		return nil
+	}
+	return w.containerSC.SeccompProfile
+}
+func (w *containerSecurityContextWrapper) SetSeccompProfile(p *api.SeccompProfile) {
+	if w.containerSC == nil && p == nil {
+		return
+	}
+	w.ensureContainerSC()
+	w.containerSC.SeccompProfile = p
+}
+
 func (w *containerSecurityContextWrapper) AllowPrivilegeEscalation() *bool {
 	if w.containerSC == nil {
 		return nil
@@ -462,6 +467,14 @@ func (w *effectiveContainerSecurityContextWrapper) ReadOnlyRootFilesystem() *boo
 func (w *effectiveContainerSecurityContextWrapper) SetReadOnlyRootFilesystem(v *bool) {
 	if !reflect.DeepEqual(w.ReadOnlyRootFilesystem(), v) {
 		w.containerSC.SetReadOnlyRootFilesystem(v)
+	}
+}
+func (w *effectiveContainerSecurityContextWrapper) SeccompProfile() *api.SeccompProfile {
+	return w.containerSC.SeccompProfile()
+}
+func (w *effectiveContainerSecurityContextWrapper) SetSeccompProfile(p *api.SeccompProfile) {
+	if !reflect.DeepEqual(w.SeccompProfile(), p) {
+		w.containerSC.SetSeccompProfile(p)
 	}
 }
 func (w *effectiveContainerSecurityContextWrapper) AllowPrivilegeEscalation() *bool {

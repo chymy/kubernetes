@@ -32,11 +32,12 @@ import (
 )
 
 type REST struct {
-	authorizer authorizer.Authorizer
+	authorizer authorizer.UnconditionalAuthorizer
+	scheme     *runtime.Scheme
 }
 
-func NewREST(authorizer authorizer.Authorizer) *REST {
-	return &REST{authorizer}
+func NewREST(authorizer authorizer.UnconditionalAuthorizer, scheme *runtime.Scheme) *REST {
+	return &REST{authorizer, scheme}
 }
 
 func (r *REST) NamespaceScoped() bool {
@@ -53,12 +54,18 @@ func (r *REST) Destroy() {
 	// here explicitly.
 }
 
+var _ rest.SingularNameProvider = &REST{}
+
+func (r *REST) GetSingularName() string {
+	return "selfsubjectaccessreview"
+}
+
 func (r *REST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	selfSAR, ok := obj.(*authorizationapi.SelfSubjectAccessReview)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("not a SelfSubjectAccessReview: %#v", obj))
 	}
-	if errs := authorizationvalidation.ValidateSelfSubjectAccessReview(selfSAR); len(errs) > 0 {
+	if errs := authorizationvalidation.ValidateSelfSubjectAccessReviewCreate(ctx, r.scheme, selfSAR); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(authorizationapi.Kind(selfSAR.Kind), "", errs)
 	}
 	userToCheck, exists := genericapirequest.UserFrom(ctx)
@@ -86,9 +93,7 @@ func (r *REST) Create(ctx context.Context, obj runtime.Object, createValidation 
 		Denied:  (decision == authorizer.DecisionDeny),
 		Reason:  reason,
 	}
-	if evaluationErr != nil {
-		selfSAR.Status.EvaluationError = evaluationErr.Error()
-	}
+	selfSAR.Status.EvaluationError = authorizationutil.BuildEvaluationError(evaluationErr, authorizationAttributes)
 
 	return selfSAR, nil
 }

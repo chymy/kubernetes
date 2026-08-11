@@ -20,15 +20,16 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestRunAsNonRoot(t *testing.T) {
 	tests := []struct {
-		name         string
-		pod          *corev1.Pod
-		expectReason string
-		expectDetail string
+		name          string
+		pod           *corev1.Pod
+		expectReason  string
+		expectDetail  string
+		expectAllowed bool
 	}{
 		{
 			name: "no explicit runAsNonRoot",
@@ -43,7 +44,7 @@ func TestRunAsNonRoot(t *testing.T) {
 		{
 			name: "pod runAsNonRoot=false",
 			pod: &corev1.Pod{Spec: corev1.PodSpec{
-				SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: utilpointer.Bool(false)},
+				SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(false)},
 				Containers: []corev1.Container{
 					{Name: "a", SecurityContext: nil},
 				},
@@ -54,14 +55,14 @@ func TestRunAsNonRoot(t *testing.T) {
 		{
 			name: "containers runAsNonRoot=false",
 			pod: &corev1.Pod{Spec: corev1.PodSpec{
-				SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: utilpointer.Bool(true)},
+				SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true)},
 				Containers: []corev1.Container{
 					{Name: "a", SecurityContext: nil},
 					{Name: "b", SecurityContext: &corev1.SecurityContext{}},
-					{Name: "c", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: utilpointer.Bool(false)}},
-					{Name: "d", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: utilpointer.Bool(false)}},
-					{Name: "e", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: utilpointer.Bool(true)}},
-					{Name: "f", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: utilpointer.Bool(true)}},
+					{Name: "c", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(false)}},
+					{Name: "d", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(false)}},
+					{Name: "e", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(true)}},
+					{Name: "f", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(true)}},
 				},
 			}},
 			expectReason: `runAsNonRoot != true`,
@@ -73,20 +74,27 @@ func TestRunAsNonRoot(t *testing.T) {
 				Containers: []corev1.Container{
 					{Name: "a", SecurityContext: nil},
 					{Name: "b", SecurityContext: &corev1.SecurityContext{}},
-					{Name: "d", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: utilpointer.Bool(true)}},
-					{Name: "e", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: utilpointer.Bool(true)}},
+					{Name: "d", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(true)}},
+					{Name: "e", SecurityContext: &corev1.SecurityContext{RunAsNonRoot: ptr.To(true)}},
 				},
 			}},
 			expectReason: `runAsNonRoot != true`,
 			expectDetail: `pod or containers "a", "b" must set securityContext.runAsNonRoot=true`,
 		},
+		{
+			name: "host users false allowed",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{
+				HostUsers: ptr.To(false),
+			}},
+			expectAllowed: true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := runAsNonRoot_1_0(&tc.pod.ObjectMeta, &tc.pod.Spec)
-			if result.Allowed {
-				t.Fatal("expected disallowed")
+			result := runAsNonRoot1_35(&tc.pod.ObjectMeta, &tc.pod.Spec)
+			if result.Allowed != tc.expectAllowed {
+				t.Fatalf("expected Allowed to be %v was %v", tc.expectAllowed, result.Allowed)
 			}
 			if e, a := tc.expectReason, result.ForbiddenReason; e != a {
 				t.Errorf("expected\n%s\ngot\n%s", e, a)

@@ -20,8 +20,9 @@ import (
 	"context"
 	"encoding/hex"
 	"os"
-	"path"
+	"path/filepath"
 	"regexp"
+	goruntime "runtime"
 	"testing"
 
 	"github.com/lithammer/dedent"
@@ -29,19 +30,18 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	fakeclient "k8s.io/client-go/kubernetes/fake"
-	keyutil "k8s.io/client-go/util/keyutil"
+	"k8s.io/client-go/util/keyutil"
 
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
+	configutil "k8s.io/kubernetes/cmd/kubeadm/app/util/config/testing"
 	cryptoutil "k8s.io/kubernetes/cmd/kubeadm/app/util/crypto"
-	testutil "k8s.io/kubernetes/cmd/kubeadm/test"
 )
 
 func TestGetDataFromInitConfig(t *testing.T) {
 	certData := []byte("cert-data")
-	tmpdir := testutil.SetupTempDir(t)
-	defer os.RemoveAll(tmpdir)
+	tmpdir := t.TempDir()
 	cfg := &kubeadmapi.InitConfiguration{}
 	cfg.CertificatesDir = tmpdir
 
@@ -54,7 +54,7 @@ func TestGetDataFromInitConfig(t *testing.T) {
 		t.Fatalf(dedent.Dedent("failed to decode key.\nfatal error: %v"), err)
 	}
 
-	if err := os.Mkdir(path.Join(tmpdir, "etcd"), 0755); err != nil {
+	if err := os.Mkdir(filepath.Join(tmpdir, "etcd"), 0755); err != nil {
 		t.Fatalf(dedent.Dedent("failed to create etcd cert dir.\nfatal error: %v"), err)
 	}
 
@@ -70,7 +70,7 @@ func TestGetDataFromInitConfig(t *testing.T) {
 		t.Fatalf("failed to get secret data. fatal error: %v", err)
 	}
 
-	re := regexp.MustCompile(`[-._a-zA-Z0-9]+`)
+	re := regexp.MustCompile(`[-.\w]+`)
 	for name, data := range secretData {
 		if !re.MatchString(name) {
 			t.Fatalf(dedent.Dedent("failed to validate secretData\n %s isn't a valid secret key"), name)
@@ -158,15 +158,14 @@ func TestCertOrKeyNameToSecretName(t *testing.T) {
 }
 
 func TestUploadCerts(t *testing.T) {
-	tmpdir := testutil.SetupTempDir(t)
-	defer os.RemoveAll(tmpdir)
+	tmpdir := t.TempDir()
 
 	secretKey, err := CreateCertificateKey()
 	if err != nil {
 		t.Fatalf("could not create certificate key: %v", err)
 	}
 
-	initConfiguration := testutil.GetDefaultInternalConfig(t)
+	initConfiguration := configutil.GetDefaultInternalConfig(t)
 	initConfiguration.ClusterConfiguration.CertificatesDir = tmpdir
 
 	if err := certs.CreatePKIAssets(initConfiguration); err != nil {
@@ -209,15 +208,13 @@ func TestDownloadCerts(t *testing.T) {
 	}
 
 	// Temporary directory where certificates will be generated
-	tmpdir := testutil.SetupTempDir(t)
-	defer os.RemoveAll(tmpdir)
-	initConfiguration := testutil.GetDefaultInternalConfig(t)
+	tmpdir := t.TempDir()
+	initConfiguration := configutil.GetDefaultInternalConfig(t)
 	initConfiguration.ClusterConfiguration.CertificatesDir = tmpdir
 
 	// Temporary directory where certificates will be downloaded to
-	targetTmpdir := testutil.SetupTempDir(t)
-	defer os.RemoveAll(targetTmpdir)
-	initForDownloadConfiguration := testutil.GetDefaultInternalConfig(t)
+	targetTmpdir := t.TempDir()
+	initForDownloadConfiguration := configutil.GetDefaultInternalConfig(t)
 	initForDownloadConfiguration.ClusterConfiguration.CertificatesDir = targetTmpdir
 
 	if err := certs.CreatePKIAssets(initConfiguration); err != nil {
@@ -241,20 +238,26 @@ func TestDownloadCerts(t *testing.T) {
 		// Check that the written files are either certificates or keys, and that they have
 		// the expected permissions
 		if _, err := keyutil.ParsePrivateKeyPEM(diskCertData); err == nil {
-			if stat, err := os.Stat(certPath); err == nil {
-				if stat.Mode() != keyFileMode {
-					t.Errorf("key %q should have mode %#o, has %#o", certName, keyFileMode, stat.Mode())
+			// File permissions are set differently on Windows, which does not match the expectation below.
+			if goruntime.GOOS != "windows" {
+				if stat, err := os.Stat(certPath); err == nil {
+					if stat.Mode() != keyFileMode {
+						t.Errorf("key %q should have mode %#o, has %#o", certName, keyFileMode, stat.Mode())
+					}
+				} else {
+					t.Errorf("could not stat key %q: %v", certName, err)
 				}
-			} else {
-				t.Errorf("could not stat key %q: %v", certName, err)
 			}
 		} else if _, err := keyutil.ParsePublicKeysPEM(diskCertData); err == nil {
-			if stat, err := os.Stat(certPath); err == nil {
-				if stat.Mode() != certFileMode {
-					t.Errorf("cert %q should have mode %#o, has %#o", certName, certFileMode, stat.Mode())
+			// File permissions are set differently on Windows, which does not match the expectation below.
+			if goruntime.GOOS != "windows" {
+				if stat, err := os.Stat(certPath); err == nil {
+					if stat.Mode() != certFileMode {
+						t.Errorf("cert %q should have mode %#o, has %#o", certName, certFileMode, stat.Mode())
+					}
+				} else {
+					t.Errorf("could not stat cert %q: %v", certName, err)
 				}
-			} else {
-				t.Errorf("could not stat cert %q: %v", certName, err)
 			}
 		} else {
 			t.Errorf("secret %q was not identified as a cert or as a key", certName)

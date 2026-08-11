@@ -17,28 +17,43 @@ limitations under the License.
 // Package app implements a server that runs a set of active
 // components.  This includes replication controllers, service endpoints and
 // nodes.
-//
 package app
 
 import (
 	"context"
-
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/scale"
-	"k8s.io/controller-manager/controller"
+	"k8s.io/kubernetes/cmd/kube-controller-manager/names"
 	"k8s.io/kubernetes/pkg/controller/disruption"
 )
 
-func startDisruptionController(ctx context.Context, controllerContext ControllerContext) (controller.Interface, bool, error) {
-	client := controllerContext.ClientBuilder.ClientOrDie("disruption-controller")
-	config := controllerContext.ClientBuilder.ConfigOrDie("disruption-controller")
+func newDisruptionControllerDescriptor() *ControllerDescriptor {
+	return &ControllerDescriptor{
+		name:        names.DisruptionController,
+		aliases:     []string{"disruption"},
+		constructor: newDisruptionController,
+	}
+}
+
+func newDisruptionController(ctx context.Context, controllerContext ControllerContext, controllerName string) (Controller, error) {
+	client, err := controllerContext.NewClient("disruption-controller")
+	if err != nil {
+		return nil, err
+	}
+
+	config, err := controllerContext.NewClientConfig("disruption-controller")
+	if err != nil {
+		return nil, err
+	}
+
 	scaleKindResolver := scale.NewDiscoveryScaleKindResolver(client.Discovery())
 	scaleClient, err := scale.NewForConfig(config, controllerContext.RESTMapper, dynamic.LegacyAPIPathResolverFunc, scaleKindResolver)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
-	go disruption.NewDisruptionController(
+	dc := disruption.NewDisruptionController(
+		ctx,
 		controllerContext.InformerFactory.Core().V1().Pods(),
 		controllerContext.InformerFactory.Policy().V1().PodDisruptionBudgets(),
 		controllerContext.InformerFactory.Core().V1().ReplicationControllers(),
@@ -49,6 +64,8 @@ func startDisruptionController(ctx context.Context, controllerContext Controller
 		controllerContext.RESTMapper,
 		scaleClient,
 		client.Discovery(),
-	).Run(ctx)
-	return nil, true, nil
+	)
+	return newControllerLoop(func(ctx context.Context) {
+		dc.Run(ctx, int(controllerContext.ComponentConfig.DisruptionController.ConcurrentDisruptionSyncs))
+	}, controllerName), nil
 }

@@ -31,10 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	watchtools "k8s.io/client-go/tools/watch"
+	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/test/integration/framework"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 func noopNormalization(output []string) []string {
@@ -66,19 +67,18 @@ func TestWatchRestartsIfTimeoutNotReached(t *testing.T) {
 	// Has to be longer than 5 seconds
 	timeout := 30 * time.Second
 
-	// Set up an API server
-	controlPlaneConfig := framework.NewIntegrationTestControlPlaneConfig()
-	// Timeout is set random between MinRequestTimeout and 2x
-	controlPlaneConfig.GenericConfig.MinRequestTimeout = int(timeout.Seconds()) / 4
-	_, s, closeFn := framework.RunAnAPIServer(controlPlaneConfig)
-	defer closeFn()
+	logger, _ := ktesting.NewTestContext(t)
 
-	config := &restclient.Config{
-		Host: s.URL,
+	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--min-request-timeout=7"}, framework.SharedEtcd())
+	defer server.TearDownFn()
+
+	clientset, err := kubernetes.NewForConfig(server.ClientConfig)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	namespaceObject := framework.CreateTestingNamespace("retry-watch", t)
-	defer framework.DeleteTestingNamespace(namespaceObject, t)
+	namespaceObject := framework.CreateNamespaceOrDie(clientset, "retry-watch", t)
+	defer framework.DeleteNamespaceOrDie(clientset, namespaceObject, t)
 
 	getListFunc := func(c *kubernetes.Clientset, secret *corev1.Secret) func(options metav1.ListOptions) *corev1.SecretList {
 		return func(options metav1.ListOptions) *corev1.SecretList {
@@ -202,7 +202,7 @@ func TestWatchRestartsIfTimeoutNotReached(t *testing.T) {
 				// since the watcher is driven by an informer it is crucial to start producing only after the informer has synced
 				// otherwise we might not get all expected events since the informer LIST (or watchelist) and only then WATCHES
 				// all events received during the initial LIST (or watchlist) will be seen as a single event (to most recent version of an obj)
-				_, informer, w, done := watchtools.NewIndexerInformerWatcher(lw, &corev1.Secret{})
+				_, informer, w, done := watchtools.NewIndexerInformerWatcherWithLogger(logger, lw, &corev1.Secret{})
 				cache.WaitForCacheSync(context.TODO().Done(), informer.HasSynced)
 				return w, nil, func() { <-done }
 			},
@@ -211,11 +211,10 @@ func TestWatchRestartsIfTimeoutNotReached(t *testing.T) {
 	}
 
 	t.Run("group", func(t *testing.T) {
-		for _, tmptc := range tt {
-			tc := tmptc // we need to copy it for parallel runs
+		for _, tc := range tt {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
-				c, err := kubernetes.NewForConfig(config)
+				c, err := kubernetes.NewForConfig(server.ClientConfig)
 				if err != nil {
 					t.Fatalf("Failed to create clientset: %v", err)
 				}
@@ -262,7 +261,7 @@ func TestWatchRestartsIfTimeoutNotReached(t *testing.T) {
 					t.Fatalf("Watch should have timed out but it exited without an error!")
 				}
 
-				if err != wait.ErrWaitTimeout && tc.succeed {
+				if !wait.Interrupted(err) && tc.succeed {
 					t.Fatalf("Watch exited with error: %v!", err)
 				}
 

@@ -18,12 +18,13 @@ package config
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"testing"
 
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	utiltesting "k8s.io/client-go/util/testing"
+	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
 )
 
 type setContextTest struct {
@@ -36,48 +37,71 @@ type setContextTest struct {
 	expectedConfig clientcmdapi.Config //expect kubectl config
 }
 
-func TestCreateContext(t *testing.T) {
-	conf := clientcmdapi.Config{}
-	test := setContextTest{
-		testContext: "shaker-context",
-		description: "Testing for create a new context",
-		config:      conf,
-		args:        []string{"shaker-context"},
-		flags: []string{
-			"--cluster=cluster_nickname",
-			"--user=user_nickname",
-			"--namespace=namespace",
-		},
-		expected: `Context "shaker-context" created.` + "\n",
-		expectedConfig: clientcmdapi.Config{
-			Contexts: map[string]*clientcmdapi.Context{
-				"shaker-context": {AuthInfo: "user_nickname", Cluster: "cluster_nickname", Namespace: "namespace"}},
-		},
-	}
-	test.run(t)
+var namespaceFlagCases = []struct {
+	description   string
+	namespaceFlag string
+}{
+	{
+		description:   "long namespace flag",
+		namespaceFlag: "--namespace",
+	},
+	{
+		description:   "short namespace flag",
+		namespaceFlag: "-n",
+	},
 }
-func TestModifyContext(t *testing.T) {
-	conf := clientcmdapi.Config{
-		Contexts: map[string]*clientcmdapi.Context{
-			"shaker-context": {AuthInfo: "blue-user", Cluster: "big-cluster", Namespace: "saw-ns"},
-			"not-this":       {AuthInfo: "blue-user", Cluster: "big-cluster", Namespace: "saw-ns"}}}
-	test := setContextTest{
-		testContext: "shaker-context",
-		description: "Testing for modify a already exist context",
-		config:      conf,
-		args:        []string{"shaker-context"},
-		flags: []string{
-			"--cluster=cluster_nickname",
-			"--user=user_nickname",
-			"--namespace=namespace",
-		},
-		expected: `Context "shaker-context" modified.` + "\n",
-		expectedConfig: clientcmdapi.Config{
-			Contexts: map[string]*clientcmdapi.Context{
-				"shaker-context": {AuthInfo: "user_nickname", Cluster: "cluster_nickname", Namespace: "namespace"},
-				"not-this":       {AuthInfo: "blue-user", Cluster: "big-cluster", Namespace: "saw-ns"}}},
+
+func TestCreateContext(t *testing.T) {
+	for _, tc := range namespaceFlagCases {
+		t.Run(tc.description, func(t *testing.T) {
+			conf := clientcmdapi.Config{}
+			test := setContextTest{
+				testContext: "shaker-context",
+				description: "Testing for create a new context",
+				config:      conf,
+				args:        []string{"shaker-context"},
+				flags: []string{
+					"--cluster=cluster_nickname",
+					"--user=user_nickname",
+					tc.namespaceFlag + "=namespace",
+				},
+				expected: `Context "shaker-context" created.` + "\n",
+				expectedConfig: clientcmdapi.Config{
+					Contexts: map[string]*clientcmdapi.Context{
+						"shaker-context": {AuthInfo: "user_nickname", Cluster: "cluster_nickname", Namespace: "namespace"}},
+				},
+			}
+			test.run(t)
+		})
 	}
-	test.run(t)
+}
+
+func TestModifyContext(t *testing.T) {
+	for _, tc := range namespaceFlagCases {
+		t.Run(tc.description, func(t *testing.T) {
+			conf := clientcmdapi.Config{
+				Contexts: map[string]*clientcmdapi.Context{
+					"shaker-context": {AuthInfo: "blue-user", Cluster: "big-cluster", Namespace: "saw-ns"},
+					"not-this":       {AuthInfo: "blue-user", Cluster: "big-cluster", Namespace: "saw-ns"}}}
+			test := setContextTest{
+				testContext: "shaker-context",
+				description: "Testing for modify a already exist context",
+				config:      conf,
+				args:        []string{"shaker-context"},
+				flags: []string{
+					"--cluster=cluster_nickname",
+					"--user=user_nickname",
+					tc.namespaceFlag + "=namespace",
+				},
+				expected: `Context "shaker-context" modified.` + "\n",
+				expectedConfig: clientcmdapi.Config{
+					Contexts: map[string]*clientcmdapi.Context{
+						"shaker-context": {AuthInfo: "user_nickname", Cluster: "cluster_nickname", Namespace: "namespace"},
+						"not-this":       {AuthInfo: "blue-user", Cluster: "big-cluster", Namespace: "saw-ns"}}},
+			}
+			test.run(t)
+		})
+	}
 }
 
 func TestModifyCurrentContext(t *testing.T) {
@@ -107,11 +131,11 @@ func TestModifyCurrentContext(t *testing.T) {
 }
 
 func (test setContextTest) run(t *testing.T) {
-	fakeKubeFile, err := ioutil.TempFile(os.TempDir(), "")
+	fakeKubeFile, err := os.CreateTemp(os.TempDir(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer os.Remove(fakeKubeFile.Name())
+	defer utiltesting.CloseAndRemove(t, fakeKubeFile)
 	err = clientcmd.WriteToFile(test.config, fakeKubeFile.Name())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -121,7 +145,11 @@ func (test setContextTest) run(t *testing.T) {
 	pathOptions.GlobalFile = fakeKubeFile.Name()
 	pathOptions.EnvVar = ""
 	buf := bytes.NewBuffer([]byte{})
-	cmd := NewCmdConfigSetContext(buf, pathOptions)
+
+	tf := cmdtesting.NewTestFactory().WithNamespace("test")
+	defer tf.Cleanup()
+
+	cmd := NewCmdConfigSetContext(tf, buf, pathOptions)
 	cmd.SetArgs(test.args)
 	cmd.Flags().Parse(test.flags)
 	if err := cmd.Execute(); err != nil {

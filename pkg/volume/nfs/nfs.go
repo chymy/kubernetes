@@ -101,8 +101,8 @@ func (plugin *nfsPlugin) SupportsMountOption() bool {
 	return true
 }
 
-func (plugin *nfsPlugin) SupportsBulkVolumeVerification() bool {
-	return false
+func (plugin *nfsPlugin) SupportsSELinuxContextMount(spec *volume.Spec) (bool, error) {
+	return false, nil
 }
 
 func (plugin *nfsPlugin) GetAccessModes() []v1.PersistentVolumeAccessMode {
@@ -113,8 +113,8 @@ func (plugin *nfsPlugin) GetAccessModes() []v1.PersistentVolumeAccessMode {
 	}
 }
 
-func (plugin *nfsPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod, _ volume.VolumeOptions) (volume.Mounter, error) {
-	return plugin.newMounterInternal(spec, pod, plugin.host.GetMounter(plugin.GetPluginName()))
+func (plugin *nfsPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod) (volume.Mounter, error) {
+	return plugin.newMounterInternal(spec, pod, plugin.host.GetMounter())
 }
 
 func (plugin *nfsPlugin) newMounterInternal(spec *volume.Spec, pod *v1.Pod, mounter mount.Interface) (volume.Mounter, error) {
@@ -138,7 +138,7 @@ func (plugin *nfsPlugin) newMounterInternal(spec *volume.Spec, pod *v1.Pod, moun
 }
 
 func (plugin *nfsPlugin) NewUnmounter(volName string, podUID types.UID) (volume.Unmounter, error) {
-	return plugin.newUnmounterInternal(volName, podUID, plugin.host.GetMounter(plugin.GetPluginName()))
+	return plugin.newUnmounterInternal(volName, podUID, plugin.host.GetMounter())
 }
 
 func (plugin *nfsPlugin) newUnmounterInternal(volName string, podUID types.UID, mounter mount.Interface) (volume.Unmounter, error) {
@@ -172,7 +172,7 @@ func (plugin *nfsPlugin) Recycle(pvName string, spec *volume.Spec, eventRecorder
 	return recyclerclient.RecycleVolumeByWatchingPodUntilCompletion(pvName, pod, plugin.host.GetKubeClient(), eventRecorder)
 }
 
-func (plugin *nfsPlugin) ConstructVolumeSpec(volumeName, mountPath string) (*volume.Spec, error) {
+func (plugin *nfsPlugin) ConstructVolumeSpec(volumeName, mountPath string) (volume.ReconstructedVolume, error) {
 	nfsVolume := &v1.Volume{
 		Name: volumeName,
 		VolumeSource: v1.VolumeSource{
@@ -181,7 +181,9 @@ func (plugin *nfsPlugin) ConstructVolumeSpec(volumeName, mountPath string) (*vol
 			},
 		},
 	}
-	return volume.NewSpecFromVolume(nfsVolume), nil
+	return volume.ReconstructedVolume{
+		Spec: volume.NewSpecFromVolume(nfsVolume),
+	}, nil
 }
 
 // NFS volumes represent a bare host file or directory mount of an NFS export.

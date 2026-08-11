@@ -18,7 +18,7 @@ package set
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/rest/fake"
@@ -58,9 +59,10 @@ func TestImageLocal(t *testing.T) {
 
 	outputFormat := "name"
 
-	streams, _, buf, _ := genericclioptions.NewTestIOStreams()
+	streams, _, buf, _ := genericiooptions.NewTestIOStreams()
 	cmd := NewCmdImage(tf, streams)
-	cmd.SetOutput(buf)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
 	cmd.Flags().Set("output", outputFormat)
 	cmd.Flags().Set("local", "true")
 
@@ -170,9 +172,10 @@ func TestSetMultiResourcesImageLocal(t *testing.T) {
 
 	outputFormat := "name"
 
-	streams, _, buf, _ := genericclioptions.NewTestIOStreams()
+	streams, _, buf, _ := genericiooptions.NewTestIOStreams()
 	cmd := NewCmdImage(tf, streams)
-	cmd.SetOutput(buf)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
 	cmd.Flags().Set("output", outputFormat)
 	cmd.Flags().Set("local", "true")
 
@@ -634,11 +637,11 @@ func TestSetImageRemote(t *testing.T) {
 						if err != nil {
 							return nil, err
 						}
-						bytes, err := ioutil.ReadAll(stream)
+						bytes, err := io.ReadAll(stream)
 						if err != nil {
 							return nil, err
 						}
-						assert.Contains(t, string(bytes), `"image":`+`"`+"thingy"+`"`, fmt.Sprintf("image not updated for %#v", input.object))
+						assert.Containsf(t, string(bytes), `"image":`+`"`+"thingy"+`"`, "image not updated for %#v", input.object)
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: objBody(input.object)}, nil
 					default:
 						t.Errorf("%s: unexpected request: %s %#v\n%#v", "image", req.Method, req.URL, req)
@@ -649,7 +652,7 @@ func TestSetImageRemote(t *testing.T) {
 
 			outputFormat := "yaml"
 
-			streams := genericclioptions.NewTestIOStreamsDiscard()
+			streams := genericiooptions.NewTestIOStreamsDiscard()
 			cmd := NewCmdImage(tf, streams)
 			cmd.Flags().Set("output", outputFormat)
 			opts := SetImageOptions{
@@ -746,12 +749,12 @@ func TestSetImageRemoteWithSpecificContainers(t *testing.T) {
 						if err != nil {
 							return nil, err
 						}
-						bytes, err := ioutil.ReadAll(stream)
+						bytes, err := io.ReadAll(stream)
 						if err != nil {
 							return nil, err
 						}
-						assert.Contains(t, string(bytes), `"image":"`+"thingy"+`","name":`+`"nginx"`, fmt.Sprintf("image not updated for %#v", input.object))
-						assert.NotContains(t, string(bytes), `"image":"`+"thingy"+`","name":`+`"busybox"`, fmt.Sprintf("image updated for %#v", input.object))
+						assert.Containsf(t, string(bytes), `"image":"`+"thingy"+`","name":`+`"nginx"`, "image not updated for %#v", input.object)
+						assert.NotContainsf(t, string(bytes), `"image":"`+"thingy"+`","name":`+`"busybox"`, "image updated for %#v", input.object)
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: objBody(input.object)}, nil
 					default:
 						t.Errorf("%s: unexpected request: %s %#v\n%#v", "image", req.Method, req.URL, req)
@@ -762,7 +765,7 @@ func TestSetImageRemoteWithSpecificContainers(t *testing.T) {
 
 			outputFormat := "yaml"
 
-			streams := genericclioptions.NewTestIOStreamsDiscard()
+			streams := genericiooptions.NewTestIOStreamsDiscard()
 			cmd := NewCmdImage(tf, streams)
 			cmd.Flags().Set("output", outputFormat)
 			opts := SetImageOptions{

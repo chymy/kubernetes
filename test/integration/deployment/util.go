@@ -19,14 +19,14 @@ package deployment
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
@@ -38,6 +38,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/replicaset"
 	"k8s.io/kubernetes/test/integration/framework"
 	testutil "k8s.io/kubernetes/test/utils"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -102,9 +103,9 @@ func newDeployment(name, ns string, replicas int32) *apps.Deployment {
 }
 
 // dcSetup sets up necessities for Deployment integration test, including control plane, apiserver, informers, and clientset
-func dcSetup(t *testing.T) (kubeapiservertesting.TearDownFunc, *replicaset.ReplicaSetController, *deployment.DeploymentController, informers.SharedInformerFactory, clientset.Interface) {
+func dcSetup(ctx context.Context, t *testing.T) (kubeapiservertesting.TearDownFunc, *replicaset.ReplicaSetController, *deployment.DeploymentController, informers.SharedInformerFactory, clientset.Interface) {
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
-	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
+	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 
 	config := restclient.CopyConfig(server.ClientConfig)
 	clientSet, err := clientset.NewForConfig(config)
@@ -115,6 +116,7 @@ func dcSetup(t *testing.T) (kubeapiservertesting.TearDownFunc, *replicaset.Repli
 	informers := informers.NewSharedInformerFactory(clientset.NewForConfigOrDie(restclient.AddUserAgent(config, "deployment-informers")), resyncPeriod)
 
 	dc, err := deployment.NewDeploymentController(
+		ctx,
 		informers.Apps().V1().Deployments(),
 		informers.Apps().V1().ReplicaSets(),
 		informers.Core().V1().Pods(),
@@ -124,6 +126,7 @@ func dcSetup(t *testing.T) (kubeapiservertesting.TearDownFunc, *replicaset.Repli
 		t.Fatalf("error creating Deployment controller: %v", err)
 	}
 	rm := replicaset.NewReplicaSetController(
+		ctx,
 		informers.Apps().V1().ReplicaSets(),
 		informers.Core().V1().Pods(),
 		clientset.NewForConfigOrDie(restclient.AddUserAgent(config, "replicaset-controller")),
@@ -136,7 +139,7 @@ func dcSetup(t *testing.T) (kubeapiservertesting.TearDownFunc, *replicaset.Repli
 // and clientset, but not controllers and informers
 func dcSimpleSetup(t *testing.T) (kubeapiservertesting.TearDownFunc, clientset.Interface) {
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
-	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
+	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 
 	config := restclient.CopyConfig(server.ClientConfig)
 	clientSet, err := clientset.NewForConfig(config)
@@ -182,11 +185,6 @@ func markPodReady(c clientset.Interface, ns string, pod *v1.Pod) error {
 	return err
 }
 
-func intOrStrP(num int) *intstr.IntOrString {
-	intstr := intstr.FromInt(num)
-	return &intstr
-}
-
 // markUpdatedPodsReady manually marks updated Deployment pods status to ready,
 // until the deployment is complete
 func (d *deploymentTester) markUpdatedPodsReady(wg *sync.WaitGroup) {
@@ -220,6 +218,37 @@ func (d *deploymentTester) markUpdatedPodsReady(wg *sync.WaitGroup) {
 	})
 	if err != nil {
 		d.t.Errorf("failed to mark updated Deployment pods to ready: %v", err)
+	}
+}
+
+// removeTerminatedPods manually removes terminated Deployment pods,
+// until the deployment is complete
+func (d *deploymentTester) removeTerminatedPods(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+		// We're done when the deployment is complete
+		if completed, err := d.deploymentComplete(); err != nil {
+			return false, err
+		} else if completed {
+			return true, nil
+		}
+		// Otherwise, mark remaining pods as ready
+		rsList, err := deploymentutil.ListReplicaSets(d.deployment, deploymentutil.RsListFromClient(d.c.AppsV1()))
+		if err != nil {
+			d.t.Log(err)
+			return false, nil
+		}
+		for _, rs := range rsList {
+			if err := d.removeRSPods(ctx, rs, math.MaxInt, true, 0); err != nil {
+				d.t.Log(err)
+				return false, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		d.t.Errorf("failed to remove terminated Deployment pods: %v", err)
 	}
 }
 
@@ -278,6 +307,30 @@ func (d *deploymentTester) waitForDeploymentCompleteAndMarkPodsReady() error {
 	err := d.waitForDeploymentComplete()
 	if err != nil {
 		return fmt.Errorf("failed to wait for Deployment status %s: %v", d.deployment.Name, err)
+	}
+
+	// Wait for goroutine to finish
+	wg.Wait()
+
+	return nil
+}
+
+// waitForDeploymentCompleteAndMarkPodsReadyAndRemoveTerminating waits for the Deployment to complete
+// while marking updated Deployment pods as ready and removes terminated pods at the same time.
+func (d *deploymentTester) waitForDeploymentCompleteAndMarkPodsReadyAndRemoveTerminated(ctx context.Context) error {
+	var wg sync.WaitGroup
+
+	// Manually mark updated Deployment pods as ready in a separate goroutine
+	wg.Add(1)
+	go d.markUpdatedPodsReady(&wg)
+
+	wg.Add(1)
+	go d.removeTerminatedPods(ctx, &wg)
+
+	// Wait for the Deployment status to complete using soft check, while Deployment pods are becoming ready
+	err := d.waitForDeploymentComplete()
+	if err != nil {
+		return fmt.Errorf("failed to wait for Deployment status %s: %w", d.deployment.Name, err)
 	}
 
 	// Wait for goroutine to finish
@@ -435,9 +488,23 @@ func (d *deploymentTester) markUpdatedPodsReadyWithoutComplete() error {
 	return nil
 }
 
+// waitForReadyReplicas waits for number of ready replicas to equal number of replicas.
+func (d *deploymentTester) waitForDeploymentStatusReplicasFields(ctx context.Context, replicas, updatedReplicas, readyReplicas, availableReplicas, unavailableReplicas int32, terminatingReplicas *int32) error {
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(_ context.Context) (bool, error) {
+		// do not pass ctx to checkDeploymentStatusReplicasFields (Deployments().Get) so we always obtain the latest error and not the one from deadline exceeded
+		lastErr = d.checkDeploymentStatusReplicasFields(replicas, updatedReplicas, readyReplicas, availableReplicas, unavailableReplicas, terminatingReplicas)
+		return lastErr == nil, nil
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w", lastErr, err)
+	}
+	return nil
+}
+
 // Verify all replicas fields of DeploymentStatus have desired count.
 // Immediately return an error when found a non-matching replicas field.
-func (d *deploymentTester) checkDeploymentStatusReplicasFields(replicas, updatedReplicas, readyReplicas, availableReplicas, unavailableReplicas int32) error {
+func (d *deploymentTester) checkDeploymentStatusReplicasFields(replicas, updatedReplicas, readyReplicas, availableReplicas, unavailableReplicas int32, terminatingReplicas *int32) error {
 	deployment, err := d.c.AppsV1().Deployments(d.deployment.Namespace).Get(context.TODO(), d.deployment.Name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get deployment %q: %v", d.deployment.Name, err)
@@ -452,10 +519,40 @@ func (d *deploymentTester) checkDeploymentStatusReplicasFields(replicas, updated
 		return fmt.Errorf("unexpected .readyReplicas: expect %d, got %d", readyReplicas, deployment.Status.ReadyReplicas)
 	}
 	if deployment.Status.AvailableReplicas != availableReplicas {
-		return fmt.Errorf("unexpected .replicas: expect %d, got %d", availableReplicas, deployment.Status.AvailableReplicas)
+		return fmt.Errorf("unexpected .availableReplicas: expect %d, got %d", availableReplicas, deployment.Status.AvailableReplicas)
 	}
 	if deployment.Status.UnavailableReplicas != unavailableReplicas {
-		return fmt.Errorf("unexpected .replicas: expect %d, got %d", unavailableReplicas, deployment.Status.UnavailableReplicas)
+		return fmt.Errorf("unexpected .unavailableReplicas: expect %d, got %d", unavailableReplicas, deployment.Status.UnavailableReplicas)
 	}
+	if !ptr.Equal(deployment.Status.TerminatingReplicas, terminatingReplicas) {
+		return fmt.Errorf("unexpected .terminatingReplicas: expect %v, got %v", ptr.Deref(terminatingReplicas, -1), ptr.Deref(deployment.Status.TerminatingReplicas, -1))
+
+	}
+	return nil
+}
+
+func (d *deploymentTester) removeRSPods(ctx context.Context, replicaset *apps.ReplicaSet, count int, targetOnlyTerminating bool, gracePeriodSeconds int64) error {
+	selector, err := metav1.LabelSelectorAsSelector(replicaset.Spec.Selector)
+	if err != nil {
+		return fmt.Errorf("could not parse a selector for a replica set %q: %w", replicaset.Name, err)
+	}
+	pods, err := d.c.CoreV1().Pods(replicaset.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	if err != nil {
+		return fmt.Errorf("failed to get pods for a replica set %q: %w", replicaset.Name, err)
+	}
+
+	for i, pod := range pods.Items {
+		if i >= count {
+			break
+		}
+		if targetOnlyTerminating && pod.DeletionTimestamp == nil {
+			continue
+		}
+		err := d.c.CoreV1().Pods(replicaset.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(gracePeriodSeconds)})
+		if err != nil {
+			return fmt.Errorf("failed to delete pod %q for a replica set %q: %w", pod.Name, replicaset.Name, err)
+		}
+	}
+
 	return nil
 }

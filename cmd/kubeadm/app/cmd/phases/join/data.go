@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package phases includes command line phases for kubeadm join
 package phases
 
 import (
@@ -34,7 +35,8 @@ type JoinData interface {
 	TLSBootstrapCfg() (*clientcmdapi.Config, error)
 	InitCfg() (*kubeadmapi.InitConfiguration, error)
 	Client() (clientset.Interface, error)
-	IgnorePreflightErrors() sets.String
+	WaitControlPlaneClient() (clientset.Interface, error)
+	IgnorePreflightErrors() sets.Set[string]
 	OutputWriter() io.Writer
 	PatchesDir() string
 	DryRun() bool
@@ -43,3 +45,24 @@ type JoinData interface {
 	ManifestDir() string
 	CertificateWriteDir() string
 }
+
+// a package local type for testing purposes.
+type testJoinData struct{}
+
+// testJoinData must satisfy JoinData.
+var _ JoinData = &testJoinData{}
+
+func (j *testJoinData) CertificateKey() string                               { return "" }
+func (j *testJoinData) Cfg() *kubeadmapi.JoinConfiguration                   { return nil }
+func (j *testJoinData) TLSBootstrapCfg() (*clientcmdapi.Config, error)       { return nil, nil }
+func (j *testJoinData) InitCfg() (*kubeadmapi.InitConfiguration, error)      { return nil, nil }
+func (j *testJoinData) Client() (clientset.Interface, error)                 { return nil, nil }
+func (j *testJoinData) WaitControlPlaneClient() (clientset.Interface, error) { return nil, nil }
+func (j *testJoinData) IgnorePreflightErrors() sets.Set[string]              { return nil }
+func (j *testJoinData) OutputWriter() io.Writer                              { return nil }
+func (j *testJoinData) PatchesDir() string                                   { return "" }
+func (j *testJoinData) DryRun() bool                                         { return false }
+func (j *testJoinData) KubeConfigDir() string                                { return "" }
+func (j *testJoinData) KubeletDir() string                                   { return "" }
+func (j *testJoinData) ManifestDir() string                                  { return "" }
+func (j *testJoinData) CertificateWriteDir() string                          { return "" }

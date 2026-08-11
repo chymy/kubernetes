@@ -37,7 +37,7 @@ var (
 		&metrics.CounterOpts{
 			Namespace:      namespace,
 			Subsystem:      subsystem,
-			Name:           "pods_logs_insecure_backend_total",
+			Name:           "insecure_backend_total",
 			Help:           "Total number of requests for pods/logs sliced by usage type: enforce_tls, skip_tls_allowed, skip_tls_denied",
 			StabilityLevel: metrics.ALPHA,
 		},
@@ -49,7 +49,7 @@ var (
 		&metrics.CounterOpts{
 			Namespace:      namespace,
 			Subsystem:      subsystem,
-			Name:           "pods_logs_backend_tls_failure_total",
+			Name:           "backend_tls_failure_total",
 			Help:           "Total number of requests for pods/logs that failed due to kubelet server TLS verification",
 			StabilityLevel: metrics.ALPHA,
 		},

@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
 Copyright 2016 The Kubernetes Authors.
@@ -166,6 +165,45 @@ func TestParseSystemdToCgroupName(t *testing.T) {
 	for _, testCase := range testCases {
 		if actual := ParseSystemdToCgroupName(testCase.input); !reflect.DeepEqual(actual, testCase.expected) {
 			t.Errorf("Unexpected result, input: %v, expected: %v, actual: %v", testCase.input, testCase.expected, actual)
+		}
+	}
+}
+
+func TestCpuWeightToCPUShares(t *testing.T) {
+	testCases := []struct {
+		cpuWeight         uint64
+		expectedCpuShares uint64
+	}{
+		{
+			cpuWeight:         1,
+			expectedCpuShares: 2,
+		},
+		{
+			cpuWeight:         2,
+			expectedCpuShares: 28,
+		},
+		{
+			cpuWeight:         3,
+			expectedCpuShares: 54,
+		},
+		{
+			cpuWeight:         4,
+			expectedCpuShares: 80,
+		},
+		{
+			cpuWeight:         245,
+			expectedCpuShares: 6398,
+		},
+		{
+			cpuWeight:         10000,
+			expectedCpuShares: 262144,
+		},
+	}
+
+	for _, testCase := range testCases {
+		if actual := cpuWeightToCPUShares(testCase.cpuWeight); actual != testCase.expectedCpuShares {
+			t.Errorf("cpuWeight: %v, expectedCpuShares: %v, actualCpuShares: %v",
+				testCase.cpuWeight, testCase.expectedCpuShares, actual)
 		}
 	}
 }

@@ -22,24 +22,32 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	egressmetrics "k8s.io/apiserver/pkg/server/egressselector/metrics"
+	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/component-base/tracing"
 	"k8s.io/klog/v2"
-	utiltrace "k8s.io/utils/trace"
 	client "sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client"
 )
 
 var directDialer utilnet.DialFunc = http.DefaultTransport.(*http.Transport).DialContext
+
+func init() {
+	client.Metrics.RegisterMetrics(legacyregistry.Registerer())
+}
 
 // EgressSelector is the map of network context type to context dialer, for network egress.
 type EgressSelector struct {
@@ -103,7 +111,14 @@ func lookupServiceName(name string) (EgressType, error) {
 
 func tunnelHTTPConnect(proxyConn net.Conn, proxyAddress, addr string) (net.Conn, error) {
 	fmt.Fprintf(proxyConn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, "127.0.0.1")
-	br := bufio.NewReader(proxyConn)
+
+	// As described in https://go.dev/issue/74633 a misbehaving proxy server
+	// can cause memory exhaustion in the client. The fix in https://go.dev/cl/698915
+	// only covers http.Transport users. Apply the same limit here.
+	//
+	// Limit the size of the response headers the proxy server can send us.
+	br := bufio.NewReader(io.LimitReader(proxyConn, http.DefaultMaxHeaderBytes))
+
 	res, err := http.ReadResponse(br, nil)
 	if err != nil {
 		proxyConn.Close()
@@ -214,7 +229,11 @@ func (u *udsGRPCConnector) connect(_ context.Context) (proxier, error) {
 	// we cannot use ctx just for dialing and control the connection lifetime separately.
 	// See https://github.com/kubernetes-sigs/apiserver-network-proxy/issues/357.
 	tunnelCtx := context.TODO()
-	tunnel, err := client.CreateSingleUseGrpcTunnel(tunnelCtx, udsName, dialOption, grpc.WithInsecure())
+	tunnel, err := client.CreateSingleUseGrpcTunnel(tunnelCtx, udsName, dialOption,
+		grpc.WithBlock(),
+		grpc.WithReturnConnectionError(),
+		grpc.WithTimeout(30*time.Second), // matches http.DefaultTransport dial timeout
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
@@ -237,9 +256,10 @@ func (d *dialerCreator) createDialer() utilnet.DialFunc {
 		return directDialer
 	}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		trace := utiltrace.New(fmt.Sprintf("Proxy via %s protocol over %s", d.options.protocol, d.options.transport), utiltrace.Field{Key: "address", Value: addr})
-		defer trace.LogIfLong(500 * time.Millisecond)
+		ctx, span := tracing.Start(ctx, fmt.Sprintf("Proxy via %s protocol over %s", d.options.protocol, d.options.transport), attribute.String("address", addr))
+		defer span.End(500 * time.Millisecond)
 		start := egressmetrics.Metrics.Clock().Now()
+		egressmetrics.Metrics.ObserveDialStart(d.options.protocol, d.options.transport)
 		proxier, err := d.connector.connect(ctx)
 		if err != nil {
 			egressmetrics.Metrics.ObserveDialFailure(d.options.protocol, d.options.transport, egressmetrics.StageConnect)
@@ -265,7 +285,7 @@ func getTLSConfig(t *apiserver.TLSConfig) (*tls.Config, error) {
 	}
 	certPool := x509.NewCertPool()
 	if caCert != "" {
-		certBytes, err := ioutil.ReadFile(caCert)
+		certBytes, err := os.ReadFile(caCert)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read cert file %s, got %v", caCert, err)
 		}
@@ -280,6 +300,7 @@ func getTLSConfig(t *apiserver.TLSConfig) (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{clientCerts},
 		RootCAs:      certPool,
+		ServerName:   t.TLSServerName,
 	}, nil
 }
 

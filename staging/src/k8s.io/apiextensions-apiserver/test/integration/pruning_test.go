@@ -24,11 +24,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"google.golang.org/grpc"
 
 	"sigs.k8s.io/yaml"
 
@@ -37,7 +38,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	types "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/util/json"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/dynamic"
@@ -210,7 +210,7 @@ func TestPruningCreate(t *testing.T) {
 	}
 
 	t.Logf("Creating CR and expect 'unspecified' fields to be pruned")
-	fooClient := dynamicClient.Resource(schema.GroupVersionResource{crd.Spec.Group, crd.Spec.Versions[0].Name, crd.Spec.Names.Plural})
+	fooClient := dynamicClient.Resource(schema.GroupVersionResource{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Resource: crd.Spec.Names.Plural})
 	foo := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(pruningFooInstance), &foo.Object); err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestPruningStatus(t *testing.T) {
 	}
 
 	t.Logf("Creating CR and expect 'unspecified' fields to be pruned")
-	fooClient := dynamicClient.Resource(schema.GroupVersionResource{crd.Spec.Group, crd.Spec.Versions[0].Name, crd.Spec.Names.Plural})
+	fooClient := dynamicClient.Resource(schema.GroupVersionResource{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Resource: crd.Spec.Names.Plural})
 	foo := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(pruningFooInstance), &foo.Object); err != nil {
 		t.Fatal(err)
@@ -298,7 +298,7 @@ func TestPruningStatus(t *testing.T) {
 }
 
 func TestPruningFromStorage(t *testing.T) {
-	tearDown, config, options, err := fixtures.StartDefaultServer(t)
+	tearDown, config, completedConfig, err := fixtures.StartDefaultServerWithConfigAccess(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,11 +314,6 @@ func TestPruningFromStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	serverConfig, err := options.Config()
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	crd := pruningFixture.DeepCopy()
 	crd.Spec.Versions[0].Schema = &apiextensionsv1.CustomResourceValidation{}
 	if err := yaml.Unmarshal([]byte(fooSchema), &crd.Spec.Versions[0].Schema.OpenAPIV3Schema); err != nil {
@@ -330,7 +325,7 @@ func TestPruningFromStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restOptions, err := serverConfig.GenericConfig.RESTOptionsGetter.GetRESTOptions(schema.GroupResource{Group: crd.Spec.Group, Resource: crd.Spec.Names.Plural})
+	restOptions, err := completedConfig.GenericConfig.RESTOptionsGetter.GetRESTOptions(schema.GroupResource{Group: crd.Spec.Group, Resource: crd.Spec.Names.Plural}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,10 +341,7 @@ func TestPruningFromStorage(t *testing.T) {
 	etcdConfig := clientv3.Config{
 		Endpoints:   restOptions.StorageConfig.Transport.ServerList,
 		DialTimeout: 20 * time.Second,
-		DialOptions: []grpc.DialOption{
-			grpc.WithBlock(), // block until the underlying connection is up
-		},
-		TLS: tlsConfig,
+		TLS:         tlsConfig,
 	}
 	etcdclient, err := clientv3.New(etcdConfig)
 	if err != nil {
@@ -378,7 +370,7 @@ func TestPruningFromStorage(t *testing.T) {
 	}
 
 	t.Logf("Checking that CustomResource is pruned from unknown fields")
-	fooClient := dynamicClient.Resource(schema.GroupVersionResource{crd.Spec.Group, crd.Spec.Versions[0].Name, crd.Spec.Names.Plural})
+	fooClient := dynamicClient.Resource(schema.GroupVersionResource{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Resource: crd.Spec.Names.Plural})
 	foo, err := fooClient.Get(context.TODO(), "foo", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -419,7 +411,7 @@ func TestPruningPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fooClient := dynamicClient.Resource(schema.GroupVersionResource{crd.Spec.Group, crd.Spec.Versions[0].Name, crd.Spec.Names.Plural})
+	fooClient := dynamicClient.Resource(schema.GroupVersionResource{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Resource: crd.Spec.Names.Plural})
 	foo := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(pruningFooInstance), &foo.Object); err != nil {
 		t.Fatal(err)
@@ -472,7 +464,7 @@ func TestPruningCreatePreservingUnknownFields(t *testing.T) {
 	}
 
 	t.Logf("Creating CR and expect 'unspecified' field to be pruned")
-	fooClient := dynamicClient.Resource(schema.GroupVersionResource{crd.Spec.Group, crd.Spec.Versions[0].Name, crd.Spec.Names.Plural})
+	fooClient := dynamicClient.Resource(schema.GroupVersionResource{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Resource: crd.Spec.Names.Plural})
 	foo := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(pruningFooInstance), &foo.Object); err != nil {
 		t.Fatal(err)
@@ -557,7 +549,7 @@ func TestPruningEmbeddedResources(t *testing.T) {
 	}
 
 	t.Logf("Creating CR and expect 'unspecified' field to be pruned")
-	fooClient := dynamicClient.Resource(schema.GroupVersionResource{crd.Spec.Group, crd.Spec.Versions[0].Name, crd.Spec.Names.Plural})
+	fooClient := dynamicClient.Resource(schema.GroupVersionResource{Group: crd.Spec.Group, Version: crd.Spec.Versions[0].Name, Resource: crd.Spec.Names.Plural})
 	foo := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(fooSchemaEmbeddedResourceInstance), &foo.Object); err != nil {
 		t.Fatal(err)
@@ -603,6 +595,6 @@ embeddedNested:
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(expected, x) {
-		t.Errorf("unexpected diff: %s", diff.ObjectDiff(expected, x))
+		t.Errorf("unexpected diff: %s", cmp.Diff(expected, x))
 	}
 }

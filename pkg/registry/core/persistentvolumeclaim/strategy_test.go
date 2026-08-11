@@ -21,7 +21,7 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/util/diff"
+	"github.com/google/go-cmp/cmp"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
@@ -86,19 +86,19 @@ func TestDropConditions(t *testing.T) {
 
 				// old pvc should never be changed
 				if !reflect.DeepEqual(oldPvc, oldPvcInfo.pvc()) {
-					t.Errorf("old pvc changed: %v", diff.ObjectReflectDiff(oldPvc, oldPvcInfo.pvc()))
+					t.Errorf("old pvc changed: %v", cmp.Diff(oldPvc, oldPvcInfo.pvc()))
 				}
 
 				switch {
 				case oldPvcHasConditins || newPvcHasConditions:
 					// new pvc should not be changed if the feature is enabled, or if the old pvc had Conditions
 					if !reflect.DeepEqual(newPvc, newPvcInfo.pvc()) {
-						t.Errorf("new pvc changed: %v", diff.ObjectReflectDiff(newPvc, newPvcInfo.pvc()))
+						t.Errorf("new pvc changed: %v", cmp.Diff(newPvc, newPvcInfo.pvc()))
 					}
 				default:
 					// new pvc should not need to be changed
 					if !reflect.DeepEqual(newPvc, newPvcInfo.pvc()) {
-						t.Errorf("new pvc changed: %v", diff.ObjectReflectDiff(newPvc, newPvcInfo.pvc()))
+						t.Errorf("new pvc changed: %v", cmp.Diff(newPvc, newPvcInfo.pvc()))
 					}
 				}
 			})
@@ -107,120 +107,185 @@ func TestDropConditions(t *testing.T) {
 
 }
 
+var (
+	coreGroup    = ""
+	snapGroup    = "snapshot.storage.k8s.io"
+	genericGroup = "generic.storage.k8s.io"
+	pvcKind      = "PersistentVolumeClaim"
+	snapKind     = "VolumeSnapshot"
+	genericKind  = "Generic"
+	podKind      = "Pod"
+)
+
+func makeDataSource(apiGroup, kind, name string) *api.TypedLocalObjectReference {
+	return &api.TypedLocalObjectReference{
+		APIGroup: &apiGroup,
+		Kind:     kind,
+		Name:     name,
+	}
+
+}
+
+func makeDataSourceRef(apiGroup, kind, name string, namespace *string) *api.TypedObjectReference {
+	return &api.TypedObjectReference{
+		APIGroup:  &apiGroup,
+		Kind:      kind,
+		Name:      name,
+		Namespace: namespace,
+	}
+}
+
 func TestPrepareForCreate(t *testing.T) {
 	ctx := genericapirequest.NewDefaultContext()
 
-	makeDataSource := func(apiGroup, kind, name string) *api.TypedLocalObjectReference {
-		return &api.TypedLocalObjectReference{
-			APIGroup: &apiGroup,
-			Kind:     kind,
-			Name:     name,
-		}
-	}
-
-	volumeDataSource := makeDataSource("", "PersistentVolumeClaim", "my-vol")
-	snapshotDataSource := makeDataSource("snapshot.storage.k8s.io", "VolumeSnapshot", "my-snap")
-	genericDataSource := makeDataSource("generic.storage.k8s.io", "Generic", "my-foo")
-	coreDataSource := makeDataSource("", "Pod", "my-pod")
+	ns := "ns1"
+	volumeDataSource := makeDataSource(coreGroup, pvcKind, "my-vol")
+	volumeDataSourceRef := makeDataSourceRef(coreGroup, pvcKind, "my-vol", nil)
+	xnsVolumeDataSourceRef := makeDataSourceRef(coreGroup, pvcKind, "my-vol", &ns)
+	snapshotDataSource := makeDataSource(snapGroup, snapKind, "my-snap")
+	snapshotDataSourceRef := makeDataSourceRef(snapGroup, snapKind, "my-snap", nil)
+	xnsSnapshotDataSourceRef := makeDataSourceRef(snapGroup, snapKind, "my-snap", &ns)
+	genericDataSource := makeDataSource(genericGroup, genericKind, "my-foo")
+	genericDataSourceRef := makeDataSourceRef(genericGroup, genericKind, "my-foo", nil)
+	xnsGenericDataSourceRef := makeDataSourceRef(genericGroup, genericKind, "my-foo", &ns)
+	coreDataSource := makeDataSource(coreGroup, podKind, "my-pod")
+	coreDataSourceRef := makeDataSourceRef(coreGroup, podKind, "my-pod", nil)
+	xnsCoreDataSourceRef := makeDataSourceRef(coreGroup, podKind, "my-pod", &ns)
 
 	var tests = map[string]struct {
-		anyEnabled    bool
+		xnsEnabled    bool
 		dataSource    *api.TypedLocalObjectReference
-		dataSourceRef *api.TypedLocalObjectReference
+		dataSourceRef *api.TypedObjectReference
 		want          *api.TypedLocalObjectReference
-		wantRef       *api.TypedLocalObjectReference
+		wantRef       *api.TypedObjectReference
 	}{
-		"any disabled with empty ds": {
+		"empty ds": {
 			want: nil,
 		},
-		"any disabled with volume ds": {
+		"volume ds": {
 			dataSource: volumeDataSource,
 			want:       volumeDataSource,
+			wantRef:    volumeDataSourceRef,
 		},
-		"any disabled with snapshot ds": {
+		"snapshot ds": {
 			dataSource: snapshotDataSource,
 			want:       snapshotDataSource,
+			wantRef:    snapshotDataSourceRef,
 		},
-		"any disabled with generic ds": {
+		"generic ds": {
 			dataSource: genericDataSource,
-			want:       nil,
 		},
-		"any disabled with invalid ds": {
+		"invalid ds": {
 			dataSource: coreDataSource,
-			want:       nil,
 		},
-		"any disabled with volume ds ref": {
-			dataSourceRef: volumeDataSource,
-		},
-		"any disabled with snapshot ds ref": {
-			dataSourceRef: snapshotDataSource,
-		},
-		"any disabled with generic ds ref": {
-			dataSourceRef: genericDataSource,
-		},
-		"any disabled with invalid ds ref": {
-			dataSourceRef: coreDataSource,
-		},
-		"any enabled with empty ds": {
-			anyEnabled: true,
-			want:       nil,
-		},
-		"any enabled with volume ds": {
-			dataSource: volumeDataSource,
-			anyEnabled: true,
-			want:       volumeDataSource,
-			wantRef:    volumeDataSource,
-		},
-		"any enabled with snapshot ds": {
-			dataSource: snapshotDataSource,
-			anyEnabled: true,
-			want:       snapshotDataSource,
-			wantRef:    snapshotDataSource,
-		},
-		"any enabled with generic ds": {
-			dataSource: genericDataSource,
-			anyEnabled: true,
-		},
-		"any enabled with invalid ds": {
-			dataSource: coreDataSource,
-			anyEnabled: true,
-		},
-		"any enabled with volume ds ref": {
-			dataSourceRef: volumeDataSource,
-			anyEnabled:    true,
+		"volume ds ref": {
+			dataSourceRef: volumeDataSourceRef,
 			want:          volumeDataSource,
-			wantRef:       volumeDataSource,
+			wantRef:       volumeDataSourceRef,
 		},
-		"any enabled with snapshot ds ref": {
-			dataSourceRef: snapshotDataSource,
-			anyEnabled:    true,
+		"snapshot ds ref": {
+			dataSourceRef: snapshotDataSourceRef,
 			want:          snapshotDataSource,
-			wantRef:       snapshotDataSource,
+			wantRef:       snapshotDataSourceRef,
 		},
-		"any enabled with generic ds ref": {
-			dataSourceRef: genericDataSource,
-			anyEnabled:    true,
+		"generic ds ref": {
+			dataSourceRef: genericDataSourceRef,
 			want:          genericDataSource,
-			wantRef:       genericDataSource,
+			wantRef:       genericDataSourceRef,
 		},
-		"any enabled with invalid ds ref": {
-			dataSourceRef: coreDataSource,
-			anyEnabled:    true,
+		"invalid ds ref": {
+			dataSourceRef: coreDataSourceRef,
 			want:          coreDataSource,
-			wantRef:       coreDataSource,
+			wantRef:       coreDataSourceRef,
 		},
-		"any enabled with mismatched data sources": {
+		"mismatched data sources": {
 			dataSource:    volumeDataSource,
-			dataSourceRef: snapshotDataSource,
-			anyEnabled:    true,
+			dataSourceRef: snapshotDataSourceRef,
 			want:          volumeDataSource,
-			wantRef:       snapshotDataSource,
+			wantRef:       snapshotDataSourceRef,
+		},
+		"xns enabled with empty ds": {
+			xnsEnabled: true,
+			want:       nil,
+		},
+		"xns enabled with volume ds": {
+			dataSource: volumeDataSource,
+			xnsEnabled: true,
+			want:       volumeDataSource,
+			wantRef:    volumeDataSourceRef,
+		},
+		"xns enabled with snapshot ds": {
+			dataSource: snapshotDataSource,
+			xnsEnabled: true,
+			want:       snapshotDataSource,
+			wantRef:    snapshotDataSourceRef,
+		},
+		"xns enabled with generic ds": {
+			dataSource: genericDataSource,
+			xnsEnabled: true,
+		},
+		"xns enabled with invalid ds": {
+			dataSource: coreDataSource,
+			xnsEnabled: true,
+		},
+		"xns enabled with volume ds ref": {
+			dataSourceRef: volumeDataSourceRef,
+			xnsEnabled:    true,
+			want:          volumeDataSource,
+			wantRef:       volumeDataSourceRef,
+		},
+		"xns enabled with snapshot ds ref": {
+			dataSourceRef: snapshotDataSourceRef,
+			xnsEnabled:    true,
+			want:          snapshotDataSource,
+			wantRef:       snapshotDataSourceRef,
+		},
+		"xns enabled with generic ds ref": {
+			dataSourceRef: genericDataSourceRef,
+			xnsEnabled:    true,
+			want:          genericDataSource,
+			wantRef:       genericDataSourceRef,
+		},
+		"xns enabled with invalid ds ref": {
+			dataSourceRef: coreDataSourceRef,
+			xnsEnabled:    true,
+			want:          coreDataSource,
+			wantRef:       coreDataSourceRef,
+		},
+		"xns enabled with mismatched data sources": {
+			dataSource:    volumeDataSource,
+			dataSourceRef: snapshotDataSourceRef,
+			xnsEnabled:    true,
+			want:          volumeDataSource,
+			wantRef:       snapshotDataSourceRef,
+		},
+		"xns enabled with volume xns ds ref": {
+			dataSourceRef: xnsVolumeDataSourceRef,
+			xnsEnabled:    true,
+			wantRef:       xnsVolumeDataSourceRef,
+		},
+		"xns enabled with snapshot xns ds ref": {
+			dataSourceRef: xnsSnapshotDataSourceRef,
+			xnsEnabled:    true,
+			wantRef:       xnsSnapshotDataSourceRef,
+		},
+		"xns enabled with generic xns ds ref": {
+			dataSourceRef: xnsGenericDataSourceRef,
+			xnsEnabled:    true,
+			wantRef:       xnsGenericDataSourceRef,
+		},
+		"xns enabled with invalid xns ds ref": {
+			dataSourceRef: xnsCoreDataSourceRef,
+			xnsEnabled:    true,
+			wantRef:       xnsCoreDataSourceRef,
 		},
 	}
 
 	for testName, test := range tests {
 		t.Run(testName, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AnyVolumeDataSource, test.anyEnabled)()
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.CrossNamespaceVolumeDataSource: test.xnsEnabled,
+			})
 			pvc := api.PersistentVolumeClaim{
 				Spec: api.PersistentVolumeClaimSpec{
 					DataSource:    test.dataSource,
@@ -232,12 +297,12 @@ func TestPrepareForCreate(t *testing.T) {
 			Strategy.PrepareForCreate(ctx, &pvc)
 
 			if !reflect.DeepEqual(pvc.Spec.DataSource, test.want) {
-				t.Errorf("data source does not match, test: %s, anyEnabled: %v, dataSource: %v, expected: %v",
-					testName, test.anyEnabled, test.dataSource, test.want)
+				t.Errorf("data source does not match, test: %s, dataSource: %v, expected: %v",
+					testName, test.dataSource, test.want)
 			}
 			if !reflect.DeepEqual(pvc.Spec.DataSourceRef, test.wantRef) {
-				t.Errorf("data source ref does not match, test: %s, anyEnabled: %v, dataSourceRef: %v, expected: %v",
-					testName, test.anyEnabled, test.dataSourceRef, test.wantRef)
+				t.Errorf("data source ref does not match, test: %s, dataSourceRef: %v, expected: %v",
+					testName, test.dataSourceRef, test.wantRef)
 			}
 		})
 	}

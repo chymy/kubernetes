@@ -19,10 +19,11 @@ package v1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:prerelease-lifecycle-gen:introduced=1.10
 
 // APIServiceList is a list of APIService objects.
 type APIServiceList struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 	// Standard list metadata
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	// +optional
@@ -68,8 +69,8 @@ type APIServiceSpec struct {
 	// +optional
 	CABundle []byte `json:"caBundle,omitempty" protobuf:"bytes,5,opt,name=caBundle"`
 
-	// GroupPriorityMininum is the priority this group should have at least. Higher priority means that the group is preferred by clients over lower priority ones.
-	// Note that other versions of this group might specify even higher GroupPriorityMininum values such that the whole group gets a higher priority.
+	// GroupPriorityMinimum is the priority this group should have at least. Higher priority means that the group is preferred by clients over lower priority ones.
+	// Note that other versions of this group might specify even higher GroupPriorityMinimum values such that the whole group gets a higher priority.
 	// The primary sort is based on GroupPriorityMinimum, ordered highest number to lowest (20 before 10).
 	// The secondary sort is based on the alphabetical comparison of the name of the object.  (v1.bar before v1.foo)
 	// We'd recommend something like: *.k8s.io (except extensions) at 18000 and
@@ -145,11 +146,12 @@ type APIServiceStatus struct {
 // +genclient
 // +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:prerelease-lifecycle-gen:introduced=1.10
 
 // APIService represents a server for a particular GroupVersion.
 // Name must be "version.group".
 type APIService struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:""`
 	// Standard object's metadata.
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	// +optional

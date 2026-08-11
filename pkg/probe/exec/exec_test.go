@@ -21,8 +21,8 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
+	remote "k8s.io/cri-client/pkg"
 	"k8s.io/kubernetes/pkg/probe"
 )
 
@@ -124,8 +124,9 @@ func TestExec(t *testing.T) {
 		// Unhealthy
 		{probe.Failure, false, "Fail", "", &fakeExitError{true, 1}},
 		// Timeout
-		{probe.Failure, false, "", "command testcmd timed out", NewTimeoutError(fmt.Errorf("command testcmd timed out"), time.Second)},
+		{probe.Failure, false, "", remote.ErrCommandTimedOut.Error() + ": command testcmd timed out", fmt.Errorf("%w: command testcmd timed out", remote.ErrCommandTimedOut)},
 	}
+
 	for i, test := range tests {
 		fake := FakeCmd{
 			out: []byte(test.output),
@@ -135,10 +136,10 @@ func TestExec(t *testing.T) {
 		if status != test.expectedStatus {
 			t.Errorf("[%d] expected %v, got %v", i, test.expectedStatus, status)
 		}
-		if err != nil && test.expectError == false {
+		if err != nil && !test.expectError {
 			t.Errorf("[%d] unexpected error: %v", i, err)
 		}
-		if err == nil && test.expectError == true {
+		if err == nil && test.expectError {
 			t.Errorf("[%d] unexpected non-error", i)
 		}
 		if test.output != output {

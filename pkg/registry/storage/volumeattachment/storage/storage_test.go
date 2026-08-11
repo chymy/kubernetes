@@ -19,13 +19,12 @@ package storage
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -167,7 +166,8 @@ func TestEtcdStatusUpdate(t *testing.T) {
 	storage, statusStorage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewDefaultContext()
+	ctx := genericregistrytest.NewClusterScopeContext(storage.Store)
+	statusCtx := genericregistrytest.NewClusterScopeContext(storage.Store, "status")
 
 	attachment := validNewVolumeAttachment("foo")
 	if _, err := storage.Create(ctx, attachment, rest.ValidateAllObjectFunc, &metav1.CreateOptions{}); err != nil {
@@ -182,7 +182,7 @@ func TestEtcdStatusUpdate(t *testing.T) {
 	attachmentIn := obj.(*storageapi.VolumeAttachment).DeepCopy()
 	attachmentIn.Status.Attached = true
 
-	_, _, err = statusStorage.Update(ctx, attachmentIn.Name, rest.DefaultUpdatedObjectInfo(attachmentIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	_, _, err = statusStorage.Update(statusCtx, attachmentIn.Name, rest.DefaultUpdatedObjectInfo(attachmentIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to update status: %v", err)
 	}
@@ -194,9 +194,9 @@ func TestEtcdStatusUpdate(t *testing.T) {
 	}
 	attachmentOut := obj.(*storageapi.VolumeAttachment)
 	if !apiequality.Semantic.DeepEqual(attachmentIn.Spec, attachmentOut.Spec) {
-		t.Errorf("objects differ: %v", diff.ObjectDiff(attachmentOut.Spec, attachmentIn.Spec))
+		t.Errorf("objects differ: %v", cmp.Diff(attachmentOut.Spec, attachmentIn.Spec))
 	}
 	if !apiequality.Semantic.DeepEqual(attachmentIn.Status, attachmentOut.Status) {
-		t.Errorf("objects differ: %v", diff.ObjectDiff(attachmentOut.Status, attachmentIn.Status))
+		t.Errorf("objects differ: %v", cmp.Diff(attachmentOut.Status, attachmentIn.Status))
 	}
 }

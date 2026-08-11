@@ -28,11 +28,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/streaming/pkg/httpstream"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/cmd/util/podcmd"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
@@ -75,7 +78,7 @@ const (
 	defaultPodExecTimeout = 60 * time.Second
 )
 
-func NewCmdExec(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdExec(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	options := &ExecOptions{
 		StreamOptions: StreamOptions{
 			IOStreams: streams,
@@ -111,24 +114,55 @@ func NewCmdExec(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.C
 
 // RemoteExecutor defines the interface accepted by the Exec command - provided for test stubbing
 type RemoteExecutor interface {
-	Execute(method string, url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error
+	// Execute supports executing remote command in a pod.
+	Execute(url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error
+
+	// ExecuteWithContext, in contrast to Execute, supports stopping the remote command via context cancellation.
+	ExecuteWithContext(ctx context.Context, url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error
 }
 
 // DefaultRemoteExecutor is the standard implementation of remote command execution
 type DefaultRemoteExecutor struct{}
 
-func (*DefaultRemoteExecutor) Execute(method string, url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error {
-	exec, err := remotecommand.NewSPDYExecutor(config, method, url)
+func (d *DefaultRemoteExecutor) Execute(url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error {
+	return d.ExecuteWithContext(context.Background(), url, config, stdin, stdout, stderr, tty, terminalSizeQueue)
+}
+
+func (*DefaultRemoteExecutor) ExecuteWithContext(ctx context.Context, url *url.URL, config *restclient.Config, stdin io.Reader, stdout, stderr io.Writer, tty bool, terminalSizeQueue remotecommand.TerminalSizeQueue) error {
+	exec, err := createExecutor(url, config)
 	if err != nil {
 		return err
 	}
-	return exec.Stream(remotecommand.StreamOptions{
+	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdin:             stdin,
 		Stdout:            stdout,
 		Stderr:            stderr,
 		Tty:               tty,
 		TerminalSizeQueue: terminalSizeQueue,
 	})
+}
+
+// createExecutor returns the Executor or an error if one occurred.
+func createExecutor(url *url.URL, config *restclient.Config) (remotecommand.Executor, error) {
+	exec, err := remotecommand.NewSPDYExecutor(config, "POST", url)
+	if err != nil {
+		return nil, err
+	}
+	// Fallback executor is default, unless feature flag is explicitly disabled.
+	if !cmdutil.RemoteCommandWebsockets.IsDisabled() {
+		// WebSocketExecutor must be "GET" method as described in RFC 6455 Sec. 4.1 (page 17).
+		websocketExec, err := remotecommand.NewWebSocketExecutor(config, "GET", url.String())
+		if err != nil {
+			return nil, err
+		}
+		exec, err = remotecommand.NewFallbackExecutor(websocketExec, exec, func(err error) bool {
+			return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return exec, nil
 }
 
 type StreamOptions struct {
@@ -142,7 +176,7 @@ type StreamOptions struct {
 	// InterruptParent, if set, is used to handle interrupts while attached
 	InterruptParent *interrupt.Handler
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 
 	// for testing
 	overrideStreams func() (io.ReadCloser, io.Writer, io.Writer)
@@ -174,19 +208,12 @@ func (p *ExecOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, argsIn []s
 	if len(argsIn) > 0 && argsLenAtDash != 0 {
 		p.ResourceName = argsIn[0]
 	}
-	if argsLenAtDash > -1 {
+	// we expect exactly one arg (the pod/resource name) before the dash separator.
+	// pflag guarantees `argsLenAtDash <= len(args)`.
+	if argsLenAtDash == 0 || argsLenAtDash == 1 {
 		p.Command = argsIn[argsLenAtDash:]
-	} else if len(argsIn) > 1 {
-		if !p.Quiet {
-			fmt.Fprint(p.ErrOut, "kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.\n")
-		}
-		p.Command = argsIn[1:]
-	} else if len(argsIn) > 0 && len(p.FilenameOptions.Filenames) != 0 {
-		if !p.Quiet {
-			fmt.Fprint(p.ErrOut, "kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.\n")
-		}
-		p.Command = argsIn[0:]
-		p.ResourceName = ""
+	} else if len(argsIn) > 1 || (len(argsIn) > 0 && len(p.FilenameOptions.Filenames) != 0) {
+		return cmdutil.UsageErrorf(cmd, "exec [POD] [COMMAND] is not supported anymore. Use exec [POD] -- [COMMAND] instead")
 	}
 
 	var err error
@@ -199,7 +226,7 @@ func (p *ExecOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, argsIn []s
 
 	p.GetPodTimeout, err = cmdutil.GetPodRunningTimeoutFlag(cmd)
 	if err != nil {
-		return cmdutil.UsageErrorf(cmd, err.Error())
+		return cmdutil.UsageErrorf(cmd, "%s", err.Error())
 	}
 
 	p.Builder = f.NewBuilder
@@ -310,6 +337,10 @@ func (p *ExecOptions) Run() error {
 			return err
 		}
 
+		if meta.IsListType(obj) {
+			return fmt.Errorf("cannot exec into multiple objects at a time")
+		}
+
 		p.Pod, err = p.ExecutablePodFn(p.restClientGetter, obj, p.GetPodTimeout)
 		if err != nil {
 			return err
@@ -329,6 +360,11 @@ func (p *ExecOptions) Run() error {
 			return err
 		}
 		containerName = container.Name
+	} else {
+		container, _ := podcmd.FindContainerByName(pod, p.ContainerName)
+		if container == nil {
+			return fmt.Errorf("container %s is not valid for pod %s out of: %s", p.ContainerName, pod.Name, podcmd.AllContainerNames(pod))
+		}
 	}
 
 	// ensure we can recover the terminal while attached
@@ -337,7 +373,9 @@ func (p *ExecOptions) Run() error {
 	var sizeQueue remotecommand.TerminalSizeQueue
 	if t.Raw {
 		// this call spawns a goroutine to monitor/update the terminal size
-		sizeQueue = t.MonitorSize(t.GetSize())
+		sizeQueue = &terminalSizeQueueAdapter{
+			delegate: t.MonitorSize(t.GetSize()),
+		}
 
 		// unset p.Err if it was previously set because both stdout and stderr go over p.Out when tty is
 		// true
@@ -365,7 +403,7 @@ func (p *ExecOptions) Run() error {
 			TTY:       t.Raw,
 		}, scheme.ParameterCodec)
 
-		return p.Executor.Execute("POST", req.URL(), p.Config, p.In, p.Out, p.ErrOut, t.Raw, sizeQueue)
+		return p.Executor.Execute(req.URL(), p.Config, p.In, p.Out, p.ErrOut, t.Raw, sizeQueue)
 	}
 
 	if err := t.Safe(fn); err != nil {
@@ -373,4 +411,23 @@ func (p *ExecOptions) Run() error {
 	}
 
 	return nil
+}
+
+type terminalSizeQueueAdapter struct {
+	delegate term.TerminalSizeQueue
+}
+
+func (a *terminalSizeQueueAdapter) Next() *remotecommand.TerminalSize {
+	if a.delegate == nil {
+		return nil
+	}
+
+	next := a.delegate.Next()
+	if next == nil {
+		return nil
+	}
+	return &remotecommand.TerminalSize{
+		Width:  next.Width,
+		Height: next.Height,
+	}
 }

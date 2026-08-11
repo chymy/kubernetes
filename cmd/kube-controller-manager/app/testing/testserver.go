@@ -20,51 +20,66 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
+	"testing"
 	"time"
 
 	"github.com/spf13/pflag"
 
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilcompatibility "k8s.io/apiserver/pkg/util/compatibility"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
+	"k8s.io/component-base/compatibility"
+	"k8s.io/component-base/configz"
+	"k8s.io/component-base/featuregate"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	logsapi "k8s.io/component-base/logs/api/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/cmd/kube-controller-manager/app"
 	kubecontrollerconfig "k8s.io/kubernetes/cmd/kube-controller-manager/app/config"
 	"k8s.io/kubernetes/cmd/kube-controller-manager/app/options"
 )
+
+func init() {
+	// If instantiated more than once or together with other servers, the
+	// servers would try to modify the global logging state. This must get
+	// ignored during testing.
+	logsapi.ReapplyHandling = logsapi.ReapplyHandlingIgnoreUnchanged
+}
 
 // TearDownFunc is to be called to tear down a test server.
 type TearDownFunc func()
 
 // TestServer return values supplied by kube-test-ApiServer
 type TestServer struct {
-	LoopbackClientConfig *restclient.Config // Rest client config using the magic token
-	Options              *options.KubeControllerManagerOptions
-	Config               *kubecontrollerconfig.Config
-	TearDownFn           TearDownFunc // TearDown function
-	TmpDir               string       // Temp Dir used, by the apiserver
-}
-
-// Logger allows t.Testing and b.Testing to be passed to StartTestServer and StartTestServerOrDie
-type Logger interface {
-	Errorf(format string, args ...interface{})
-	Fatalf(format string, args ...interface{})
-	Logf(format string, args ...interface{})
+	Options    *options.KubeControllerManagerOptions
+	Config     *kubecontrollerconfig.Config
+	TearDownFn TearDownFunc // TearDown function
+	TmpDir     string       // Temp Dir used, by the apiserver
 }
 
 // StartTestServer starts a kube-controller-manager. A rest client config and a tear-down func,
 // and location of the tmpdir are returned.
 //
 // Note: we return a tear-down func instead of a stop channel because the later will leak temporary
-// 		 files that because Golang testing's call to os.Exit will not give a stop channel go routine
-// 		 enough time to remove temporary files.
-func StartTestServer(t Logger, customFlags []string) (result TestServer, err error) {
-	stopCh := make(chan struct{})
+// files that because Golang testing's call to os.Exit will not give a stop channel go routine
+// enough time to remove temporary files.
+func StartTestServer(t *testing.T, ctx context.Context, customFlags []string) (result TestServer, err error) {
+	logger := klog.FromContext(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	var errCh chan error
 	tearDown := func() {
-		close(stopCh)
-		if len(result.TmpDir) != 0 {
-			os.RemoveAll(result.TmpDir)
+		cancel()
+
+		// If the kube-controller-manager was started, let's wait for
+		// it to shutdown cleanly.
+		if errCh != nil {
+			err, ok := <-errCh
+			if ok && err != nil {
+				logger.Error(err, "Failed to shutdown test server cleanly")
+			}
 		}
+		configz.Delete(app.ConfigzName)
 	}
 	defer func() {
 		if result.TearDownFn == nil {
@@ -72,10 +87,7 @@ func StartTestServer(t Logger, customFlags []string) (result TestServer, err err
 		}
 	}()
 
-	result.TmpDir, err = os.MkdirTemp("", "kube-controller-manager")
-	if err != nil {
-		return result, fmt.Errorf("failed to create temp dir: %v", err)
-	}
+	result.TmpDir = t.TempDir()
 
 	fs := pflag.NewFlagSet("test", pflag.PanicOnError)
 
@@ -83,12 +95,42 @@ func StartTestServer(t Logger, customFlags []string) (result TestServer, err err
 	if err != nil {
 		return TestServer{}, err
 	}
-	all, disabled := app.KnownControllers(), app.ControllersDisabledByDefault.List()
-	namedFlagSets := s.Flags(all, disabled)
+	// set up new instance of ComponentGlobalsRegistry instead of using the DefaultComponentGlobalsRegistry to avoid contention in parallel tests.
+	featureGate := utilfeature.DefaultMutableFeatureGate.DeepCopy()
+	effectiveVersion := utilcompatibility.DefaultKubeEffectiveVersionForTest()
+	effectiveVersion.SetEmulationVersion(featureGate.EmulationVersion())
+	effectiveVersion.SetMinCompatibilityVersion(featureGate.MinCompatibilityVersion())
+	componentGlobalsRegistry := compatibility.NewComponentGlobalsRegistry()
+	if err := componentGlobalsRegistry.Register(compatibility.DefaultKubeComponent, effectiveVersion, featureGate); err != nil {
+		return result, err
+	}
+	s.ComponentGlobalsRegistry = componentGlobalsRegistry
+
+	all, disabled, aliases := app.KnownControllers(), app.ControllersDisabledByDefault(), app.ControllerAliases()
+	namedFlagSets := s.Flags(all, disabled, aliases)
 	for _, f := range namedFlagSets.FlagSets {
 		fs.AddFlagSet(f)
 	}
 	fs.Parse(customFlags)
+	s.ParsedFlags = &namedFlagSets
+
+	if err := s.ComponentGlobalsRegistry.Set(); err != nil {
+		return result, err
+	}
+	// If the local ComponentGlobalsRegistry is changed by the flags,
+	// we need to copy the new feature values back to the DefaultFeatureGate because most feature checks still use the DefaultFeatureGate.
+	if !featureGate.EmulationVersion().EqualTo(utilfeature.DefaultMutableFeatureGate.EmulationVersion()) || !featureGate.MinCompatibilityVersion().EqualTo(utilfeature.DefaultMutableFeatureGate.MinCompatibilityVersion()) {
+		featuregatetesting.SetFeatureGateVersionsDuringTest(t, utilfeature.DefaultMutableFeatureGate, effectiveVersion.EmulationVersion(), effectiveVersion.MinCompatibilityVersion())
+	}
+	featureOverrides := map[featuregate.Feature]bool{}
+	for f := range utilfeature.DefaultMutableFeatureGate.GetAll() {
+		if featureGate.Enabled(f) != utilfeature.DefaultFeatureGate.Enabled(f) {
+			featureOverrides[f] = featureGate.Enabled(f)
+		}
+	}
+	if len(featureOverrides) > 0 {
+		featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featureOverrides)
+	}
 
 	if s.SecureServing.BindPort != 0 {
 		s.SecureServing.Listener, s.SecureServing.BindPort, err = createListenerOnFreePort()
@@ -97,28 +139,32 @@ func StartTestServer(t Logger, customFlags []string) (result TestServer, err err
 		}
 		s.SecureServing.ServerCert.CertDirectory = result.TmpDir
 
-		t.Logf("kube-controller-manager will listen securely on port %d...", s.SecureServing.BindPort)
+		logger.Info("kube-controller-manager will listen securely", "port", s.SecureServing.BindPort)
 	}
 
-	config, err := s.Config(all, disabled)
+	config, err := s.Config(ctx, all, disabled, aliases)
 	if err != nil {
 		return result, fmt.Errorf("failed to create config from options: %v", err)
 	}
 
-	errCh := make(chan error)
-	go func(stopCh <-chan struct{}) {
-		if err := app.Run(config.Complete(), stopCh); err != nil {
+	errCh = make(chan error)
+	go func(ctx context.Context) {
+		defer close(errCh)
+
+		if err := app.Run(ctx, config.Complete()); err != nil {
 			errCh <- err
 		}
-	}(stopCh)
+	}(ctx)
 
-	t.Logf("Waiting for /healthz to be ok...")
-	client, err := kubernetes.NewForConfig(config.LoopbackClientConfig)
+	logger.Info("Waiting for /healthz to be ok...")
+	client, err := kubernetes.NewForConfig(config.Kubeconfig)
 	if err != nil {
 		return result, fmt.Errorf("failed to create a client: %v", err)
 	}
-	err = wait.Poll(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, false, func(ctx context.Context) (bool, error) {
 		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
 		case err := <-errCh:
 			return false, err
 		default:
@@ -137,7 +183,6 @@ func StartTestServer(t Logger, customFlags []string) (result TestServer, err err
 	}
 
 	// from here the caller must call tearDown
-	result.LoopbackClientConfig = config.LoopbackClientConfig
 	result.Options = s
 	result.Config = config
 	result.TearDownFn = tearDown
@@ -146,14 +191,12 @@ func StartTestServer(t Logger, customFlags []string) (result TestServer, err err
 }
 
 // StartTestServerOrDie calls StartTestServer t.Fatal if it does not succeed.
-func StartTestServerOrDie(t Logger, flags []string) *TestServer {
-	result, err := StartTestServer(t, flags)
-	if err == nil {
-		return &result
+func StartTestServerOrDie(t *testing.T, ctx context.Context, flags []string) *TestServer {
+	result, err := StartTestServer(t, ctx, flags)
+	if err != nil {
+		t.Fatalf("failed to launch server: %v", err)
 	}
-
-	t.Fatalf("failed to launch server: %v", err)
-	return nil
+	return &result
 }
 
 func createListenerOnFreePort() (net.Listener, int, error) {

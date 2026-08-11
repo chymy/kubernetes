@@ -29,6 +29,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/prober/results"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 	statustest "k8s.io/kubernetes/pkg/kubelet/status/testing"
+	kubeletutil "k8s.io/kubernetes/pkg/kubelet/util"
 	"k8s.io/kubernetes/pkg/probe"
 	"k8s.io/utils/exec"
 )
@@ -44,6 +45,10 @@ func getTestRunningStatus() v1.PodStatus {
 	return getTestRunningStatusWithStarted(true)
 }
 
+func getTestNotRunningStatus() v1.PodStatus {
+	return getTestRunningStatusWithStarted(false)
+}
+
 func getTestRunningStatusWithStarted(started bool) v1.PodStatus {
 	containerStatus := v1.ContainerStatus{
 		Name:        testContainerName,
@@ -56,6 +61,49 @@ func getTestRunningStatusWithStarted(started bool) v1.PodStatus {
 		ContainerStatuses: []v1.ContainerStatus{containerStatus},
 	}
 	return podStatus
+}
+
+func getTestRunningStatusWithFailedContainer() v1.PodStatus {
+	return v1.PodStatus{
+		Phase: v1.PodRunning,
+		ContainerStatuses: []v1.ContainerStatus{{
+			Name:        testContainerName,
+			ContainerID: testContainerID.String(),
+			State: v1.ContainerState{
+				Terminated: &v1.ContainerStateTerminated{
+					ExitCode: 1,
+				},
+			},
+		}},
+	}
+}
+
+func getTestRunningStatusWithSucceededContainer() v1.PodStatus {
+	return v1.PodStatus{
+		Phase: v1.PodRunning,
+		ContainerStatuses: []v1.ContainerStatus{{
+			Name:        testContainerName,
+			ContainerID: testContainerID.String(),
+			State: v1.ContainerState{
+				Terminated: &v1.ContainerStateTerminated{
+					ExitCode: 0,
+				},
+			},
+		}},
+	}
+}
+
+func getTestPendingStatus() v1.PodStatus {
+	return v1.PodStatus{
+		Phase: v1.PodPending,
+		ContainerStatuses: []v1.ContainerStatus{{
+			Name:        testContainerName,
+			ContainerID: testContainerID.String(),
+			State: v1.ContainerState{
+				Waiting: &v1.ContainerStateWaiting{},
+			},
+		}},
+	}
 }
 
 func getTestPod() *v1.Pod {
@@ -104,11 +152,12 @@ func setTestProbe(pod *v1.Pod, probeType probeType, probeSpec v1.Probe) {
 }
 
 func newTestManager() *manager {
-	podManager := kubepod.NewBasicPodManager(nil, nil, nil)
+	podManager := kubepod.NewBasicPodManager()
+	podStartupLatencyTracker := kubeletutil.NewPodStartupLatencyTracker()
 	// Add test pod to pod manager, so that status manager can get the pod from pod manager if needed.
 	podManager.AddPod(getTestPod())
 	m := NewManager(
-		status.NewManager(&fake.Clientset{}, podManager, &statustest.FakePodDeletionSafetyProvider{}),
+		status.NewManager(&fake.Clientset{}, podManager, &statustest.FakePodDeletionSafetyProvider{}, podStartupLatencyTracker),
 		results.NewManager(),
 		results.NewManager(),
 		results.NewManager(),

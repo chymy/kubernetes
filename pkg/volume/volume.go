@@ -17,12 +17,15 @@ limitations under the License.
 package volume
 
 import (
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
 )
 
 // Volume represents a directory used by pods or hosts on a node. All method
@@ -96,21 +99,10 @@ type Metrics struct {
 	// and will not equal InodesUsed + InodesFree as the fs is shared.
 	Inodes *resource.Quantity
 
-	// InodesFree represent the inodes available for the volume.  For Volumes that share
+	// InodesFree represents the inodes available for the volume. For Volumes that share
 	// a filesystem with the host (e.g. emptydir, hostpath), this is the free inodes
 	// on the underlying storage, and is shared with host processes and other volumes
 	InodesFree *resource.Quantity
-
-	// Normal volumes are available for use and operating optimally.
-	// An abnormal volume does not meet these criteria.
-	// This field is OPTIONAL. Only some csi drivers which support NodeServiceCapability_RPC_VOLUME_CONDITION
-	// need to fill it.
-	Abnormal *bool
-
-	// The message describing the condition of the volume.
-	// This field is OPTIONAL. Only some csi drivers which support capability_RPC_VOLUME_CONDITION
-	// need to fill it.
-	Message *string
 }
 
 // Attributes represents the attributes of this mounter.
@@ -129,6 +121,41 @@ type MounterArgs struct {
 	FsGroup             *int64
 	FSGroupChangePolicy *v1.PodFSGroupChangePolicy
 	DesiredSize         *resource.Quantity
+	SELinuxLabel        string
+	Recorder            record.EventRecorder
+
+	// Optional interface that will be used to change the ownership of the volume, if specified.
+	// mainly used by unit tests
+	VolumeOwnershipApplicator VolumeOwnershipChanger
+	ReconstructedVolume       bool
+
+	// IsRemount is true when SetUp is being invoked on a volume that the
+	// reconciler considers already mounted to the pod, e.g. a periodic
+	// republish triggered by CSIDriver.spec.requiresRepublish=true. Volume
+	// plugins should use this to avoid destroying state (e.g. mount
+	// directories, volume metadata files) that the pod is currently
+	// observing through an existing bind mount, since teardown on a
+	// failed remount cannot be repaired by a subsequent successful
+	// remount and would leave the pod with stale contents.
+	IsRemount bool
+}
+
+type VolumeOwnershipChanger interface {
+	AddProgressNotifier(pod *v1.Pod, recorder record.EventRecorder) VolumeOwnershipChanger
+	ChangePermissions() error
+}
+
+type VolumeOwnership struct {
+	mounter             Mounter
+	dir                 string
+	fsGroup             *int64
+	fsGroupChangePolicy *v1.PodFSGroupChangePolicy
+	completionCallback  func(volumetypes.CompleteFuncParam)
+
+	// for monitoring progress of permission change operation
+	pod         *v1.Pod
+	fileCounter atomic.Int64
+	recorder    record.EventRecorder
 }
 
 // Mounter interface provides methods to set up/mount the volume.
@@ -188,7 +215,7 @@ type CustomBlockVolumeMapper interface {
 	// MapPodDevice maps the block device to a path and return the path.
 	// Unique device path across kubelet node reboot is required to avoid
 	// unexpected block volume destruction.
-	// If empty string is returned, the path retuned by attacher.Attach() and
+	// If empty string is returned, the path returned by attacher.Attach() and
 	// attacher.WaitForAttach() will be used.
 	MapPodDevice() (publishPath string, err error)
 
@@ -262,7 +289,8 @@ type Attacher interface {
 
 // DeviceMounterArgs provides auxiliary, optional arguments to DeviceMounter.
 type DeviceMounterArgs struct {
-	FsGroup *int64
+	FsGroup      *int64
+	SELinuxLabel string
 }
 
 // DeviceMounter can mount a block volume to a global path.
@@ -280,14 +308,6 @@ type DeviceMounter interface {
 	//   - UncertainProgressError
 	//   - Error of any other type should be considered a final error
 	MountDevice(spec *Spec, devicePath string, deviceMountPath string, deviceMounterArgs DeviceMounterArgs) error
-}
-
-type BulkVolumeVerifier interface {
-	// BulkVerifyVolumes checks whether the list of volumes still attached to the
-	// the clusters in the node. It returns a map which maps from the volume spec to the checking result.
-	// If an error occurs during check - error should be returned and volume on nodes
-	// should be assumed as still attached.
-	BulkVerifyVolumes(volumesByNode map[types.NodeName][]*Spec) (map[types.NodeName]map[*Spec]bool, error)
 }
 
 // Detacher can detach a volume from a node.

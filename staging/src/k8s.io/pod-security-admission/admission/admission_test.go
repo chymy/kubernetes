@@ -38,13 +38,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/klog/v2/ktesting"
 	admissionapi "k8s.io/pod-security-admission/admission/api"
 	"k8s.io/pod-security-admission/admission/api/load"
 	"k8s.io/pod-security-admission/api"
 	"k8s.io/pod-security-admission/metrics"
 	"k8s.io/pod-security-admission/policy"
 	"k8s.io/pod-security-admission/test"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestDefaultExtractPodSpec(t *testing.T) {
@@ -469,19 +470,19 @@ func TestValidateNamespace(t *testing.T) {
 			oldLabels:            map[string]string{api.EnforceLevelLabel: string(api.LevelBaseline)},
 			pods: []*corev1.Pod{
 				// ensure exempt pods don't use up the limit of evaluated pods
-				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod1", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass1")}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod2", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass1")}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod3", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass1")}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod4", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass1")}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod1", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: ptr.To("runtimeclass1")}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod2", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: ptr.To("runtimeclass1")}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod3", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: ptr.To("runtimeclass1")}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "exemptpod4", Annotations: map[string]string{"error": "message1"}}, Spec: corev1.PodSpec{RuntimeClassName: ptr.To("runtimeclass1")}},
 				// ensure replicas from the same controller don't use up limit of evaluated pods
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod1", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod2", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod3", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod4", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod1", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod2", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod3", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: pointer.Bool(true)}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod4", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: pointer.Bool(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod1", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod2", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod3", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset1pod4", Annotations: map[string]string{"error": "replicaset1error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("1"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod1", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod2", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod3", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: ptr.To(true)}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "replicaset2pod4", Annotations: map[string]string{"error": "replicaset2error"}, OwnerReferences: []metav1.OwnerReference{{UID: types.UID("2"), Controller: ptr.To(true)}}}},
 				// ensure unique pods are prioritized before additional replicas
 				{ObjectMeta: metav1.ObjectMeta{Name: "uniquepod1", Annotations: map[string]string{"error": "uniquemessage1"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "uniquepod2", Annotations: map[string]string{"error": "uniquemessage2"}}},
@@ -504,6 +505,7 @@ func TestValidateNamespace(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
 			newObject := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "test",
@@ -559,11 +561,11 @@ func TestValidateNamespace(t *testing.T) {
 					},
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "runtimeclass1pod", Annotations: map[string]string{"error": "message"}},
-						Spec:       corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass1")},
+						Spec:       corev1.PodSpec{RuntimeClassName: ptr.To("runtimeclass1")},
 					},
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "runtimeclass2pod", Annotations: map[string]string{"error": "message"}},
-						Spec:       corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass2")},
+						Spec:       corev1.PodSpec{RuntimeClassName: ptr.To("runtimeclass2")},
 					},
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "runtimeclass3pod", Annotations: map[string]string{"error": "message, message2"}},
@@ -587,7 +589,7 @@ func TestValidateNamespace(t *testing.T) {
 				namespacePodCheckTimeout: time.Second,
 				namespaceMaxPodsToCheck:  4,
 			}
-			result := a.ValidateNamespace(context.TODO(), attrs)
+			result := a.ValidateNamespace(ctx, attrs)
 			if result.Allowed != tc.expectAllowed {
 				t.Errorf("expected allowed=%v, got %v", tc.expectAllowed, result.Allowed)
 			}
@@ -644,11 +646,11 @@ func TestValidatePodAndController(t *testing.T) {
 
 	privilegedPod := *baselinePod.DeepCopy()
 	privilegedPod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
-		Privileged: pointer.Bool(true),
+		Privileged: ptr.To(true),
 	}
 
 	exemptRCPod := *privilegedPod.DeepCopy()
-	exemptRCPod.Spec.RuntimeClassName = pointer.String(exemptRuntimeClass)
+	exemptRCPod.Spec.RuntimeClassName = ptr.To(exemptRuntimeClass)
 
 	tolerantPod := *privilegedPod.DeepCopy()
 	tolerantPod.Spec.Tolerations = []corev1.Toleration{{
@@ -700,7 +702,7 @@ func TestValidatePodAndController(t *testing.T) {
 	config.Exemptions.RuntimeClasses = []string{exemptRuntimeClass}
 	config.Exemptions.Usernames = []string{exemptUser}
 
-	evaluator, err := policy.NewEvaluator(policy.DefaultChecks())
+	evaluator, err := policy.NewEvaluator(policy.DefaultChecks(), nil)
 	assert.NoError(t, err)
 
 	type testCase struct {
@@ -960,6 +962,7 @@ func TestValidatePodAndController(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
 			if tc.obj != nil {
 				tc.obj.(metav1.ObjectMetaAccessor).GetObjectMeta().SetNamespace(tc.namespace)
 			}
@@ -999,7 +1002,7 @@ func TestValidatePodAndController(t *testing.T) {
 			require.NoError(t, a.CompleteConfiguration(), "CompleteConfiguration()")
 			require.NoError(t, a.ValidateConfiguration(), "ValidateConfiguration()")
 
-			response := a.Validate(context.TODO(), attrs)
+			response := a.Validate(ctx, attrs)
 
 			var expectedEvaluations []MetricsRecord
 			var expectedAuditAnnotationKeys []string
@@ -1206,7 +1209,7 @@ func TestExemptNamespaceWarning(t *testing.T) {
 		},
 		defaultPolicy:         baselinePolicy,
 		expectWarning:         true,
-		expectWarningContains: "(enforce=baseline:v1.23, audit=baseline:v1.23, warn=baseline:latest)",
+		expectWarningContains: "(warn=baseline:latest)",
 	}}
 
 	const (
@@ -1228,7 +1231,7 @@ func TestExemptNamespaceWarning(t *testing.T) {
 			policy, err := api.PolicyToEvaluate(labels, defaultPolicy)
 			require.NoError(t, err.ToAggregate())
 
-			warning := a.exemptNamespaceWarning(test.name, policy)
+			warning := a.exemptNamespaceWarning(test.name, policy, labels)
 			if !test.expectWarning {
 				assert.Empty(t, warning)
 				return

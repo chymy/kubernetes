@@ -27,8 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/endpoints/handlers/fieldmanager"
-	"k8s.io/apiserver/pkg/endpoints/handlers/fieldmanager/internal"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 func TestAdmission(t *testing.T) {
@@ -36,10 +35,12 @@ func TestAdmission(t *testing.T) {
 	ac := fieldmanager.NewManagedFieldsValidatingAdmissionController(wrap)
 	now := metav1.Now()
 
-	validFieldsV1, err := internal.SetToFields(*fieldpath.NewSet(fieldpath.MakePathOrDie("metadata", "labels", "test-label")))
+	validFieldsV1 := metav1.FieldsV1{}
+	raw, err := fieldpath.NewSet(fieldpath.MakePathOrDie("metadata", "labels", "test-label")).ToJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
+	validFieldsV1.SetRawBytes(raw)
 	validManagedFieldsEntry := metav1.ManagedFieldsEntry{
 		APIVersion: "v1",
 		Operation:  metav1.ManagedFieldsOperationApply,
@@ -63,7 +64,7 @@ func TestAdmission(t *testing.T) {
 			return managedFields, true
 		},
 		"invalid fieldsV1": func(managedFields metav1.ManagedFieldsEntry) (metav1.ManagedFieldsEntry, bool) {
-			managedFields.FieldsV1 = &metav1.FieldsV1{Raw: []byte("{invalid}")}
+			managedFields.FieldsV1 = metav1.NewFieldsV1("{invalid}")
 			return managedFields, true
 		},
 		"invalid manager": func(managedFields metav1.ManagedFieldsEntry) (metav1.ManagedFieldsEntry, bool) {

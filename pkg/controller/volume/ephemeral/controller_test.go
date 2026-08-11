@@ -22,24 +22,20 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
-	// storagev1 "k8s.io/api/storage/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	// "k8s.io/apimachinery/pkg/types"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	kcache "k8s.io/client-go/tools/cache"
 	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller"
 	ephemeralvolumemetrics "k8s.io/kubernetes/pkg/controller/volume/ephemeral/metrics"
-
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -124,11 +120,7 @@ func TestSyncHandler(t *testing.T) {
 	for _, tc := range tests {
 		// Run sequentially because of global logging and global metrics.
 		t.Run(tc.name, func(t *testing.T) {
-			// There is no good way to shut down the informers. They spawn
-			// various goroutines and some of them (in particular shared informer)
-			// become very unhappy ("close on closed channel") when using a context
-			// that gets cancelled. Therefore we just keep everything running.
-			ctx := context.Background()
+			ctx, cancel := context.WithCancel(context.Background())
 
 			var objects []runtime.Object
 			for _, pod := range tc.pods {
@@ -146,17 +138,21 @@ func TestSyncHandler(t *testing.T) {
 			}
 			setupMetrics()
 			informerFactory := informers.NewSharedInformerFactory(fakeKubeClient, controller.NoResyncPeriodFunc())
+			// cancel must be called before Shutdown to unblock informer goroutines.
+			defer informerFactory.Shutdown()
+			defer cancel()
 			podInformer := informerFactory.Core().V1().Pods()
 			pvcInformer := informerFactory.Core().V1().PersistentVolumeClaims()
 
-			c, err := NewController(fakeKubeClient, podInformer, pvcInformer)
+			c, err := NewController(ctx, fakeKubeClient, podInformer, pvcInformer)
 			if err != nil {
 				t.Fatalf("error creating ephemeral controller : %v", err)
 			}
 			ec, _ := c.(*ephemeralController)
+			defer ec.queue.ShutDown()
 
 			// Ensure informers are up-to-date.
-			go informerFactory.Start(ctx.Done())
+			informerFactory.Start(ctx.Done())
 			informerFactory.WaitForCacheSync(ctx.Done())
 			cache.WaitForCacheSync(ctx.Done(), podInformer.Informer().HasSynced, pvcInformer.Informer().HasSynced)
 
@@ -213,7 +209,7 @@ func makePod(name, namespace string, uid types.UID, volumes ...v1.Volume) *v1.Po
 }
 
 func podKey(pod *v1.Pod) string {
-	key, _ := kcache.DeletionHandlingMetaNamespaceKeyFunc(testPodWithEphemeral)
+	key, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(testPodWithEphemeral)
 	return key
 }
 

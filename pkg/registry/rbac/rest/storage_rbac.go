@@ -24,7 +24,6 @@ import (
 	"k8s.io/klog/v2"
 
 	rbacapiv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -60,7 +59,7 @@ import (
 const PostStartHookName = "rbac/bootstrap-roles"
 
 type RESTStorageProvider struct {
-	Authorizer authorizer.Authorizer
+	Authorizer authorizer.UnconditionalAuthorizer
 }
 
 var _ genericapiserver.PostStartHookProvider = RESTStorageProvider{}
@@ -153,7 +152,7 @@ type PolicyData struct {
 }
 
 func isConflictOrServiceUnavailable(err error) bool {
-	return errors.IsConflict(err) || errors.IsServiceUnavailable(err)
+	return apierrors.IsConflict(err) || apierrors.IsServiceUnavailable(err)
 }
 
 func retryOnConflictOrServiceUnavailable(backoff wait.Backoff, fn func() error) error {

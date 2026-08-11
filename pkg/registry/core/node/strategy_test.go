@@ -19,20 +19,21 @@ package node
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/diff"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/features"
-
 	// ensure types are installed
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
 )
@@ -88,11 +89,10 @@ func makeNode(podCIDRs []string, addSpecDynamicConfig bool, addStatusDynamicConf
 
 func TestDropFields(t *testing.T) {
 	testCases := []struct {
-		name                    string
-		node                    *api.Node
-		oldNode                 *api.Node
-		compareNode             *api.Node
-		enableNodeDynamicConfig bool
+		name        string
+		node        *api.Node
+		oldNode     *api.Node
+		compareNode *api.Node
 	}{
 		{
 			name:        "nil pod cidrs",
@@ -127,70 +127,55 @@ func TestDropFields(t *testing.T) {
 			compareNode: makeNode([]string{"2000::/10", "10.0.0.0/8"}, false, false),
 		},
 		{
-			name:                    "new with no Spec.ConfigSource and no Status.Config , enableNodeDynamicConfig disabled",
-			enableNodeDynamicConfig: false,
-			node:                    makeNode(nil, false, false),
-			oldNode:                 nil,
-			compareNode:             makeNode(nil, false, false),
+			name:        "new with no Spec.ConfigSource and no Status.Config",
+			node:        makeNode(nil, false, false),
+			oldNode:     nil,
+			compareNode: makeNode(nil, false, false),
 		},
 		{
-			name:                    "new with Spec.ConfigSource and no Status.Config, enableNodeDynamicConfig disabled",
-			enableNodeDynamicConfig: false,
-			node:                    makeNode(nil, true, false),
-			oldNode:                 nil,
-			compareNode:             makeNode(nil, false, false),
+			name:        "new with Spec.ConfigSource and no Status.Config",
+			node:        makeNode(nil, true, false),
+			oldNode:     nil,
+			compareNode: makeNode(nil, false, false),
 		},
 		{
-			name:                    "new with Spec.ConfigSource and Status.Config, enableNodeDynamicConfig disabled",
-			enableNodeDynamicConfig: false,
-			node:                    makeNode(nil, true, true),
-			oldNode:                 nil,
-			compareNode:             makeNode(nil, false, false),
+			name:        "new with Spec.ConfigSource and Status.Config",
+			node:        makeNode(nil, true, true),
+			oldNode:     nil,
+			compareNode: makeNode(nil, false, false),
 		},
 		{
-			name:                    "update with Spec.ConfigSource and Status.Config (old has none), enableNodeDynamicConfig disabled",
-			enableNodeDynamicConfig: false,
-			node:                    makeNode(nil, true, true),
-			oldNode:                 makeNode(nil, false, false),
-			compareNode:             makeNode(nil, false, true),
+			name:        "update with Spec.ConfigSource and Status.Config (old has none)",
+			node:        makeNode(nil, true, true),
+			oldNode:     makeNode(nil, false, false),
+			compareNode: makeNode(nil, false, true),
 		},
 		{
-			name:                    "update with Spec.ConfigSource and Status.Config (old has them), enableNodeDynamicConfig disabled",
-			enableNodeDynamicConfig: false,
-			node:                    makeNode(nil, true, true),
-			oldNode:                 makeNode(nil, true, true),
-			compareNode:             makeNode(nil, true, true),
+			name:        "update with Spec.ConfigSource and Status.Config (old has them)",
+			node:        makeNode(nil, true, true),
+			oldNode:     makeNode(nil, true, true),
+			compareNode: makeNode(nil, true, true),
 		},
 		{
-			name:                    "update with Spec.ConfigSource and Status.Config (old has Status.Config), enableNodeDynamicConfig disabled",
-			enableNodeDynamicConfig: false,
-			node:                    makeNode(nil, true, true),
-			oldNode:                 makeNode(nil, false, true),
-			compareNode:             makeNode(nil, false, true),
-		},
-		{
-			name:                    "new with Spec.ConfigSource and Status.Config, enableNodeDynamicConfig enabled",
-			enableNodeDynamicConfig: true,
-			node:                    makeNode(nil, true, true),
-			oldNode:                 nil,
-			compareNode:             makeNode(nil, true, true),
+			name:        "update with Spec.ConfigSource and Status.Config (old has Status.Config)",
+			node:        makeNode(nil, true, true),
+			oldNode:     makeNode(nil, false, true),
+			compareNode: makeNode(nil, false, true),
 		},
 	}
 
 	for _, tc := range testCases {
 		func() {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DynamicKubeletConfig, tc.enableNodeDynamicConfig)()
-
 			dropDisabledFields(tc.node, tc.oldNode)
 
 			old := tc.oldNode.DeepCopy()
 			// old node  should never be changed
 			if !reflect.DeepEqual(tc.oldNode, old) {
-				t.Errorf("%v: old node changed: %v", tc.name, diff.ObjectReflectDiff(tc.oldNode, old))
+				t.Errorf("%v: old node changed: %v", tc.name, cmp.Diff(tc.oldNode, old))
 			}
 
 			if !reflect.DeepEqual(tc.node, tc.compareNode) {
-				t.Errorf("%v: unexpected node spec: %v", tc.name, diff.ObjectReflectDiff(tc.node, tc.compareNode))
+				t.Errorf("%v: unexpected node spec: %v", tc.name, cmp.Diff(tc.node, tc.compareNode))
 			}
 		}()
 	}
@@ -306,17 +291,65 @@ func TestWarningOnUpdateAndCreate(t *testing.T) {
 		node        api.Node
 		warningText string
 	}{
-		{api.Node{},
+		{
 			api.Node{},
-			""},
-		{api.Node{},
+			api.Node{},
+			"",
+		},
+		{
+			api.Node{},
+			//nolint:staticcheck // ignore deprecation warning
 			api.Node{Spec: api.NodeSpec{ConfigSource: &api.NodeConfigSource{}}},
-			"spec.configSource"},
-		{api.Node{Spec: api.NodeSpec{ConfigSource: &api.NodeConfigSource{}}},
+			"spec.configSource",
+		},
+		{
+			//nolint:staticcheck // ignore deprecation warning
 			api.Node{Spec: api.NodeSpec{ConfigSource: &api.NodeConfigSource{}}},
-			"spec.configSource"},
-		{api.Node{Spec: api.NodeSpec{ConfigSource: &api.NodeConfigSource{}}},
-			api.Node{}, ""},
+			//nolint:staticcheck // ignore deprecation warning
+			api.Node{Spec: api.NodeSpec{ConfigSource: &api.NodeConfigSource{}}},
+			"spec.configSource",
+		},
+		{
+			//nolint:staticcheck // ignore deprecation warning
+			api.Node{Spec: api.NodeSpec{ConfigSource: &api.NodeConfigSource{}}},
+			api.Node{},
+			"",
+		},
+		{
+			api.Node{},
+			api.Node{Spec: api.NodeSpec{DoNotUseExternalID: "externalID"}},
+			"spec.externalID",
+		},
+		{
+			api.Node{Spec: api.NodeSpec{DoNotUseExternalID: "externalID"}},
+			api.Node{Spec: api.NodeSpec{DoNotUseExternalID: "externalID"}},
+			"spec.externalID",
+		},
+		{
+			api.Node{Spec: api.NodeSpec{DoNotUseExternalID: "externalID"}},
+			api.Node{},
+			"",
+		},
+		{
+			api.Node{},
+			api.Node{Spec: api.NodeSpec{PodCIDRs: []string{"10.0.1.0/24", "fd00::/64"}}},
+			"",
+		},
+		{
+			api.Node{},
+			api.Node{Spec: api.NodeSpec{PodCIDRs: []string{"010.000.001.000/24", "fd00::/64"}}},
+			"spec.podCIDRs[0]",
+		},
+		{
+			api.Node{},
+			api.Node{Spec: api.NodeSpec{PodCIDRs: []string{"10.0.1.0/24", "fd00::1234/64"}}},
+			"spec.podCIDRs[1]",
+		},
+		{
+			api.Node{Spec: api.NodeSpec{PodCIDRs: []string{"010.000.001.000/24", "fd00::1234/64"}}},
+			api.Node{Spec: api.NodeSpec{PodCIDRs: []string{"10.0.1.0/24", "fd00::/64"}}},
+			"",
+		},
 	}
 	for i, test := range tests {
 		warnings := (nodeStrategy{}).WarningsOnUpdate(context.Background(), &test.node, &test.oldNode)
@@ -334,5 +367,264 @@ func TestWarningOnUpdateAndCreate(t *testing.T) {
 		} else if test.warningText != "" && !strings.Contains(warnings[0], test.warningText) {
 			t.Errorf("%d: Wrong warning message: %v", i, warnings[0])
 		}
+	}
+}
+
+func TestDropNodeDeclaredFeaturesFieldDuringCreate(t *testing.T) {
+	testCases := []struct {
+		name               string
+		featureGateEnabled bool
+		initialNode        *api.Node
+		expectedNode       *api.Node
+	}{
+		{
+			name:               "feature gate disabled, field present",
+			featureGateEnabled: false,
+			initialNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: nil,
+				},
+			},
+		},
+		{
+			name:               "feature gate enabled, field present",
+			featureGateEnabled: true,
+			initialNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+		},
+		{
+			name:               "feature gate disabled, field absent",
+			featureGateEnabled: false,
+			initialNode: &api.Node{
+				Status: api.NodeStatus{},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.featureGateEnabled {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, utilversion.MustParse("1.36"))
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.NodeDeclaredFeatures, false)
+			}
+
+			nodeCreate := tc.initialNode.DeepCopy()
+			Strategy.PrepareForCreate(context.TODO(), nodeCreate)
+			if !slices.Equal(tc.expectedNode.Status.DeclaredFeatures, nodeCreate.Status.DeclaredFeatures) {
+				t.Fatalf("PrepareForCreate: expected %v, got %v", tc.expectedNode.Status.DeclaredFeatures, nodeCreate.Status.DeclaredFeatures)
+			}
+		})
+	}
+}
+
+func TestDropNodeDeclaredFeaturesFieldDuringUpdate(t *testing.T) {
+	testCases := []struct {
+		name               string
+		featureGateEnabled bool
+		oldNode            *api.Node
+		newNode            *api.Node
+		expectedNode       *api.Node
+	}{
+		{
+			name:               "feature gate disabled, field not removed if in-use",
+			featureGateEnabled: false,
+			oldNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			newNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+		},
+		{
+			name:               "feature gate disabled, field reset if not in-use",
+			featureGateEnabled: false,
+			oldNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: nil,
+				},
+			},
+			newNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: nil,
+				},
+			},
+		},
+		{
+			name:               "feature gate enabled, field not removed",
+			featureGateEnabled: true,
+			oldNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			newNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+		},
+		{
+			name:               "feature gate enabled, status copied from old node",
+			featureGateEnabled: true,
+			oldNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+			newNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: nil,
+				},
+			},
+			expectedNode: &api.Node{
+				Status: api.NodeStatus{
+					DeclaredFeatures: []string{"TestFeature"},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.featureGateEnabled {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, utilversion.MustParse("1.36"))
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.NodeDeclaredFeatures, false)
+			}
+
+			newNode := tc.newNode.DeepCopy()
+			Strategy.PrepareForUpdate(context.TODO(), newNode, tc.oldNode)
+			if !slices.Equal(tc.expectedNode.Status.DeclaredFeatures, newNode.Status.DeclaredFeatures) {
+				t.Fatalf("PrepareForUpdate: expected %v, got %v", tc.expectedNode.Status.DeclaredFeatures, newNode.Status.DeclaredFeatures)
+			}
+		})
+	}
+}
+
+func TestDropPodPreemptionPolicy(t *testing.T) {
+	nodeWithPolicy := func() *api.Node {
+		return &api.Node{
+			Spec: api.NodeSpec{
+				PodPreemptionPolicy: &api.NodePodPreemptionPolicy{
+					DisableResizePreemption: []string{"o1"},
+				},
+			},
+		}
+	}
+	nodeWithoutPolicy := func() *api.Node {
+		return &api.Node{
+			Spec: api.NodeSpec{},
+		}
+	}
+	nodeWithEmptyPolicy := func() *api.Node {
+		return &api.Node{
+			Spec: api.NodeSpec{
+				PodPreemptionPolicy: &api.NodePodPreemptionPolicy{
+					DisableResizePreemption: []string{},
+				},
+			},
+		}
+	}
+
+	testCases := []struct {
+		name               string
+		featureGateEnabled bool
+		newNode            *api.Node
+		oldNode            *api.Node
+		expectedNode       *api.Node
+	}{
+		{
+			name:               "feature gate disabled, create node with policy -> drop policy",
+			featureGateEnabled: false,
+			newNode:            nodeWithPolicy(),
+			oldNode:            nil,
+			expectedNode:       nodeWithoutPolicy(),
+		},
+		{
+			name:               "feature gate disabled, update node with policy (old had no policy) -> drop policy",
+			featureGateEnabled: false,
+			newNode:            nodeWithPolicy(),
+			oldNode:            nodeWithoutPolicy(),
+			expectedNode:       nodeWithoutPolicy(),
+		},
+		{
+			name:               "feature gate disabled, update node with policy (old had policy) -> keep policy",
+			featureGateEnabled: false,
+			newNode:            nodeWithPolicy(),
+			oldNode:            nodeWithPolicy(),
+			expectedNode:       nodeWithPolicy(),
+		},
+		{
+			name:               "feature gate disabled, update node with empty policy (old had empty policy) -> keep policy",
+			featureGateEnabled: false,
+			newNode:            nodeWithEmptyPolicy(),
+			oldNode:            nodeWithEmptyPolicy(),
+			expectedNode:       nodeWithEmptyPolicy(),
+		},
+		{
+			name:               "feature gate enabled, create node with policy -> keep policy",
+			featureGateEnabled: true,
+			newNode:            nodeWithPolicy(),
+			oldNode:            nil,
+			expectedNode:       nodeWithPolicy(),
+		},
+		{
+			name:               "feature gate enabled, update node with policy (old had no policy) -> keep policy",
+			featureGateEnabled: true,
+			newNode:            nodeWithPolicy(),
+			oldNode:            nodeWithoutPolicy(),
+			expectedNode:       nodeWithPolicy(),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, tc.featureGateEnabled)
+
+			newNode := tc.newNode.DeepCopy()
+			if tc.oldNode == nil {
+				Strategy.PrepareForCreate(context.TODO(), newNode)
+			} else {
+				Strategy.PrepareForUpdate(context.TODO(), newNode, tc.oldNode)
+			}
+
+			if diff := cmp.Diff(tc.expectedNode.Spec.PodPreemptionPolicy, newNode.Spec.PodPreemptionPolicy); diff != "" {
+				t.Fatalf("unexpected podPreemptionPolicy (-want, +got):\n%s", diff)
+			}
+		})
 	}
 }

@@ -18,6 +18,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -29,8 +30,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	grpchealth "google.golang.org/grpc/health/grpc_health_v1"
 
+	cert "k8s.io/client-go/util/cert"
 	"k8s.io/kubernetes/pkg/probe"
 )
 
@@ -42,6 +45,16 @@ func TestNew(t *testing.T) {
 }
 
 type successServerMock struct {
+}
+
+func (s successServerMock) List(ctx context.Context, request *grpchealth.HealthListRequest) (*grpchealth.HealthListResponse, error) {
+	return &grpchealth.HealthListResponse{
+		Statuses: map[string]*grpchealth.HealthCheckResponse{
+			"grpc": {
+				Status: grpchealth.HealthCheckResponse_SERVING,
+			},
+		},
+	}, nil
 }
 
 func (s successServerMock) Check(context.Context, *grpchealth.HealthCheckRequest) (*grpchealth.HealthCheckResponse, error) {
@@ -57,6 +70,16 @@ func (s successServerMock) Watch(_ *grpchealth.HealthCheckRequest, stream grpche
 }
 
 type errorTimeoutServerMock struct {
+}
+
+func (e errorTimeoutServerMock) List(ctx context.Context, request *grpchealth.HealthListRequest) (*grpchealth.HealthListResponse, error) {
+	return &grpchealth.HealthListResponse{
+		Statuses: map[string]*grpchealth.HealthCheckResponse{
+			"grpc": {
+				Status: grpchealth.HealthCheckResponse_SERVING,
+			},
+		},
+	}, nil
 }
 
 func (e errorTimeoutServerMock) Check(context.Context, *grpchealth.HealthCheckRequest) (*grpchealth.HealthCheckResponse, error) {
@@ -76,6 +99,16 @@ func (e errorTimeoutServerMock) Watch(_ *grpchealth.HealthCheckRequest, stream g
 type errorNotServeServerMock struct {
 }
 
+func (e errorNotServeServerMock) List(ctx context.Context, request *grpchealth.HealthListRequest) (*grpchealth.HealthListResponse, error) {
+	return &grpchealth.HealthListResponse{
+		Statuses: map[string]*grpchealth.HealthCheckResponse{
+			"grpc": {
+				Status: grpchealth.HealthCheckResponse_NOT_SERVING,
+			},
+		},
+	}, nil
+}
+
 func (e errorNotServeServerMock) Check(context.Context, *grpchealth.HealthCheckRequest) (*grpchealth.HealthCheckResponse, error) {
 	return &grpchealth.HealthCheckResponse{
 		Status: grpchealth.HealthCheckResponse_NOT_SERVING,
@@ -91,9 +124,9 @@ func (e errorNotServeServerMock) Watch(_ *grpchealth.HealthCheckRequest, stream 
 func TestGrpcProber_Probe(t *testing.T) {
 	t.Run("Should: failed but return nil error because cant find host", func(t *testing.T) {
 		s := New()
-		p, o, err := s.Probe("", "", 32, time.Second)
+		p, o, err := s.Probe("", "", 32, time.Second, ProbeOptions{})
 		assert.Equal(t, probe.Failure, p)
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 		assert.Equal(t, "timeout: failed to connect service \":32\" within 1s: context deadline exceeded", o)
 	})
 	t.Run("Should: return nil error because connection closed", func(t *testing.T) {
@@ -102,16 +135,16 @@ func TestGrpcProber_Probe(t *testing.T) {
 			fmt.Fprint(w, "res")
 		}))
 		u := strings.Split(server.URL, ":")
-		assert.Equal(t, 3, len(u))
+		assert.Len(t, u, 3)
 
 		port, err := strconv.Atoi(u[2])
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 
 		// take some time to wait server boot
 		time.Sleep(2 * time.Second)
-		p, _, err := s.Probe("127.0.0.1", "", port, time.Second)
+		p, _, err := s.Probe("127.0.0.1", "", port, time.Second, ProbeOptions{})
 		assert.Equal(t, probe.Failure, p)
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 	})
 	t.Run("Should: return nil error because server response not served", func(t *testing.T) {
 		s := New()
@@ -125,9 +158,9 @@ func TestGrpcProber_Probe(t *testing.T) {
 		}()
 		// take some time to wait server boot
 		time.Sleep(2 * time.Second)
-		p, o, err := s.Probe("0.0.0.0", "", port, time.Second)
+		p, o, err := s.Probe("0.0.0.0", "", port, time.Second, ProbeOptions{})
 		assert.Equal(t, probe.Failure, p)
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 		assert.Equal(t, "service unhealthy (responded with \"NOT_SERVING\")", o)
 	})
 	t.Run("Should: return nil-error because server not response in time", func(t *testing.T) {
@@ -143,9 +176,9 @@ func TestGrpcProber_Probe(t *testing.T) {
 		}()
 		// take some time to wait server boot
 		time.Sleep(2 * time.Second)
-		p, o, err := s.Probe("0.0.0.0", "", port, time.Second*2)
+		p, o, err := s.Probe("0.0.0.0", "", port, time.Second*2, ProbeOptions{})
 		assert.Equal(t, probe.Failure, p)
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 		assert.Equal(t, "timeout: health rpc did not complete within 2s", o)
 
 	})
@@ -162,9 +195,9 @@ func TestGrpcProber_Probe(t *testing.T) {
 		}()
 		// take some time to wait server boot
 		time.Sleep(2 * time.Second)
-		p, _, err := s.Probe("0.0.0.0", "", port, time.Second*2)
+		p, _, err := s.Probe("0.0.0.0", "", port, time.Second*2, ProbeOptions{})
 		assert.Equal(t, probe.Success, p)
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 	})
 	t.Run("Should: not return error because check was success, when listen port is 0", func(t *testing.T) {
 		s := New()
@@ -179,8 +212,79 @@ func TestGrpcProber_Probe(t *testing.T) {
 		}()
 		// take some time to wait server boot
 		time.Sleep(2 * time.Second)
-		p, _, err := s.Probe("0.0.0.0", "", port, time.Second*2)
+		p, _, err := s.Probe("0.0.0.0", "", port, time.Second*2, ProbeOptions{})
 		assert.Equal(t, probe.Success, p)
-		assert.Equal(t, nil, err)
+		assert.NoError(t, err)
 	})
+}
+
+func tlsServerCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	certPEM, keyPEM, err := cert.GenerateSelfSignedCertKey("127.0.0.1", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to generate self-signed cert: %v", err)
+	}
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("failed to parse cert/key pair: %v", err)
+	}
+	return tlsCert
+}
+
+func TestGrpcProber_Probe_TLS(t *testing.T) {
+	tests := []struct {
+		name           string
+		serverTLS      bool
+		useTLS         bool
+		expectedResult probe.Result
+	}{
+		{
+			name:           "TLS probe against TLS server succeeds",
+			serverTLS:      true,
+			useTLS:         true,
+			expectedResult: probe.Success,
+		},
+		{
+			name:           "plaintext probe against TLS server fails",
+			serverTLS:      true,
+			useTLS:         false,
+			expectedResult: probe.Failure,
+		},
+		{
+			name:           "TLS probe against plaintext server fails",
+			serverTLS:      false,
+			useTLS:         true,
+			expectedResult: probe.Failure,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to listen: %v", err)
+			}
+			port := lis.Addr().(*net.TCPAddr).Port
+
+			var serverOpts []grpc.ServerOption
+			if tc.serverTLS {
+				creds := credentials.NewTLS(&tls.Config{
+					Certificates: []tls.Certificate{tlsServerCert(t)},
+				})
+				serverOpts = append(serverOpts, grpc.Creds(creds))
+			}
+
+			grpcServer := grpc.NewServer(serverOpts...)
+			defer grpcServer.Stop()
+			grpchealth.RegisterHealthServer(grpcServer, &successServerMock{})
+			go func() {
+				_ = grpcServer.Serve(lis)
+			}()
+			time.Sleep(2 * time.Second)
+
+			s := New()
+			p, _, err := s.Probe("127.0.0.1", "", port, time.Second*2, ProbeOptions{UseTLS: tc.useTLS})
+			assert.Equal(t, tc.expectedResult, p)
+			assert.NoError(t, err)
+		})
+	}
 }

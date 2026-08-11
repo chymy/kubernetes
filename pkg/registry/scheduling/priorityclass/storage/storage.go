@@ -19,6 +19,7 @@ package storage
 import (
 	"context"
 	"errors"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,9 +42,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against priority classes.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &scheduling.PriorityClass{} },
-		NewListFunc:              func() runtime.Object { return &scheduling.PriorityClassList{} },
-		DefaultQualifiedResource: scheduling.Resource("priorityclasses"),
+		NewFunc:                   func() runtime.Object { return &scheduling.PriorityClass{} },
+		NewListFunc:               func() runtime.Object { return &scheduling.PriorityClassList{} },
+		DefaultQualifiedResource:  scheduling.Resource("priorityclasses"),
+		SingularQualifiedResource: scheduling.Resource("priorityclass"),
 
 		CreateStrategy: priorityclass.Strategy,
 		UpdateStrategy: priorityclass.Strategy,
@@ -69,9 +71,9 @@ func (r *REST) ShortNames() []string {
 
 // Delete ensures that system priority classes are not deleted.
 func (r *REST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
-	for _, spc := range schedulingapiv1.SystemPriorityClasses() {
-		if name == spc.Name {
-			return nil, false, apierrors.NewForbidden(scheduling.Resource("priorityclasses"), spc.Name, errors.New("this is a system priority class and cannot be deleted"))
+	for _, spcName := range schedulingapiv1.SystemPriorityClassNames() {
+		if name == spcName {
+			return nil, false, apierrors.NewForbidden(scheduling.Resource("priorityclasses"), spcName, errors.New("this is a system priority class and cannot be deleted"))
 		}
 	}
 

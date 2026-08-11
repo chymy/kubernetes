@@ -19,6 +19,7 @@ package testsuites
 import (
 	"context"
 	"flag"
+	"fmt"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,6 @@ import (
 	csitrans "k8s.io/csi-translation-lib"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
-	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	storageframework "k8s.io/kubernetes/test/e2e/storage/framework"
 )
 
@@ -68,19 +68,30 @@ var BaseSuites = []func() storageframework.TestSuite{
 	InitTopologyTestSuite,
 	InitVolumeStressTestSuite,
 	InitFsGroupChangePolicyTestSuite,
+	InitVolumeGroupSnapshottableTestSuite,
+	InitVolumeGroupSnapshotClassTestSuite,
 	func() storageframework.TestSuite {
 		return InitCustomEphemeralTestSuite(GenericEphemeralTestPatterns())
 	},
 }
 
-// CSISuites is a list of storage test suites that work only for CSI drivers
+// CSISuites is a list of storage test suites that work only for CSI drivers.
 var CSISuites = append(BaseSuites,
+	// The following tests suites must not be already in BaseSuites,
+	// otherwise the same configuration gets tested multiple times.
 	func() storageframework.TestSuite {
 		return InitCustomEphemeralTestSuite(CSIEphemeralTestPatterns())
 	},
 	InitSnapshottableTestSuite,
+	InitSnapshotMetadataTestSuite,
 	InitSnapshottableStressTestSuite,
 	InitVolumePerformanceTestSuite,
+	InitPvcDeletionPerformanceTestSuite,
+	InitReadWriteOncePodTestSuite,
+	InitVolumeModifyTestSuite,
+	InitVolumeModifyStressTestSuite,
+	InitSELinuxMountTestSuite,
+	InitVolumeGroupSnapshottableStressTestSuite,
 )
 
 func getVolumeOpsFromMetricsForPlugin(ms testutil.Metrics, pluginName string) opCounts {
@@ -107,14 +118,14 @@ func getVolumeOpsFromMetricsForPlugin(ms testutil.Metrics, pluginName string) op
 	return totOps
 }
 
-func getVolumeOpCounts(c clientset.Interface, config *rest.Config, pluginName string) opCounts {
-	if !framework.ProviderIs("gce", "gke", "aws") {
+func getVolumeOpCounts(ctx context.Context, c clientset.Interface, config *rest.Config, pluginName string) opCounts {
+	if !framework.ProviderIs("gce", "aws") {
 		return opCounts{}
 	}
 
 	nodeLimit := 25
 
-	metricsGrabber, err := e2emetrics.NewMetricsGrabber(c, nil, config, true, false, true, false, false, false)
+	metricsGrabber, err := e2emetrics.NewMetricsGrabber(ctx, c, nil, config, true, false, true, false, false, false)
 
 	if err != nil {
 		framework.ExpectNoError(err, "Error creating metrics grabber: %v", err)
@@ -125,19 +136,19 @@ func getVolumeOpCounts(c clientset.Interface, config *rest.Config, pluginName st
 		return opCounts{}
 	}
 
-	controllerMetrics, err := metricsGrabber.GrabFromControllerManager()
+	controllerMetrics, err := metricsGrabber.GrabFromControllerManager(ctx)
 	framework.ExpectNoError(err, "Error getting c-m metrics : %v", err)
 	totOps := getVolumeOpsFromMetricsForPlugin(testutil.Metrics(controllerMetrics), pluginName)
 
 	framework.Logf("Node name not specified for getVolumeOpCounts, falling back to listing nodes from API Server")
-	nodes, err := c.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+	nodes, err := c.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	framework.ExpectNoError(err, "Error listing nodes: %v", err)
 	if len(nodes.Items) <= nodeLimit {
 		// For large clusters with > nodeLimit nodes it is too time consuming to
 		// gather metrics from all nodes. We just ignore the node metrics
 		// for those clusters
 		for _, node := range nodes.Items {
-			nodeMetrics, err := metricsGrabber.GrabFromKubelet(node.GetName())
+			nodeMetrics, err := metricsGrabber.GrabFromKubelet(ctx, node.GetName())
 			framework.ExpectNoError(err, "Error getting Kubelet %v metrics: %v", node.GetName(), err)
 			totOps = addOpCounts(totOps, getVolumeOpsFromMetricsForPlugin(testutil.Metrics(nodeMetrics), pluginName))
 		}
@@ -163,7 +174,7 @@ func addOpCounts(o1 opCounts, o2 opCounts) opCounts {
 	return totOps
 }
 
-func getMigrationVolumeOpCounts(cs clientset.Interface, config *rest.Config, pluginName string) (opCounts, opCounts) {
+func getMigrationVolumeOpCounts(ctx context.Context, cs clientset.Interface, config *rest.Config, pluginName string) (opCounts, opCounts) {
 	if len(pluginName) > 0 {
 		var migratedOps opCounts
 		l := csitrans.New()
@@ -173,16 +184,16 @@ func getMigrationVolumeOpCounts(cs clientset.Interface, config *rest.Config, plu
 			migratedOps = opCounts{}
 		} else {
 			csiName = "kubernetes.io/csi:" + csiName
-			migratedOps = getVolumeOpCounts(cs, config, csiName)
+			migratedOps = getVolumeOpCounts(ctx, cs, config, csiName)
 		}
-		return getVolumeOpCounts(cs, config, pluginName), migratedOps
+		return getVolumeOpCounts(ctx, cs, config, pluginName), migratedOps
 	}
 	// Not an in-tree driver
 	framework.Logf("Test running for native CSI Driver, not checking metrics")
 	return opCounts{}, opCounts{}
 }
 
-func newMigrationOpCheck(cs clientset.Interface, config *rest.Config, pluginName string) *migrationOpCheck {
+func newMigrationOpCheck(ctx context.Context, cs clientset.Interface, config *rest.Config, pluginName string) *migrationOpCheck {
 	moc := migrationOpCheck{
 		cs:         cs,
 		config:     config,
@@ -222,16 +233,16 @@ func newMigrationOpCheck(cs clientset.Interface, config *rest.Config, pluginName
 		return &moc
 	}
 
-	moc.oldInTreeOps, moc.oldMigratedOps = getMigrationVolumeOpCounts(cs, config, pluginName)
+	moc.oldInTreeOps, moc.oldMigratedOps = getMigrationVolumeOpCounts(ctx, cs, config, pluginName)
 	return &moc
 }
 
-func (moc *migrationOpCheck) validateMigrationVolumeOpCounts() {
+func (moc *migrationOpCheck) validateMigrationVolumeOpCounts(ctx context.Context) {
 	if moc.skipCheck {
 		return
 	}
 
-	newInTreeOps, _ := getMigrationVolumeOpCounts(moc.cs, moc.config, moc.pluginName)
+	newInTreeOps, _ := getMigrationVolumeOpCounts(ctx, moc.cs, moc.config, moc.pluginName)
 
 	for op, count := range newInTreeOps {
 		if count != moc.oldInTreeOps[op] {
@@ -243,9 +254,10 @@ func (moc *migrationOpCheck) validateMigrationVolumeOpCounts() {
 }
 
 // Skip skipVolTypes patterns if the driver supports dynamic provisioning
-func skipVolTypePatterns(pattern storageframework.TestPattern, driver storageframework.TestDriver, skipVolTypes map[storageframework.TestVolType]bool) {
+func checkVolTypePatterns(pattern storageframework.TestPattern, driver storageframework.TestDriver, skipVolTypes map[storageframework.TestVolType]bool) string {
 	_, supportsProvisioning := driver.(storageframework.DynamicPVTestDriver)
 	if supportsProvisioning && skipVolTypes[pattern.VolType] {
-		e2eskipper.Skipf("Driver supports dynamic provisioning, skipping %s pattern", pattern.VolType)
+		return fmt.Sprintf("Driver supports dynamic provisioning, skipping %s pattern", pattern.VolType)
 	}
+	return ""
 }

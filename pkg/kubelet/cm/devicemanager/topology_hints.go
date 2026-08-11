@@ -17,68 +17,65 @@ limitations under the License.
 package devicemanager
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/component-helpers/resource"
 	"k8s.io/klog/v2"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
+
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 )
 
 // GetTopologyHints implements the TopologyManager HintProvider Interface which
 // ensures the Device Manager is consulted when Topology Aware Hints for each
 // container are created.
-func (m *ManagerImpl) GetTopologyHints(pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
-	// The pod is during the admission phase. We need to save the pod to avoid it
-	// being cleaned before the admission ended
-	m.setPodPendingAdmission(pod)
-
+func (m *ManagerImpl) GetTopologyHints(logger klog.Logger, pod *v1.Pod, container *v1.Container, _ lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	// Garbage collect any stranded device resources before providing TopologyHints
-	m.UpdateAllocatedDevices()
+	m.UpdateAllocatedDevices(logger)
 
-	// Loop through all device resources and generate TopologyHints for them..
+	// Loop through all device resources and generate TopologyHints for them.
 	deviceHints := make(map[string][]topologymanager.TopologyHint)
-	for resourceObj, requestedObj := range container.Resources.Limits {
-		resource := string(resourceObj)
-		requested := int(requestedObj.Value())
+	accumulatedResourceRequests := m.getContainerDeviceRequest(container)
 
-		// Only consider resources associated with a device plugin.
-		if m.isDevicePluginResource(resource) {
-			// Only consider devices that actually container topology information.
-			if aligned := m.deviceHasTopologyAlignment(resource); !aligned {
-				klog.InfoS("Resource does not have a topology preference", "resource", resource)
-				deviceHints[resource] = nil
-				continue
-			}
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	for resource, requested := range accumulatedResourceRequests {
+		// Only consider devices that actually contain topology information.
+		if aligned := m.deviceHasTopologyAlignment(resource); !aligned {
+			logger.Info("Resource does not have a topology preference", "resourceName", resource, "pod", klog.KObj(pod), "containerName", container.Name, "request", requested)
+			deviceHints[resource] = nil
+			continue
+		}
 
-			// Short circuit to regenerate the same hints if there are already
-			// devices allocated to the Container. This might happen after a
-			// kubelet restart, for example.
-			allocated := m.podDevices.containerDevices(string(pod.UID), container.Name, resource)
-			if allocated.Len() > 0 {
-				if allocated.Len() != requested {
-					klog.ErrorS(nil, "Resource already allocated to pod with different number than request", "resource", resource, "pod", klog.KObj(pod), "containerName", container.Name, "request", requested, "allocated", allocated.Len())
-					deviceHints[resource] = []topologymanager.TopologyHint{}
-					continue
-				}
-				klog.InfoS("Regenerating TopologyHints for resource already allocated to pod", "resource", resource, "pod", klog.KObj(pod), "containerName", container.Name)
-				deviceHints[resource] = m.generateDeviceTopologyHints(resource, allocated, sets.String{}, requested)
-				continue
-			}
-
-			// Get the list of available devices, for which TopologyHints should be generated.
-			available := m.getAvailableDevices(resource)
-			reusable := m.devicesToReuse[string(pod.UID)][resource]
-			if available.Union(reusable).Len() < requested {
-				klog.ErrorS(nil, "Unable to generate topology hints: requested number of devices unavailable", "resource", resource, "request", requested, "available", available.Union(reusable).Len())
+		// Short circuit to regenerate the same hints if there are already
+		// devices allocated to the Container. This might happen after a
+		// kubelet restart, for example.
+		allocated := m.podDevices.containerDevices(string(pod.UID), container.Name, resource)
+		if allocated.Len() > 0 {
+			if allocated.Len() != requested {
+				logger.Info("Resource already allocated to pod with different number than request", "resourceName", resource, "pod", klog.KObj(pod), "containerName", container.Name, "request", requested, "allocated", allocated.Len())
 				deviceHints[resource] = []topologymanager.TopologyHint{}
 				continue
 			}
-
-			// Generate TopologyHints for this resource given the current
-			// request size and the list of available devices.
-			deviceHints[resource] = m.generateDeviceTopologyHints(resource, available, reusable, requested)
+			logger.Info("Regenerating TopologyHints for resource already allocated to pod", "resourceName", resource, "pod", klog.KObj(pod), "containerName", container.Name)
+			deviceHints[resource] = m.generateDeviceTopologyHints(logger, resource, allocated, sets.Set[string]{}, requested)
+			continue
 		}
+
+		// Get the list of available devices, for which TopologyHints should be generated.
+		available := m.getAvailableDevices(resource)
+		reusable := m.devicesToReuse[string(pod.UID)][resource]
+		if available.Union(reusable).Len() < requested {
+			logger.Info("Unable to generate topology hints: requested number of devices unavailable", "resourceName", resource, "pod", klog.KObj(pod), "containerName", container.Name, "request", requested, "available", available.Union(reusable).Len())
+			deviceHints[resource] = []topologymanager.TopologyHint{}
+			continue
+		}
+
+		// Generate TopologyHints for this resource given the current
+		// request size and the list of available devices.
+		deviceHints[resource] = m.generateDeviceTopologyHints(logger, resource, available, reusable, requested)
 	}
 
 	return deviceHints
@@ -86,21 +83,19 @@ func (m *ManagerImpl) GetTopologyHints(pod *v1.Pod, container *v1.Container) map
 
 // GetPodTopologyHints implements the topologymanager.HintProvider Interface which
 // ensures the Device Manager is consulted when Topology Aware Hints for Pod are created.
-func (m *ManagerImpl) GetPodTopologyHints(pod *v1.Pod) map[string][]topologymanager.TopologyHint {
-	// The pod is during the admission phase. We need to save the pod to avoid it
-	// being cleaned before the admission ended
-	m.setPodPendingAdmission(pod)
-
+func (m *ManagerImpl) GetPodTopologyHints(logger klog.Logger, pod *v1.Pod, _ lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	// Garbage collect any stranded device resources before providing TopologyHints
-	m.UpdateAllocatedDevices()
+	m.UpdateAllocatedDevices(logger)
 
 	deviceHints := make(map[string][]topologymanager.TopologyHint)
 	accumulatedResourceRequests := m.getPodDeviceRequest(pod)
 
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	for resource, requested := range accumulatedResourceRequests {
 		// Only consider devices that actually contain topology information.
 		if aligned := m.deviceHasTopologyAlignment(resource); !aligned {
-			klog.InfoS("Resource does not have a topology preference", "resource", resource)
+			logger.Info("Resource does not have a topology preference", "resourceName", resource, "pod", klog.KObj(pod), "request", requested)
 			deviceHints[resource] = nil
 			continue
 		}
@@ -111,53 +106,68 @@ func (m *ManagerImpl) GetPodTopologyHints(pod *v1.Pod) map[string][]topologymana
 		allocated := m.podDevices.podDevices(string(pod.UID), resource)
 		if allocated.Len() > 0 {
 			if allocated.Len() != requested {
-				klog.ErrorS(nil, "Resource already allocated to pod with different number than request", "resource", resource, "pod", klog.KObj(pod), "request", requested, "allocated", allocated.Len())
+				logger.Info("Resource already allocated to pod with different number than request", "resourceName", resource, "pod", klog.KObj(pod), "request", requested, "allocated", allocated.Len())
 				deviceHints[resource] = []topologymanager.TopologyHint{}
 				continue
 			}
-			klog.InfoS("Regenerating TopologyHints for resource already allocated to pod", "resource", resource, "pod", klog.KObj(pod))
-			deviceHints[resource] = m.generateDeviceTopologyHints(resource, allocated, sets.String{}, requested)
+			logger.Info("Regenerating TopologyHints for resource already allocated to pod", "resourceName", resource, "pod", klog.KObj(pod), "allocated", allocated.Len())
+			deviceHints[resource] = m.generateDeviceTopologyHints(logger, resource, allocated, sets.Set[string]{}, requested)
 			continue
 		}
 
 		// Get the list of available devices, for which TopologyHints should be generated.
 		available := m.getAvailableDevices(resource)
 		if available.Len() < requested {
-			klog.ErrorS(nil, "Unable to generate topology hints: requested number of devices unavailable", "resource", resource, "request", requested, "available", available.Len())
+			logger.Info("Unable to generate topology hints: requested number of devices unavailable", "resourceName", resource, "pod", klog.KObj(pod), "request", requested, "available", available.Len())
 			deviceHints[resource] = []topologymanager.TopologyHint{}
 			continue
 		}
 
 		// Generate TopologyHints for this resource given the current
 		// request size and the list of available devices.
-		deviceHints[resource] = m.generateDeviceTopologyHints(resource, available, sets.String{}, requested)
+		deviceHints[resource] = m.generateDeviceTopologyHints(logger, resource, available, sets.Set[string]{}, requested)
 	}
 
 	return deviceHints
 }
 
 func (m *ManagerImpl) deviceHasTopologyAlignment(resource string) bool {
-	// If any device has Topology set, we assume they care about alignment.
-	for device := range m.allDevices[resource] {
-		if m.allDevices[resource][device].Topology != nil {
+	// If any device has Topology NUMANodes available, we assume they care about alignment.
+	for _, device := range m.allDevices[resource] {
+		if device.Topology != nil && len(device.Topology.Nodes) > 0 {
 			return true
 		}
 	}
 	return false
 }
 
-func (m *ManagerImpl) getAvailableDevices(resource string) sets.String {
+func (m *ManagerImpl) getAvailableDevices(resource string) sets.Set[string] {
 	// Strip all devices in use from the list of healthy ones.
 	return m.healthyDevices[resource].Difference(m.allocatedDevices[resource])
 }
 
-func (m *ManagerImpl) generateDeviceTopologyHints(resource string, available sets.String, reusable sets.String, request int) []topologymanager.TopologyHint {
-	// Initialize minAffinitySize to include all NUMA Nodes
-	minAffinitySize := len(m.numaNodes)
+func (m *ManagerImpl) generateDeviceTopologyHints(logger klog.Logger, resource string, available sets.Set[string], reusable sets.Set[string], request int) []topologymanager.TopologyHint {
+	// Narrow the bitmask iteration to NUMA nodes that actually host
+	// devices for this resource.  On platforms where the OS exposes many
+	// NUMA nodes that carry no devices (e.g. NVIDIA GB200 with 36 NUMA
+	// nodes, most hosting only GPU HBM), iterating all machine NUMA
+	// nodes would enumerate O(2^n) subsets.  Restricting to device-
+	// bearing nodes reduces n to the number of nodes that matter.
+	// Because device-less nodes never contribute to devicesInMask,
+	// excluding them does not change minAffinitySize or Preferred
+	// flag computation.
+	numaNodes := m.deviceNUMANodes(logger, resource)
+	if len(numaNodes) == 0 {
+		numaNodes = m.numaNodes
+	}
+
+	// Initialize minAffinitySize to the number of NUMA nodes under
+	// consideration; it will be narrowed as satisfying masks are found.
+	minAffinitySize := len(numaNodes)
 
 	// Iterate through all combinations of NUMA Nodes and build hints from them.
 	hints := []topologymanager.TopologyHint{}
-	bitmask.IterateBitMasks(m.numaNodes, func(mask bitmask.BitMask) {
+	bitmask.IterateBitMasks(numaNodes, func(mask bitmask.BitMask) {
 		// First, update minAffinitySize for the current request size.
 		devicesInMask := 0
 		for _, device := range m.allDevices[resource] {
@@ -169,7 +179,7 @@ func (m *ManagerImpl) generateDeviceTopologyHints(resource string, available set
 			minAffinitySize = mask.Count()
 		}
 
-		// Then check to see if all of the reusable devices are part of the bitmask.
+		// Then check to see if all the reusable devices are part of the bitmask.
 		numMatching := 0
 		for d := range reusable {
 			// Skip the device if it doesn't specify any topology info.
@@ -218,6 +228,28 @@ func (m *ManagerImpl) generateDeviceTopologyHints(resource string, available set
 	return hints
 }
 
+// deviceNUMANodes returns the sorted list of NUMA node IDs that host at least
+// one device for the given resource.  The returned set is guaranteed to be a
+// subset of m.numaNodes: any NUMA IDs reported by device plugins that are not
+// known to cadvisor are logged and dropped.
+// The caller must hold m.mutex.
+func (m *ManagerImpl) deviceNUMANodes(logger klog.Logger, resource string) []int {
+	nodesWithDevices := sets.New[int]()
+	for _, device := range m.allDevices[resource] {
+		nodesWithDevices.Insert(m.getNUMANodeIds(device.Topology)...)
+	}
+
+	knownNodes := sets.New[int](m.numaNodes...)
+	unknown := nodesWithDevices.Difference(knownNodes)
+	if unknown.Len() > 0 {
+		logger.Info("Ignoring NUMA node IDs reported by device plugin that are unknown to cadvisor",
+			"resource", resource, "unknownNodes", sets.List(unknown), "knownNodes", m.numaNodes)
+		nodesWithDevices = nodesWithDevices.Intersection(knownNodes)
+	}
+
+	return sets.List(nodesWithDevices)
+}
+
 func (m *ManagerImpl) getNUMANodeIds(topology *pluginapi.TopologyInfo) []int {
 	if topology == nil {
 		return nil
@@ -230,70 +262,29 @@ func (m *ManagerImpl) getNUMANodeIds(topology *pluginapi.TopologyInfo) []int {
 }
 
 func (m *ManagerImpl) getPodDeviceRequest(pod *v1.Pod) map[string]int {
-	podResources := sets.NewString()
-
-	// Find the max request of a given resource across all init containers
-	initContainerRequests := make(map[string]int)
-	for _, container := range pod.Spec.InitContainers {
-		for resourceObj, requestedObj := range container.Resources.Limits {
-			resource := string(resourceObj)
-			requested := int(requestedObj.Value())
-
-			if !m.isDevicePluginResource(resource) {
-				continue
-			}
-
-			podResources.Insert(resource)
-
-			if _, exists := initContainerRequests[resource]; !exists {
-				initContainerRequests[resource] = requested
-				continue
-			}
-			if requested > initContainerRequests[resource] {
-				initContainerRequests[resource] = requested
-
-			}
-		}
-	}
-
-	// Compute the sum of requests across all app containers for a given resource
-	appContainerRequests := make(map[string]int)
-	for _, container := range pod.Spec.Containers {
-		for resourceObj, requestedObj := range container.Resources.Limits {
-			resource := string(resourceObj)
-			requested := int(requestedObj.Value())
-
-			if !m.isDevicePluginResource(resource) {
-				continue
-			}
-			podResources.Insert(resource)
-			appContainerRequests[resource] += requested
-		}
-	}
-
-	// Calculate podRequests as the max of init and app container requests for a given resource
+	// for these device plugin resources, requests == limits
+	limits := resource.PodLimits(pod, resource.PodResourcesOptions{
+		ExcludeOverhead: true,
+	})
 	podRequests := make(map[string]int)
-	for resource := range podResources {
-		_, initExists := initContainerRequests[resource]
-		_, appExists := appContainerRequests[resource]
-
-		if initExists && !appExists {
-			podRequests[resource] = initContainerRequests[resource]
+	for resourceName, quantity := range limits {
+		if !m.isDevicePluginResource(string(resourceName)) {
 			continue
 		}
-
-		if !initExists && appExists {
-			podRequests[resource] = appContainerRequests[resource]
-			continue
-		}
-
-		if initContainerRequests[resource] > appContainerRequests[resource] {
-			podRequests[resource] = initContainerRequests[resource]
-			continue
-		}
-
-		podRequests[resource] = appContainerRequests[resource]
+		podRequests[string(resourceName)] = int(quantity.Value())
 	}
-
 	return podRequests
+}
+
+func (m *ManagerImpl) getContainerDeviceRequest(container *v1.Container) map[string]int {
+	containerRequests := make(map[string]int)
+	for resourceObj, requestedObj := range container.Resources.Limits {
+		resource := string(resourceObj)
+		requested := int(requestedObj.Value())
+		if !m.isDevicePluginResource(resource) {
+			continue
+		}
+		containerRequests[resource] = requested
+	}
+	return containerRequests
 }

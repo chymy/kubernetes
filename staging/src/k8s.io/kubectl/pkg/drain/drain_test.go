@@ -17,12 +17,14 @@ limitations under the License.
 package drain
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"testing"
@@ -36,9 +38,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes/fake"
 	ktest "k8s.io/client-go/testing"
+	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
 func TestDeletePods(t *testing.T) {
@@ -72,10 +74,27 @@ func TestDeletePods(t *testing.T) {
 						newPod := newPodMap[name]
 						return &newPod, nil
 					}
-					return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
-
+					return &corev1.Pod{}, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
 				}
-				return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
+				return &corev1.Pod{}, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
+			},
+		},
+		{
+			description:       "Pod found with same name but different UID",
+			interval:          100 * time.Millisecond,
+			timeout:           10 * time.Second,
+			expectPendingPods: false,
+			expectError:       false,
+			expectedError:     nil,
+			getPodFn: func(namespace, name string) (*corev1.Pod, error) {
+				// Return a pod with the same name, but different UID
+				return &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+						Name:      name,
+						UID:       "SOME_OTHER_UID",
+					},
+				}, nil
 			},
 		},
 		{
@@ -84,13 +103,13 @@ func TestDeletePods(t *testing.T) {
 			timeout:           3 * time.Second,
 			expectPendingPods: true,
 			expectError:       true,
-			expectedError:     &wait.ErrWaitTimeout,
+			expectedError:     &context.DeadlineExceeded,
 			getPodFn: func(namespace, name string) (*corev1.Pod, error) {
 				oldPodMap, _ := createPods(false)
 				if oldPod, found := oldPodMap[name]; found {
 					return &oldPod, nil
 				}
-				return nil, fmt.Errorf("%q: not found", name)
+				return &corev1.Pod{}, fmt.Errorf("%q: not found", name)
 			},
 		},
 		{
@@ -100,13 +119,13 @@ func TestDeletePods(t *testing.T) {
 			ctxTimeoutEarly:   true,
 			expectPendingPods: true,
 			expectError:       true,
-			expectedError:     &wait.ErrWaitTimeout,
+			expectedError:     &context.Canceled,
 			getPodFn: func(namespace, name string) (*corev1.Pod, error) {
 				oldPodMap, _ := createPods(false)
 				if oldPod, found := oldPodMap[name]; found {
 					return &oldPod, nil
 				}
-				return nil, fmt.Errorf("%q: not found", name)
+				return &corev1.Pod{}, fmt.Errorf("%q: not found", name)
 			},
 		},
 		{
@@ -123,7 +142,7 @@ func TestDeletePods(t *testing.T) {
 					oldPod.ObjectMeta.SetDeletionTimestamp(dTime)
 					return &oldPod, nil
 				}
-				return nil, fmt.Errorf("%q: not found", name)
+				return &corev1.Pod{}, fmt.Errorf("%q: not found", name)
 			},
 		},
 		{
@@ -134,7 +153,7 @@ func TestDeletePods(t *testing.T) {
 			expectError:       true,
 			expectedError:     nil,
 			getPodFn: func(namespace, name string) (*corev1.Pod, error) {
-				return nil, errors.New("This is a random error for testing")
+				return &corev1.Pod{}, errors.New("This is a random error for testing")
 			},
 		},
 	}
@@ -331,6 +350,39 @@ func TestDeleteOrEvict(t *testing.T) {
 			h := &Helper{
 				Out:                os.Stdout,
 				GracePeriodSeconds: 10,
+				OnPodDeletionOrEvictionStarted: func(pod *corev1.Pod, usingEviction bool) {
+					if tc.evictionSupported && !tc.disableEviction {
+						if !usingEviction {
+							t.Errorf("%s: OnPodDeletionOrEvictionStarted callback failed while evicting; actual\n\t%v\nexpected\n\t%v", tc.description, usingEviction, !usingEviction)
+						}
+					} else if tc.evictionSupported && tc.disableEviction {
+						if usingEviction {
+							t.Errorf("%s: OnPodDeletionOrEvictionStarted callback failed while deleting; actual\n\t%v\nexpected\n\t%v", tc.description, !usingEviction, usingEviction)
+						}
+					}
+				},
+				OnPodDeletedOrEvicted: func(pod *corev1.Pod, usingEviction bool) {
+					if tc.evictionSupported && !tc.disableEviction {
+						if !usingEviction {
+							t.Errorf("%s: OnPodDeletedOrEvicted callback failed while evicting; actual\n\t%v\nexpected\n\t%v", tc.description, usingEviction, !usingEviction)
+						}
+					} else if tc.evictionSupported && tc.disableEviction {
+						if usingEviction {
+							t.Errorf("%s: OnPodDeletedOrEvicted callback failed while deleting; actual\n\t%v\nexpected\n\t%v", tc.description, !usingEviction, usingEviction)
+						}
+					}
+				},
+				OnPodDeletionOrEvictionFinished: func(pod *corev1.Pod, usingEviction bool, err error) {
+					if tc.evictionSupported && !tc.disableEviction {
+						if !usingEviction {
+							t.Errorf("%s: OnPodDeletionOrEvictionFinished callback failed while evicting; actual\n\t%v\nexpected\n\t%v", tc.description, usingEviction, !usingEviction)
+						}
+					} else if tc.evictionSupported && tc.disableEviction {
+						if usingEviction {
+							t.Errorf("%s: OnPodDeletionOrEvictionFinished callback failed while deleting; actual\n\t%v\nexpected\n\t%v", tc.description, !usingEviction, usingEviction)
+						}
+					}
+				},
 			}
 
 			// Create 4 pods, and try to remove the first 2
@@ -412,6 +464,66 @@ func TestDeleteOrEvict(t *testing.T) {
 	}
 }
 
+func TestDeleteOrEvictWithDryRunServer(t *testing.T) {
+	testCases := []struct {
+		description     string
+		disableEviction bool
+	}{
+		{
+			description:     "Eviction enabled with server dry-run",
+			disableEviction: false,
+		},
+		{
+			description:     "Eviction disabled with server dry-run",
+			disableEviction: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := &Helper{
+				Out:                &buf,
+				GracePeriodSeconds: 10,
+				DisableEviction:    tc.disableEviction,
+				DryRunStrategy:     cmdutil.DryRunServer,
+			}
+
+			var allPods []runtime.Object
+			var podsToDelete []corev1.Pod
+
+			for i := 1; i <= 2; i++ {
+				pod := corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      fmt.Sprintf("mypod-%d", i),
+						Namespace: "default",
+					},
+				}
+				allPods = append(allPods, &pod)
+				podsToDelete = append(podsToDelete, pod)
+			}
+
+			k := fake.NewSimpleClientset(allPods...)
+
+			// This reactor intercepts delete requests with DryRun set and returns success without
+			// removing the object, simulating real API server dry-run behavior.
+			k.PrependReactor("delete", "pods", func(actions ktest.Action) (bool, runtime.Object, error) {
+				deleteAction := actions.(ktest.DeleteAction)
+				if slices.Contains(deleteAction.GetDeleteOptions().DryRun, metav1.DryRunAll) {
+					return true, nil, nil
+				}
+				return false, nil, nil
+			})
+			addEvictionSupport(t, k, "v1")
+			h.Client = k
+
+			if err := h.DeleteOrEvictPods(podsToDelete); err != nil {
+				t.Fatalf("error from DeleteOrEvictPods: %v", err)
+			}
+		})
+	}
+}
+
 func mockFilterSkip(_ corev1.Pod) PodDeleteStatus {
 	return MakePodDeleteStatusSkip()
 }
@@ -476,6 +588,115 @@ func TestFilterPods(t *testing.T) {
 			podsLen := len(list.Pods())
 			if podsLen != tc.expectedPodListLen {
 				t.Errorf("%s: unexpected evictions; actual %v; expected %v", tc.description, podsLen, tc.expectedPodListLen)
+			}
+		})
+	}
+}
+
+func TestEvictDuringNamespaceTerminating(t *testing.T) {
+	testPodUID := types.UID("test-uid")
+	testPodName := "test-pod"
+	testNamespace := "default"
+
+	retryDelay := 5 * time.Millisecond
+	// Give the helper enough room for a retry plus scheduler jitter on loaded CI
+	// hosts. A 10ms total timeout is too small under -race.
+	globalTimeout := 20 * retryDelay
+
+	tests := []struct {
+		description string
+		refresh     bool
+		err         error
+	}{
+		{
+			description: "Pod refreshed after NamespaceTerminating error",
+			refresh:     true,
+			err:         nil,
+		},
+		{
+			description: "Pod not refreshed after NamespaceTerminating error",
+			refresh:     false,
+			err:         fmt.Errorf("error when evicting pods/%q -n %q: global timeout reached: %v", testPodName, testNamespace, globalTimeout),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) {
+			var retry bool
+
+			initialPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testPodName,
+					Namespace: testNamespace,
+					UID:       testPodUID,
+				},
+			}
+
+			// pod with DeletionTimestamp, indicating deletion in progress
+			deletedPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              testPodName,
+					Namespace:         testNamespace,
+					UID:               testPodUID,
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+			}
+
+			evictPods := []corev1.Pod{*initialPod}
+
+			k := fake.NewClientset(initialPod)
+			addEvictionSupport(t, k, "v1")
+
+			// mock eviction to return NamespaceTerminating error
+			k.PrependReactor("create", "pods", func(action ktest.Action) (bool, runtime.Object, error) {
+				if action.GetSubresource() != "eviction" {
+					return false, nil, nil
+				}
+
+				err := apierrors.NewForbidden(
+					schema.GroupResource{Resource: "pods"},
+					testPodName,
+					errors.New("namespace is terminating"),
+				)
+
+				err.ErrStatus.Details.Causes = append(err.ErrStatus.Details.Causes, metav1.StatusCause{
+					Type: corev1.NamespaceTerminatingCause,
+				})
+
+				return true, nil, err
+			})
+
+			k.PrependReactor("get", "pods", func(action ktest.Action) (bool, runtime.Object, error) {
+				if !test.refresh {
+					// for non-refresh test, always return the initial pod
+					return true, initialPod, nil
+				}
+
+				if retry {
+					// second call, pod is deleted
+					return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, testPodName)
+				}
+
+				// first call, pod is being deleted
+				retry = true
+
+				return true, deletedPod, nil
+			})
+
+			h := &Helper{
+				Client:               k,
+				DisableEviction:      false,
+				Out:                  os.Stdout,
+				ErrOut:               os.Stderr,
+				Timeout:              globalTimeout,
+				EvictErrorRetryDelay: retryDelay,
+			}
+
+			err := h.DeleteOrEvictPods(evictPods)
+			if test.err == nil && err != nil {
+				t.Errorf("expected no error, got: %v", err)
+			} else if test.err != nil && (err == nil || err.Error() != test.err.Error()) {
+				t.Errorf("%s: unexpected eviction; actual %v; expected %v", test.description, err, test.err)
 			}
 		})
 	}

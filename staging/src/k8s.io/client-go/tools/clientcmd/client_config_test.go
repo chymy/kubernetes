@@ -17,20 +17,22 @@ limitations under the License.
 package clientcmd
 
 import (
-	"io/ioutil"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/imdario/mergo"
+	"github.com/google/go-cmp/cmp"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	restclient "k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	utiltesting "k8s.io/client-go/util/testing"
+	"k8s.io/utils/dump"
+	"k8s.io/utils/ptr"
 )
 
-func TestMergoSemantics(t *testing.T) {
+func TestMergeSemantics(t *testing.T) {
 	type U struct {
 		A string
 		B int64
@@ -40,7 +42,11 @@ func TestMergoSemantics(t *testing.T) {
 		X string
 		Y int64
 		U U
+
+		StringPtr *string
+		StructPtr *U
 	}
+
 	var testDataStruct = []struct {
 		dst      T
 		src      T
@@ -61,22 +67,31 @@ func TestMergoSemantics(t *testing.T) {
 			src:      T{S: []string{"test1", "test2", "test3"}},
 			expected: T{S: []string{"test1", "test2", "test3"}},
 		},
+		{
+			dst:      T{},
+			src:      T{StringPtr: ptr.To("a"), StructPtr: ptr.To(U{A: "a", B: 1})},
+			expected: T{StringPtr: ptr.To("a"), StructPtr: ptr.To(U{A: "a", B: 1})},
+		},
+		{
+			dst:      T{StringPtr: ptr.To("a"), StructPtr: ptr.To(U{A: "a", B: 1})},
+			src:      T{},
+			expected: T{StringPtr: ptr.To("a"), StructPtr: ptr.To(U{A: "a", B: 1})},
+		},
+		{
+			dst:      T{StringPtr: ptr.To("a"), StructPtr: ptr.To(U{A: "a", B: 1})},
+			src:      T{StringPtr: ptr.To("b"), StructPtr: ptr.To(U{A: "b", B: 0})}, // zero value B overrides non-zero value B in pointer member
+			expected: T{StringPtr: ptr.To("b"), StructPtr: ptr.To(U{A: "b", B: 0})},
+		},
 	}
-	for _, data := range testDataStruct {
-		err := mergo.Merge(&data.dst, &data.src, mergo.WithOverride)
+	for i, data := range testDataStruct {
+		t.Logf("case %d: %+v, %+v", i, data.dst, data.src)
+		err := merge(&data.dst, &data.src)
 		if err != nil {
 			t.Errorf("error while merging: %s", err)
 		}
 		if !reflect.DeepEqual(data.dst, data.expected) {
-			// The mergo library has previously changed in a an incompatible way.
-			// example:
-			//
-			//   https://github.com/imdario/mergo/commit/d304790b2ed594794496464fadd89d2bb266600a
-			//
 			// This test verifies that the semantics of the merge are what we expect.
-			// If they are not, the mergo library may have been updated and broken
-			// unexpectedly.
-			t.Errorf("mergo.MergeWithOverwrite did not provide expected output: %+v doesn't match %+v", data.dst, data.expected)
+			t.Errorf("merge did not provide expected output:\ngot:  %s\nwant: %s\ndiff: %s", dump.OneLine(data.dst), dump.OneLine(data.expected), cmp.Diff(data.dst, data.expected))
 		}
 	}
 
@@ -92,21 +107,151 @@ func TestMergoSemantics(t *testing.T) {
 		},
 	}
 	for _, data := range testDataMap {
-		err := mergo.Merge(&data.dst, &data.src, mergo.WithOverride)
+		err := merge(&data.dst, &data.src)
 		if err != nil {
 			t.Errorf("error while merging: %s", err)
 		}
 		if !reflect.DeepEqual(data.dst, data.expected) {
-			// The mergo library has previously changed in a an incompatible way.
-			// example:
-			//
-			//   https://github.com/imdario/mergo/commit/d304790b2ed594794496464fadd89d2bb266600a
-			//
 			// This test verifies that the semantics of the merge are what we expect.
-			// If they are not, the mergo library may have been updated and broken
-			// unexpectedly.
-			t.Errorf("mergo.MergeWithOverwrite did not provide expected output: %+v doesn't match %+v", data.dst, data.expected)
+			t.Errorf("merge did not provide expected output: %+v doesn't match %+v", data.dst, data.expected)
 		}
+	}
+
+	type Struct struct {
+		String  string
+		StringP *string
+		Int     int
+		IntP    *int
+		Bool    bool
+		BoolP   *bool
+		Slice   []string
+		SliceP  *[]string
+		Map     map[string]string
+		MapP    *map[string]string
+	}
+	type T2 struct {
+		String  string
+		StringP *string
+		Int     int
+		IntP    *int
+		Bool    bool
+		BoolP   *bool
+		Slice   []string
+		SliceP  *[]string
+		Map     map[string]string
+		MapP    *map[string]string
+		Struct  Struct
+		StructP *Struct
+	}
+
+	var testcases = []struct {
+		name     string
+		dst      T2
+		src      T2
+		expected T2
+	}{
+		{
+			name:     "zero noop",
+			dst:      T2{},
+			src:      T2{},
+			expected: T2{},
+		},
+		{
+			name: "override zero dst",
+			dst:  T2{},
+			src: T2{
+				String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"}),
+				Struct:  Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})},
+				StructP: ptr.To(Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})}),
+			},
+			expected: T2{
+				String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"}),
+				Struct:  Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})},
+				StructP: ptr.To(Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})}),
+			},
+		},
+		{
+			name: "noop zero src",
+			dst: T2{
+				String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"}),
+				Struct:  Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})},
+				StructP: ptr.To(Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})}),
+			},
+			src: T2{},
+			expected: T2{
+				String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"}),
+				Struct:  Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})},
+				StructP: ptr.To(Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})}),
+			},
+		},
+		{
+			name: "overwrite non-zero values, merge maps",
+			dst: T2{
+				String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}),
+				Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"}),
+				Struct:  Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})},
+				StructP: ptr.To(Struct{String: "a", StringP: ptr.To("a"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"a"}, SliceP: ptr.To([]string{"a"}), Map: map[string]string{"a": "1"}, MapP: ptr.To(map[string]string{"a": "1"})}),
+			},
+			src: T2{
+				String: "b", StringP: ptr.To("b"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"b"}, SliceP: ptr.To([]string{"b"}),
+				Map: map[string]string{"b": "1"}, MapP: ptr.To(map[string]string{"b": "1"}),
+				Struct:  Struct{String: "b", StringP: ptr.To("b"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"b"}, SliceP: ptr.To([]string{"b"}), Map: map[string]string{"b": "1"}, MapP: ptr.To(map[string]string{"b": "1"})},
+				StructP: ptr.To(Struct{String: "b", StringP: ptr.To("b"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"b"}, SliceP: ptr.To([]string{"b"}), Map: map[string]string{"b": "1"}, MapP: ptr.To(map[string]string{"b": "1"})}),
+			},
+			expected: T2{
+				// overwritten
+				String: "b", StringP: ptr.To("b"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"b"}, SliceP: ptr.To([]string{"b"}), MapP: ptr.To(map[string]string{"b": "1"}),
+				// merged
+				Map: map[string]string{"a": "1", "b": "1"},
+				Struct: Struct{
+					// overwritten
+					String: "b", StringP: ptr.To("b"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"b"}, SliceP: ptr.To([]string{"b"}), MapP: ptr.To(map[string]string{"b": "1"}),
+					// merged
+					Map: map[string]string{"a": "1", "b": "1"},
+				},
+				// overwritten
+				StructP: ptr.To(Struct{String: "b", StringP: ptr.To("b"), Int: 1, IntP: ptr.To(1), Bool: true, BoolP: ptr.To(true), Slice: []string{"b"}, SliceP: ptr.To([]string{"b"}), Map: map[string]string{"b": "1"}, MapP: ptr.To(map[string]string{"b": "1"})}),
+			},
+		},
+		{
+			name: "overwrite non-zero values, merge maps",
+			dst: T2{
+				Struct: Struct{
+					String: "a", Int: 1, Map: map[string]string{"a": "1", "shared": "1"}, MapP: ptr.To(map[string]string{"a": "1", "shared": "1"}),
+				},
+				StructP: ptr.To(Struct{
+					String: "a", Int: 1, Map: map[string]string{"a": "1", "shared": "1"}, MapP: ptr.To(map[string]string{"a": "1", "shared": "1"}),
+				}),
+			},
+			src: T2{
+				Struct: Struct{
+					String: "b", Int: 0, Map: map[string]string{"b": "1"},
+				},
+				StructP: ptr.To(Struct{
+					String: "b", Int: 0, Map: map[string]string{"b": "1"},
+				}),
+			},
+			expected: T2{
+				Struct: Struct{
+					String: "b", Int: 1 /* preserved */, Map: map[string]string{"a": "1", "b": "1", "shared": "1"} /* merged */, MapP: ptr.To(map[string]string{"a": "1", "shared": "1"}), /* preserved */
+				},
+				StructP: ptr.To(Struct{
+					String: "b", Int: 0 /* overwritten */, Map: map[string]string{"b": "1"} /* unmerged */, MapP: nil, /* overwritten*/
+				}),
+			},
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := merge(&tc.dst, &tc.src)
+			if err != nil {
+				t.Errorf("error while merging: %s", err)
+			}
+			if !reflect.DeepEqual(tc.dst, tc.expected) {
+				// This test verifies that the semantics of the merge are what we expect.
+				t.Errorf("merge did not provide expected output:\ngot:  %s\nwant: %s\ndiff: %s", dump.OneLine(tc.dst), dump.OneLine(tc.expected), cmp.Diff(tc.dst, tc.expected))
+			}
+		})
 	}
 }
 
@@ -139,6 +284,22 @@ func createCAValidTestConfig() *clientcmdapi.Config {
 	return config
 }
 
+func TestDisableCompression(t *testing.T) {
+	config := createValidTestConfig()
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{
+		ClusterInfo: clientcmdapi.Cluster{
+			DisableCompression: true,
+		},
+	}, nil)
+
+	actualCfg, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	matchBoolArg(true, actualCfg.DisableCompression, t)
+}
+
 func TestInsecureOverridesCA(t *testing.T) {
 	config := createCAValidTestConfig()
 	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{
@@ -158,11 +319,11 @@ func TestInsecureOverridesCA(t *testing.T) {
 }
 
 func TestCAOverridesCAData(t *testing.T) {
-	file, err := ioutil.TempFile("", "my.ca")
+	file, err := os.CreateTemp("", "my.ca")
 	if err != nil {
 		t.Fatalf("could not create tempfile: %v", err)
 	}
-	defer os.Remove(file.Name())
+	defer utiltesting.CloseAndRemove(t, file)
 
 	config := createCAValidTestConfig()
 	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{
@@ -293,12 +454,11 @@ func TestModifyContext(t *testing.T) {
 		"clean":   true,
 	}
 
-	tempPath, err := ioutil.TempFile("", "testclientcmd-")
+	tempPath, err := os.CreateTemp("", "testclientcmd-")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer os.Remove(tempPath.Name())
-
+	defer utiltesting.CloseAndRemove(t, tempPath)
 	pathOptions := NewDefaultPathOptions()
 	config := createValidTestConfig()
 
@@ -478,13 +638,13 @@ func TestBasicAuthData(t *testing.T) {
 
 func TestBasicTokenFile(t *testing.T) {
 	token := "exampletoken"
-	f, err := ioutil.TempFile("", "tokenfile")
+	f, err := os.CreateTemp("", "tokenfile")
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 		return
 	}
-	defer os.Remove(f.Name())
-	if err := ioutil.WriteFile(f.Name(), []byte(token), 0644); err != nil {
+	defer utiltesting.CloseAndRemove(t, f)
+	if err := os.WriteFile(f.Name(), []byte(token), 0644); err != nil {
 		t.Errorf("Unexpected error: %v", err)
 		return
 	}
@@ -514,13 +674,13 @@ func TestBasicTokenFile(t *testing.T) {
 
 func TestPrecedenceTokenFile(t *testing.T) {
 	token := "exampletoken"
-	f, err := ioutil.TempFile("", "tokenfile")
+	f, err := os.CreateTemp("", "tokenfile")
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 		return
 	}
-	defer os.Remove(f.Name())
-	if err := ioutil.WriteFile(f.Name(), []byte(token), 0644); err != nil {
+	defer utiltesting.CloseAndRemove(t, f)
+	if err := os.WriteFile(f.Name(), []byte(token), 0644); err != nil {
 		t.Errorf("Unexpected error: %v", err)
 		return
 	}
@@ -904,12 +1064,12 @@ users:
       command: foo-command
       provideClusterInfo: true
 `
-	tmpfile, err := ioutil.TempFile("", "kubeconfig")
+	tmpfile, err := os.CreateTemp("", "kubeconfig")
 	if err != nil {
 		t.Error(err)
 	}
-	defer os.Remove(tmpfile.Name())
-	if err := ioutil.WriteFile(tmpfile.Name(), []byte(content), 0666); err != nil {
+	defer utiltesting.CloseAndRemove(t, tmpfile)
+	if err := os.WriteFile(tmpfile.Name(), []byte(content), 0666); err != nil {
 		t.Error(err)
 	}
 	config, err := BuildConfigFromFlags("", tmpfile.Name())
@@ -994,6 +1154,234 @@ func TestCleanANSIEscapeCodes(t *testing.T) {
 			if actualOut := cleanANSIEscapeCodes(test.in); test.out != actualOut {
 				t.Errorf("expected %q, actual %q", test.out, actualOut)
 			}
+		})
+	}
+}
+
+func TestMergeRawConfigDoOverride(t *testing.T) {
+	const (
+		server         = "https://anything.com:8080"
+		token          = "the-token"
+		modifiedServer = "http://localhost:8081"
+		modifiedToken  = "modified-token"
+	)
+	config := createValidTestConfig()
+
+	// add another context which to modify with overrides
+	config.Clusters["modify"] = &clientcmdapi.Cluster{
+		Server: server,
+	}
+	config.AuthInfos["modify"] = &clientcmdapi.AuthInfo{
+		Token: token,
+	}
+	config.Contexts["modify"] = &clientcmdapi.Context{
+		Cluster:   "modify",
+		AuthInfo:  "modify",
+		Namespace: "modify",
+	}
+
+	// create overrides for the modify context
+	overrides := &ConfigOverrides{
+		ClusterInfo: clientcmdapi.Cluster{
+			Server: modifiedServer,
+		},
+		Context: clientcmdapi.Context{
+			Namespace: "foobar",
+			Cluster:   "modify",
+			AuthInfo:  "modify",
+		},
+		AuthInfo: clientcmdapi.AuthInfo{
+			Token: modifiedToken,
+		},
+		CurrentContext: "modify",
+	}
+
+	cut := NewDefaultClientConfig(*config, overrides)
+	act, err := cut.MergedRawConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// ensure overrides were applied to "modify"
+	actContext := act.CurrentContext
+	if actContext != "modify" {
+		t.Errorf("Expected context %v, got %v", "modify", actContext)
+	}
+	if act.Clusters[actContext].Server != "http://localhost:8081" {
+		t.Errorf("Expected server %v, got %v", "http://localhost:8081", act.Clusters[actContext].Server)
+	}
+	if act.Contexts[actContext].Namespace != "foobar" {
+		t.Errorf("Expected namespace %v, got %v", "foobar", act.Contexts[actContext].Namespace)
+	}
+
+	// ensure context "clean" was not touched
+	if act.Clusters["clean"].Server != config.Clusters["clean"].Server {
+		t.Errorf("Expected server %v, got %v", config.Clusters["clean"].Server, act.Clusters["clean"].Server)
+	}
+	if act.Contexts["clean"].Namespace != config.Contexts["clean"].Namespace {
+		t.Errorf("Expected namespace %v, got %v", config.Contexts["clean"].Namespace, act.Contexts["clean"].Namespace)
+	}
+}
+
+func TestClientCertOverrideData(t *testing.T) {
+	// Test that when overrides contain cert/key file paths or data fields,
+	// the corresponding fields are properly handled to avoid validation conflicts
+	// in particular code in DirectClientConfig::getAuthInfo.
+	// This covers both scenarios: overrides with file paths (which clear data fields)
+	// and overrides with data fields (which clear file paths).
+
+	testCases := []struct {
+		name        string
+		description string
+		setupTest   func(t *testing.T) (*clientcmdapi.Config, *ConfigOverrides, func())
+		validate    func(t *testing.T, authInfo *clientcmdapi.AuthInfo)
+	}{
+		{
+			name:        "override-with-file-paths",
+			description: "Test override with cert/key file paths",
+			setupTest: func(t *testing.T) (*clientcmdapi.Config, *ConfigOverrides, func()) {
+				certFile, err := os.CreateTemp("", "test-client-*.crt")
+				if err != nil {
+					t.Fatalf("Failed to create temp cert file: %v", err)
+				}
+
+				keyFile, err := os.CreateTemp("", "test-client-*.key")
+				if err != nil {
+					t.Fatalf("Failed to create temp key file: %v", err)
+				}
+
+				if err := os.WriteFile(certFile.Name(), []byte("dummy-cert-content"), 0600); err != nil {
+					t.Fatalf("Failed to write cert file: %v", err)
+				}
+				if err := os.WriteFile(keyFile.Name(), []byte("dummy-key-content"), 0600); err != nil {
+					t.Fatalf("Failed to write key file: %v", err)
+				}
+
+				baseConfig := clientcmdapi.Config{
+					Clusters: map[string]*clientcmdapi.Cluster{
+						"test-cluster": {
+							Server:                   "https://example.com:6443",
+							CertificateAuthorityData: []byte("fake-ca-data"),
+						},
+					},
+					AuthInfos: map[string]*clientcmdapi.AuthInfo{
+						"test-user": {
+							ClientCertificateData: []byte("base-cert-data"),
+							ClientKeyData:         []byte("base-key-data"),
+						},
+					},
+					Contexts: map[string]*clientcmdapi.Context{
+						"test-context": {
+							Cluster:  "test-cluster",
+							AuthInfo: "test-user",
+						},
+					},
+					CurrentContext: "test-context",
+				}
+
+				overrides := &ConfigOverrides{
+					AuthInfo: clientcmdapi.AuthInfo{
+						ClientCertificate:     certFile.Name(),
+						ClientCertificateData: nil,
+						ClientKey:             keyFile.Name(),
+						ClientKeyData:         nil,
+					},
+				}
+
+				cleanup := func() {
+					utiltesting.CloseAndRemove(t, certFile)
+					utiltesting.CloseAndRemove(t, keyFile)
+				}
+
+				return &baseConfig, overrides, cleanup
+			},
+			validate: func(t *testing.T, authInfo *clientcmdapi.AuthInfo) {
+				if authInfo.ClientCertificate == "" {
+					t.Errorf("Expected ClientCertificate file path to be set")
+				}
+				if authInfo.ClientKey == "" {
+					t.Errorf("Expected ClientKey file path to be set")
+				}
+				if authInfo.ClientCertificateData != nil {
+					t.Errorf("Expected ClientCertificateData to be nil when file path is used")
+				}
+				if authInfo.ClientKeyData != nil {
+					t.Errorf("Expected ClientKeyData to be nil when file path is used")
+				}
+			},
+		},
+		{
+			name:        "override-with-data-fields",
+			description: "Test override with cert/key data fields",
+			setupTest: func(t *testing.T) (*clientcmdapi.Config, *ConfigOverrides, func()) {
+				baseConfig := clientcmdapi.Config{
+					Clusters: map[string]*clientcmdapi.Cluster{
+						"test-cluster": {
+							Server:                   "https://example.com:6443",
+							CertificateAuthorityData: []byte("fake-ca-data"),
+						},
+					},
+					AuthInfos: map[string]*clientcmdapi.AuthInfo{
+						"test-user": {
+							ClientCertificate: "/path/to/base-cert.pem",
+							ClientKey:         "/path/to/base-key.pem",
+						},
+					},
+					Contexts: map[string]*clientcmdapi.Context{
+						"test-context": {
+							Cluster:  "test-cluster",
+							AuthInfo: "test-user",
+						},
+					},
+					CurrentContext: "test-context",
+				}
+
+				overrides := &ConfigOverrides{
+					AuthInfo: clientcmdapi.AuthInfo{
+						ClientCertificate:     "",
+						ClientCertificateData: []byte("override-cert-data"),
+						ClientKey:             "",
+						ClientKeyData:         []byte("override-key-data"),
+					},
+				}
+
+				return &baseConfig, overrides, func() {}
+			},
+			validate: func(t *testing.T, authInfo *clientcmdapi.AuthInfo) {
+				if authInfo.ClientCertificate != "" {
+					t.Errorf("Expected ClientCertificate file path to be empty when data is used")
+				}
+				if authInfo.ClientKey != "" {
+					t.Errorf("Expected ClientKey file path to be empty when data is used")
+				}
+				if string(authInfo.ClientCertificateData) != "override-cert-data" {
+					t.Errorf("Expected ClientCertificateData to be 'override-cert-data', got %s", string(authInfo.ClientCertificateData))
+				}
+				if string(authInfo.ClientKeyData) != "override-key-data" {
+					t.Errorf("Expected ClientKeyData to be 'override-key-data', got %s", string(authInfo.ClientKeyData))
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseConfig, overrides, cleanup := tc.setupTest(t)
+			defer cleanup()
+
+			clientConfig := NewNonInteractiveClientConfig(*baseConfig, "test-context", overrides, nil)
+
+			mergedConfig, err := clientConfig.MergedRawConfig()
+			if err != nil {
+				t.Fatalf("MergedRawConfig() failed: %v", err)
+			}
+
+			authInfo := mergedConfig.AuthInfos["test-user"]
+			if authInfo == nil {
+				t.Fatalf("Expected AuthInfo 'test-user' not found")
+			}
+
+			tc.validate(t, authInfo)
 		})
 	}
 }

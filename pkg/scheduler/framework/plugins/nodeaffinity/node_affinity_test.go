@@ -18,18 +18,24 @@ package nodeaffinity
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/require"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2/ktesting"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
+	"k8s.io/kubernetes/pkg/scheduler/backend/cache"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/runtime"
-	"k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
 )
 
 // TODO: Add test case for RequiredDuringSchedulingRequiredDuringExecution after it's implemented.
@@ -39,22 +45,19 @@ func TestNodeAffinity(t *testing.T) {
 		pod                 *v1.Pod
 		labels              map[string]string
 		nodeName            string
-		wantStatus          *framework.Status
-		wantPreFilterStatus *framework.Status
-		wantPreFilterResult *framework.PreFilterResult
+		wantStatus          *fwk.Status
+		wantPreFilterStatus *fwk.Status
+		wantPreFilterResult *fwk.PreFilterResult
 		args                config.NodeAffinityArgs
-		disablePreFilter    bool
+		runPreFilter        bool
 	}{
-		{
-			name: "no selector",
-			pod:  &v1.Pod{},
-		},
 		{
 			name: "missing labels",
 			pod: st.MakePod().NodeSelector(map[string]string{
 				"foo": "bar",
 			}).Obj(),
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "same labels",
@@ -64,6 +67,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "node labels are superset",
@@ -74,6 +78,7 @@ func TestNodeAffinity(t *testing.T) {
 				"foo": "bar",
 				"baz": "blah",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "node labels are subset",
@@ -84,7 +89,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with matchExpressions using In operator that matches the existing node",
@@ -112,6 +118,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with matchExpressions using Gt operator that matches the existing node",
@@ -140,6 +147,7 @@ func TestNodeAffinity(t *testing.T) {
 				// We use two digit to denote major version and two digit for minor version.
 				"kernel-version": "0206",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with matchExpressions using NotIn operator that matches the existing node",
@@ -167,6 +175,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"mem-type": "DDR3",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with matchExpressions using Exists operator that matches the existing node",
@@ -193,6 +202,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"GPU": "NVIDIA-GRID-K1",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with affinity that don't match node's labels won't schedule onto the node",
@@ -220,43 +230,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
-		},
-		{
-			name: "Pod with a nil []NodeSelectorTerm in affinity, can't match the node's labels and won't schedule onto the node",
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Affinity: &v1.Affinity{
-						NodeAffinity: &v1.NodeAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
-								NodeSelectorTerms: nil,
-							},
-						},
-					},
-				},
-			},
-			labels: map[string]string{
-				"foo": "bar",
-			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
-		},
-		{
-			name: "Pod with an empty []NodeSelectorTerm in affinity, can't match the node's labels and won't schedule onto the node",
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Affinity: &v1.Affinity{
-						NodeAffinity: &v1.NodeAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
-								NodeSelectorTerms: []v1.NodeSelectorTerm{},
-							},
-						},
-					},
-				},
-			},
-			labels: map[string]string{
-				"foo": "bar",
-			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with empty MatchExpressions is not a valid value will match no objects and won't schedule onto the node",
@@ -278,7 +253,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with no Affinity will schedule onto a node",
@@ -286,6 +262,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
+			wantPreFilterStatus: fwk.NewStatus(fwk.Skip),
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with Affinity but nil NodeSelector will schedule onto a node",
@@ -301,6 +279,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
+			wantPreFilterStatus: fwk.NewStatus(fwk.Skip),
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with multiple matchExpressions ANDed that matches the existing node",
@@ -331,6 +311,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"GPU": "NVIDIA-GRID-K1",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with multiple matchExpressions ANDed that doesn't match the existing node",
@@ -361,7 +342,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"GPU": "NVIDIA-GRID-K1",
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with multiple NodeSelectorTerms ORed in affinity, matches the node's labels and will schedule onto the node",
@@ -398,6 +380,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with an Affinity and a PodSpec.NodeSelector(the old thing that we are deprecating) " +
@@ -428,6 +411,7 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with an Affinity matches node's labels but the PodSpec.NodeSelector(the old thing that we are deprecating) " +
@@ -458,7 +442,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "barrrrrr",
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with an invalid value in Affinity term won't be scheduled onto the node",
@@ -486,7 +471,8 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"foo": "bar",
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with matchFields using In operator that matches the existing node",
@@ -512,7 +498,8 @@ func TestNodeAffinity(t *testing.T) {
 				},
 			},
 			nodeName:            "node1",
-			wantPreFilterResult: &framework.PreFilterResult{NodeNames: sets.NewString("node1")},
+			wantPreFilterResult: &fwk.PreFilterResult{NodeNames: sets.New("node1")},
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with matchFields using In operator that does not match the existing node",
@@ -538,8 +525,9 @@ func TestNodeAffinity(t *testing.T) {
 				},
 			},
 			nodeName:            "node2",
-			wantStatus:          framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
-			wantPreFilterResult: &framework.PreFilterResult{NodeNames: sets.NewString("node1")},
+			wantStatus:          fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantPreFilterResult: &fwk.PreFilterResult{NodeNames: sets.New("node1")},
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with two terms: matchFields does not match, but matchExpressions matches",
@@ -555,6 +543,11 @@ func TestNodeAffinity(t *testing.T) {
 												Key:      metav1.ObjectNameField,
 												Operator: v1.NodeSelectorOpIn,
 												Values:   []string{"node1"},
+											},
+											{
+												Key:      metav1.ObjectNameField,
+												Operator: v1.NodeSelectorOpIn,
+												Values:   []string{"node2"},
 											},
 										},
 									},
@@ -573,8 +566,9 @@ func TestNodeAffinity(t *testing.T) {
 					},
 				},
 			},
-			nodeName: "node2",
-			labels:   map[string]string{"foo": "bar"},
+			nodeName:     "node2",
+			labels:       map[string]string{"foo": "bar"},
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with one term: matchFields does not match, but matchExpressions matches",
@@ -608,8 +602,9 @@ func TestNodeAffinity(t *testing.T) {
 			},
 			nodeName:            "node2",
 			labels:              map[string]string{"foo": "bar"},
-			wantPreFilterResult: &framework.PreFilterResult{NodeNames: sets.NewString("node1")},
-			wantStatus:          framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantPreFilterResult: &fwk.PreFilterResult{NodeNames: sets.New("node1")},
+			wantStatus:          fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with one term: both matchFields and matchExpressions match",
@@ -643,7 +638,8 @@ func TestNodeAffinity(t *testing.T) {
 			},
 			nodeName:            "node1",
 			labels:              map[string]string{"foo": "bar"},
-			wantPreFilterResult: &framework.PreFilterResult{NodeNames: sets.NewString("node1")},
+			wantPreFilterResult: &fwk.PreFilterResult{NodeNames: sets.New("node1")},
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with two terms: both matchFields and matchExpressions do not match",
@@ -677,9 +673,10 @@ func TestNodeAffinity(t *testing.T) {
 					},
 				},
 			},
-			nodeName:   "node2",
-			labels:     map[string]string{"foo": "bar"},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			nodeName:     "node2",
+			labels:       map[string]string{"foo": "bar"},
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name: "Pod with two terms of node.Name affinity",
@@ -714,7 +711,8 @@ func TestNodeAffinity(t *testing.T) {
 				},
 			},
 			nodeName:            "node2",
-			wantPreFilterResult: &framework.PreFilterResult{NodeNames: sets.NewString("node1", "node2")},
+			wantPreFilterResult: &fwk.PreFilterResult{NodeNames: sets.New("node1", "node2")},
+			runPreFilter:        true,
 		},
 		{
 			name: "Pod with two conflicting mach field requirements",
@@ -746,8 +744,9 @@ func TestNodeAffinity(t *testing.T) {
 			},
 			nodeName:            "node2",
 			labels:              map[string]string{"foo": "bar"},
-			wantPreFilterStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, errReasonConflict),
-			wantStatus:          framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantPreFilterStatus: fwk.NewStatus(fwk.UnschedulableAndUnresolvable, errReasonConflict),
+			wantStatus:          fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter:        true,
 		},
 		{
 			name: "Matches added affinity and Pod's node affinity",
@@ -787,6 +786,7 @@ func TestNodeAffinity(t *testing.T) {
 					},
 				},
 			},
+			runPreFilter: true,
 		},
 		{
 			name: "Matches added affinity but not Pod's node affinity",
@@ -826,7 +826,8 @@ func TestNodeAffinity(t *testing.T) {
 					},
 				},
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonPod),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, ErrReasonPod),
+			runPreFilter: true,
 		},
 		{
 			name:     "Doesn't match added affinity",
@@ -848,7 +849,8 @@ func TestNodeAffinity(t *testing.T) {
 					},
 				},
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, errReasonEnforced),
+			wantStatus:   fwk.NewStatus(fwk.UnschedulableAndUnresolvable, errReasonEnforced),
+			runPreFilter: true,
 		},
 		{
 			name: "Matches node selector correctly even if PreFilter is not called",
@@ -863,7 +865,7 @@ func TestNodeAffinity(t *testing.T) {
 				"foo": "bar",
 				"baz": "blah",
 			},
-			disablePreFilter: true,
+			runPreFilter: false,
 		},
 		{
 			name: "Matches node affinity correctly even if PreFilter is not called",
@@ -894,12 +896,13 @@ func TestNodeAffinity(t *testing.T) {
 			labels: map[string]string{
 				"GPU": "NVIDIA-GRID-K1",
 			},
-			disablePreFilter: true,
+			runPreFilter: false,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
 			node := v1.Node{ObjectMeta: metav1.ObjectMeta{
 				Name:   test.nodeName,
 				Labels: test.labels,
@@ -907,15 +910,15 @@ func TestNodeAffinity(t *testing.T) {
 			nodeInfo := framework.NewNodeInfo()
 			nodeInfo.SetNode(&node)
 
-			p, err := New(&test.args, nil)
+			p, err := New(ctx, &test.args, nil, feature.Features{})
 			if err != nil {
 				t.Fatalf("Creating plugin: %v", err)
 			}
 
 			state := framework.NewCycleState()
-			var gotStatus *framework.Status
-			if !test.disablePreFilter {
-				gotPreFilterResult, gotStatus := p.(framework.PreFilterPlugin).PreFilter(context.Background(), state, test.pod)
+			var gotStatus *fwk.Status
+			if test.runPreFilter {
+				gotPreFilterResult, gotStatus := p.(fwk.PreFilterPlugin).PreFilter(ctx, state, test.pod, nil)
 				if diff := cmp.Diff(test.wantPreFilterStatus, gotStatus); diff != "" {
 					t.Errorf("unexpected PreFilter Status (-want,+got):\n%s", diff)
 				}
@@ -923,7 +926,7 @@ func TestNodeAffinity(t *testing.T) {
 					t.Errorf("unexpected PreFilterResult (-want,+got):\n%s", diff)
 				}
 			}
-			gotStatus = p.(framework.FilterPlugin).Filter(context.Background(), state, test.pod, nodeInfo)
+			gotStatus = p.(fwk.FilterPlugin).Filter(ctx, state, test.pod, nodeInfo)
 			if diff := cmp.Diff(test.wantStatus, gotStatus); diff != "" {
 				t.Errorf("unexpected Filter Status (-want,+got):\n%s", diff)
 			}
@@ -1007,12 +1010,13 @@ func TestNodeAffinityPriority(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		pod             *v1.Pod
-		nodes           []*v1.Node
-		expectedList    framework.NodeScoreList
-		args            config.NodeAffinityArgs
-		disablePreScore bool
+		name               string
+		pod                *v1.Pod
+		nodes              []*v1.Node
+		expectedList       fwk.NodeScoreList
+		args               config.NodeAffinityArgs
+		runPreScore        bool
+		wantPreScoreStatus *fwk.Status
 	}{
 		{
 			name: "all nodes are same priority as NodeAffinity is nil",
@@ -1026,7 +1030,54 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node3", Labels: label3}},
 			},
-			expectedList: []framework.NodeScore{{Name: "node1", Score: 0}, {Name: "node2", Score: 0}, {Name: "node3", Score: 0}},
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: 0}, {Name: "node2", Score: 0}, {Name: "node3", Score: 0}},
+		},
+		{
+			// PreScore returns Skip.
+			name: "Skip is returned in PreScore when NodeAffinity is nil",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{},
+				},
+			},
+			nodes: []*v1.Node{
+				{ObjectMeta: metav1.ObjectMeta{Name: "node1", Labels: label1}},
+			},
+			runPreScore:        true,
+			wantPreScoreStatus: fwk.NewStatus(fwk.Skip),
+		},
+		{
+			name: "PreScore returns error when an incoming Pod has a broken affinity",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{},
+				},
+				Spec: v1.PodSpec{
+					Affinity: &v1.Affinity{
+						NodeAffinity: &v1.NodeAffinity{
+							PreferredDuringSchedulingIgnoredDuringExecution: []v1.PreferredSchedulingTerm{
+								{
+									Weight: 2,
+									Preference: v1.NodeSelectorTerm{
+										MatchExpressions: []v1.NodeSelectorRequirement{
+											{
+												Key:      "invalid key",
+												Operator: v1.NodeSelectorOpIn,
+												Values:   []string{"bar"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			nodes: []*v1.Node{
+				{ObjectMeta: metav1.ObjectMeta{Name: "node1", Labels: label1}},
+			},
+			runPreScore:        true,
+			wantPreScoreStatus: fwk.AsStatus(fmt.Errorf(`[0].matchExpressions[0].key: Invalid value: "invalid key": name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character (e.g. 'MyName',  or 'my.name',  or '123-abc', regex used for validation is '([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]')`)),
 		},
 		{
 			name: "no node matches preferred scheduling requirements in NodeAffinity of pod so all nodes' priority is zero",
@@ -1040,7 +1091,8 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node3", Labels: label3}},
 			},
-			expectedList: []framework.NodeScore{{Name: "node1", Score: 0}, {Name: "node2", Score: 0}, {Name: "node3", Score: 0}},
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: 0}, {Name: "node2", Score: 0}, {Name: "node3", Score: 0}},
+			runPreScore:  true,
 		},
 		{
 			name: "only node1 matches the preferred scheduling requirements of pod",
@@ -1054,7 +1106,8 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node3", Labels: label3}},
 			},
-			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MaxNodeScore}, {Name: "node2", Score: 0}, {Name: "node3", Score: 0}},
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: fwk.MaxNodeScore}, {Name: "node2", Score: 0}, {Name: "node3", Score: 0}},
+			runPreScore:  true,
 		},
 		{
 			name: "all nodes matches the preferred scheduling requirements of pod but with different priorities ",
@@ -1068,7 +1121,8 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node5", Labels: label5}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 			},
-			expectedList: []framework.NodeScore{{Name: "node1", Score: 18}, {Name: "node5", Score: framework.MaxNodeScore}, {Name: "node2", Score: 36}},
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: 18}, {Name: "node5", Score: fwk.MaxNodeScore}, {Name: "node2", Score: 36}},
+			runPreScore:  true,
 		},
 		{
 			name: "added affinity",
@@ -1077,10 +1131,11 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node1", Labels: label1}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 			},
-			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MaxNodeScore}, {Name: "node2", Score: 0}},
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: fwk.MaxNodeScore}, {Name: "node2", Score: 0}},
 			args: config.NodeAffinityArgs{
 				AddedAffinity: affinity1.NodeAffinity,
 			},
+			runPreScore: true,
 		},
 		{
 			name: "added affinity and pod has default affinity",
@@ -1094,7 +1149,7 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node3", Labels: label5}},
 			},
-			expectedList: []framework.NodeScore{{Name: "node1", Score: 40}, {Name: "node2", Score: 60}, {Name: "node3", Score: framework.MaxNodeScore}},
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: 40}, {Name: "node2", Score: 60}, {Name: "node3", Score: fwk.MaxNodeScore}},
 			args: config.NodeAffinityArgs{
 				AddedAffinity: &v1.NodeAffinity{
 					PreferredDuringSchedulingIgnoredDuringExecution: []v1.PreferredSchedulingTerm{
@@ -1113,6 +1168,7 @@ func TestNodeAffinityPriority(t *testing.T) {
 					},
 				},
 			},
+			runPreScore: true,
 		},
 		{
 			name: "calculate the priorities correctly even if PreScore is not called",
@@ -1126,37 +1182,48 @@ func TestNodeAffinityPriority(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node5", Labels: label5}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "node2", Labels: label2}},
 			},
-			expectedList:    []framework.NodeScore{{Name: "node1", Score: 18}, {Name: "node5", Score: framework.MaxNodeScore}, {Name: "node2", Score: 36}},
-			disablePreScore: true,
+			expectedList: []fwk.NodeScore{{Name: "node1", Score: 18}, {Name: "node5", Score: fwk.MaxNodeScore}, {Name: "node2", Score: 36}},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			state := framework.NewCycleState()
-			fh, _ := runtime.NewFramework(nil, nil, wait.NeverStop, runtime.WithSnapshotSharedLister(cache.NewSnapshot(nil, test.nodes)))
-			p, err := New(&test.args, fh)
+			fh, _ := runtime.NewFramework(ctx, nil, nil, runtime.WithSnapshotSharedLister(cache.NewSnapshot(nil, test.nodes)))
+			p, err := New(ctx, &test.args, fh, feature.Features{})
 			if err != nil {
 				t.Fatalf("Creating plugin: %v", err)
 			}
-			var status *framework.Status
-			if !test.disablePreScore {
-				status = p.(framework.PreScorePlugin).PreScore(context.Background(), state, test.pod, test.nodes)
+			var status *fwk.Status
+			if test.runPreScore {
+				status = p.(fwk.PreScorePlugin).PreScore(ctx, state, test.pod, tf.BuildNodeInfos(test.nodes))
+				if status.Code() != test.wantPreScoreStatus.Code() {
+					t.Errorf("unexpected status code from PreScore: want: %v got: %v", test.wantPreScoreStatus.Code().String(), status.Code().String())
+				}
+				if status.Message() != test.wantPreScoreStatus.Message() {
+					t.Errorf("unexpected status message from PreScore: want: %v got: %v", test.wantPreScoreStatus.Message(), status.Message())
+				}
 				if !status.IsSuccess() {
-					t.Errorf("unexpected error: %v", status)
+					// no need to proceed.
+					return
 				}
 			}
-			var gotList framework.NodeScoreList
-			for _, n := range test.nodes {
-				nodeName := n.ObjectMeta.Name
-				score, status := p.(framework.ScorePlugin).Score(context.Background(), state, test.pod, nodeName)
+			var gotList fwk.NodeScoreList
+			nodeInfos := tf.BuildNodeInfos(test.nodes)
+			for _, nodeInfo := range nodeInfos {
+				nodeName := nodeInfo.Node().Name
+				score, status := p.(fwk.ScorePlugin).Score(ctx, state, test.pod, nodeInfo)
 				if !status.IsSuccess() {
 					t.Errorf("unexpected error: %v", status)
 				}
-				gotList = append(gotList, framework.NodeScore{Name: nodeName, Score: score})
+				gotList = append(gotList, fwk.NodeScore{Name: nodeName, Score: score})
 			}
 
-			status = p.(framework.ScorePlugin).ScoreExtensions().NormalizeScore(context.Background(), state, test.pod, gotList)
+			status = p.(fwk.ScorePlugin).ScoreExtensions().NormalizeScore(ctx, state, test.pod, gotList)
 			if !status.IsSuccess() {
 				t.Errorf("unexpected error: %v", status)
 			}
@@ -1165,5 +1232,158 @@ func TestNodeAffinityPriority(t *testing.T) {
 				t.Errorf("obtained scores (-want,+got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func Test_isSchedulableAfterNodeChange(t *testing.T) {
+	podWithNodeAffinity := st.MakePod().NodeAffinityIn("foo", []string{"bar"}, st.NodeSelectorTypeMatchExpressions)
+	testcases := map[string]struct {
+		args           *config.NodeAffinityArgs
+		pod            *v1.Pod
+		oldObj, newObj interface{}
+		expectedHint   fwk.QueueingHint
+		expectedErr    bool
+	}{
+		"backoff-wrong-new-object": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			newObj:       "not-a-node",
+			expectedHint: fwk.Queue,
+			expectedErr:  true,
+		},
+		"backoff-wrong-old-object": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			oldObj:       "not-a-node",
+			newObj:       st.MakeNode().Obj(),
+			expectedHint: fwk.Queue,
+			expectedErr:  true,
+		},
+		"skip-queue-on-add": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			newObj:       st.MakeNode().Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		"queue-on-add": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			newObj:       st.MakeNode().Label("foo", "bar").Obj(),
+			expectedHint: fwk.Queue,
+		},
+		"skip-unrelated-changes": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			oldObj:       st.MakeNode().Obj(),
+			newObj:       st.MakeNode().Capacity(nil).Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		"skip-unrelated-changes-on-labels": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.DeepCopy(),
+			oldObj:       st.MakeNode().Obj(),
+			newObj:       st.MakeNode().Label("k", "v").Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		"skip-labels-changes-on-node-from-suitable-to-unsuitable": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.DeepCopy(),
+			oldObj:       st.MakeNode().Label("foo", "bar").Obj(),
+			newObj:       st.MakeNode().Label("k", "v").Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		"queue-on-labels-change-makes-pod-schedulable": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			oldObj:       st.MakeNode().Obj(),
+			newObj:       st.MakeNode().Label("foo", "bar").Obj(),
+			expectedHint: fwk.Queue,
+		},
+		"skip-unrelated-change-that-keeps-pod-schedulable": {
+			args:         &config.NodeAffinityArgs{},
+			pod:          podWithNodeAffinity.Obj(),
+			oldObj:       st.MakeNode().Label("foo", "bar").Obj(),
+			newObj:       st.MakeNode().Capacity(nil).Label("foo", "bar").Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		"skip-queue-on-add-scheduler-enforced-node-affinity": {
+			args: &config.NodeAffinityArgs{
+				AddedAffinity: &v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "foo",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"bar"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			pod:          podWithNodeAffinity.Obj(),
+			newObj:       st.MakeNode().Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		"queue-on-add-scheduler-enforced-node-affinity": {
+			args: &config.NodeAffinityArgs{
+				AddedAffinity: &v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "foo",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"bar"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			pod:          podWithNodeAffinity.Obj(),
+			newObj:       st.MakeNode().Label("foo", "bar").Obj(),
+			expectedHint: fwk.Queue,
+		},
+	}
+
+	for name, tc := range testcases {
+		t.Run(name, func(t *testing.T) {
+			logger, ctx := ktesting.NewTestContext(t)
+			p, err := New(ctx, tc.args, nil, feature.Features{})
+			if err != nil {
+				t.Fatalf("Creating plugin: %v", err)
+			}
+
+			actualHint, err := p.(*NodeAffinity).isSchedulableAfterNodeChange(logger, tc.pod, tc.oldObj, tc.newObj)
+			if tc.expectedErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedHint, actualHint)
+		})
+	}
+}
+
+func TestNodeAffinity_DeferredResizeSkipped(t *testing.T) {
+	ctx := context.Background()
+	pod := st.MakePod().Name("p").UID("p").Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj()
+	nodeInfo := framework.NewNodeInfo()
+	nodeInfo.SetNode(st.MakeNode().Name("node1").Obj())
+
+	pl := &NodeAffinity{enableInPlacePodVerticalScalingSchedulerPreemption: true}
+
+	if preRes, preStatus := pl.PreFilter(ctx, nil, pod, nil); preStatus.Code() != fwk.Skip || preRes != nil {
+		t.Errorf("PreFilter: got (res: %v, status: %v), want (nil, Skip)", preRes, preStatus.Code())
+	}
+
+	if filterStatus := pl.Filter(ctx, nil, pod, nodeInfo); filterStatus.Code() != fwk.Success {
+		t.Errorf("Filter: got status %v, want Success (nil)", filterStatus.Code())
 	}
 }

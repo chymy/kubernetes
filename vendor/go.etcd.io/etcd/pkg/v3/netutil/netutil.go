@@ -16,16 +16,16 @@ package netutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
-	"reflect"
 	"sort"
 	"time"
 
-	"go.etcd.io/etcd/client/pkg/v3/types"
-
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/client/pkg/v3/types"
 )
 
 // indirection for testing
@@ -70,14 +70,14 @@ func resolveTCPAddrs(ctx context.Context, lg *zap.Logger, urls [][]url.URL) ([][
 		for i, u := range us {
 			nu, err := url.Parse(u.String())
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse %q (%v)", u.String(), err)
+				return nil, fmt.Errorf("failed to parse %q (%w)", u.String(), err)
 			}
 			nus[i] = *nu
 		}
 		for i, u := range nus {
 			h, err := resolveURL(ctx, lg, u)
 			if err != nil {
-				return nil, fmt.Errorf("failed to resolve %q (%v)", u.String(), err)
+				return nil, fmt.Errorf("failed to resolve %q (%w)", u.String(), err)
 			}
 			if h != "" {
 				nus[i].Host = h
@@ -103,7 +103,7 @@ func resolveURL(ctx context.Context, lg *zap.Logger, u url.URL) (string, error) 
 		)
 		return "", err
 	}
-	if host == "localhost" || net.ParseIP(host) != nil {
+	if host == "localhost" {
 		return "", nil
 	}
 	for ctx.Err() == nil {
@@ -148,20 +148,31 @@ func urlsEqual(ctx context.Context, lg *zap.Logger, a []url.URL, b []url.URL) (b
 	if len(a) != len(b) {
 		return false, fmt.Errorf("len(%q) != len(%q)", urlsToStrings(a), urlsToStrings(b))
 	}
+
+	sort.Sort(types.URLs(a))
+	sort.Sort(types.URLs(b))
+	var needResolve bool
+	for i := range a {
+		if !urlsHostNormalizedEqual(a[i], b[i]) {
+			needResolve = true
+			break
+		}
+	}
+	if !needResolve {
+		return true, nil
+	}
+
+	// If URLs are not equal, try to resolve it and compare again.
 	urls, err := resolveTCPAddrs(ctx, lg, [][]url.URL{a, b})
 	if err != nil {
 		return false, err
 	}
-	preva, prevb := a, b
 	a, b = urls[0], urls[1]
 	sort.Sort(types.URLs(a))
 	sort.Sort(types.URLs(b))
 	for i := range a {
-		if !reflect.DeepEqual(a[i], b[i]) {
-			return false, fmt.Errorf("%q(resolved from %q) != %q(resolved from %q)",
-				a[i].String(), preva[i].String(),
-				b[i].String(), prevb[i].String(),
-			)
+		if !urlsHostNormalizedEqual(a[i], b[i]) {
+			return false, fmt.Errorf("resolved urls: %q != %q", a[i].String(), b[i].String())
 		}
 	}
 	return true, nil
@@ -174,27 +185,13 @@ func URLStringsEqual(ctx context.Context, lg *zap.Logger, a []string, b []string
 	if len(a) != len(b) {
 		return false, fmt.Errorf("len(%q) != len(%q)", a, b)
 	}
-	urlsA := make([]url.URL, 0)
-	for _, str := range a {
-		u, err := url.Parse(str)
-		if err != nil {
-			return false, fmt.Errorf("failed to parse %q", str)
-		}
-		urlsA = append(urlsA, *u)
+	urlsA, err := stringsToURLs(a)
+	if err != nil {
+		return false, err
 	}
-	urlsB := make([]url.URL, 0)
-	for _, str := range b {
-		u, err := url.Parse(str)
-		if err != nil {
-			return false, fmt.Errorf("failed to parse %q", str)
-		}
-		urlsB = append(urlsB, *u)
-	}
-	if lg == nil {
-		lg, _ = zap.NewProduction()
-		if lg == nil {
-			lg = zap.NewExample()
-		}
+	urlsB, err := stringsToURLs(b)
+	if err != nil {
+		return false, err
 	}
 	return urlsEqual(ctx, lg, urlsA, urlsB)
 }
@@ -207,7 +204,19 @@ func urlsToStrings(us []url.URL) []string {
 	return rs
 }
 
+func stringsToURLs(us []string) ([]url.URL, error) {
+	urls := make([]url.URL, 0, len(us))
+	for _, str := range us {
+		u, err := url.Parse(str)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse string to URL: %q", str)
+		}
+		urls = append(urls, *u)
+	}
+	return urls, nil
+}
+
 func IsNetworkTimeoutError(err error) bool {
-	nerr, ok := err.(net.Error)
-	return ok && nerr.Timeout()
+	var nerr net.Error
+	return errors.As(err, &nerr) && nerr.Timeout()
 }

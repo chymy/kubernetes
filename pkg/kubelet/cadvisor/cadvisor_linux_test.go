@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
 Copyright 2021 The Kubernetes Authors.
@@ -21,12 +20,51 @@ package cadvisor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	cadvisorfs "github.com/google/cadvisor/fs"
+	"github.com/google/cadvisor/lib/container/crio"
+	cadvisorfs "github.com/google/cadvisor/lib/fs"
+	"github.com/opencontainers/cgroups"
+	"k8s.io/klog/v2"
 )
+
+func TestIsPsiEnabled(t *testing.T) {
+	testcases := []struct {
+		description   string
+		createPSIFile bool
+		expected      bool
+	}{{
+		description:   "PSI enabled when cgroup pressure file exists",
+		createPSIFile: true,
+		expected:      true,
+	}, {
+		description:   "PSI disabled when cgroup pressure file does not exist",
+		createPSIFile: false,
+		expected:      false,
+	}}
+
+	cgroups.TestMode = true
+	defer func() { cgroups.TestMode = false }()
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			if tc.createPSIFile {
+				err := os.WriteFile(filepath.Join(tmpDir, "cpu.pressure"), []byte("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"), 0644)
+				require.NoError(t, err)
+			}
+
+			result := isPsiEnabled(klog.Background(), tmpDir, "cpu.pressure")
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
 
 func TestImageFsInfoLabel(t *testing.T) {
 	testcases := []struct {
@@ -37,7 +75,7 @@ func TestImageFsInfoLabel(t *testing.T) {
 		expectedError   error
 	}{{
 		description:     "LabelCrioImages should be returned",
-		runtimeEndpoint: CrioSocket,
+		runtimeEndpoint: crio.CrioSocket,
 		expectedLabel:   cadvisorfs.LabelCrioImages,
 		expectedError:   nil,
 	}, {
@@ -51,6 +89,35 @@ func TestImageFsInfoLabel(t *testing.T) {
 		t.Run(tc.description, func(t *testing.T) {
 			infoProvider := NewImageFsInfoProvider(tc.runtimeEndpoint)
 			label, err := infoProvider.ImageFsInfoLabel()
+			assert.Equal(t, tc.expectedLabel, label)
+			assert.Equal(t, tc.expectedError, err)
+		})
+	}
+}
+
+func TestContainerFsInfoLabel(t *testing.T) {
+	testcases := []struct {
+		description     string
+		runtime         string
+		runtimeEndpoint string
+		expectedLabel   string
+		expectedError   error
+	}{{
+		description:     "LabelCrioWriteableImages should be returned",
+		runtimeEndpoint: crio.CrioSocket,
+		expectedLabel:   cadvisorfs.LabelCrioContainers,
+		expectedError:   nil,
+	}, {
+		description:     "Cannot find valid imagefs label",
+		runtimeEndpoint: "",
+		expectedLabel:   "",
+		expectedError:   fmt.Errorf("no containerfs label for configured runtime"),
+	}}
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			infoProvider := NewImageFsInfoProvider(tc.runtimeEndpoint)
+			label, err := infoProvider.ContainerFsInfoLabel()
 			assert.Equal(t, tc.expectedLabel, label)
 			assert.Equal(t, tc.expectedError, err)
 		})

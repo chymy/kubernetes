@@ -17,11 +17,14 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
+	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/endpoints/responsewriter"
 	"k8s.io/component-base/metrics/legacyregistry"
@@ -34,6 +37,7 @@ func TestCleanVerb(t *testing.T) {
 		initialVerb   string
 		suggestedVerb string
 		request       *http.Request
+		requestInfo   *request.RequestInfo
 		expectedVerb  string
 	}{
 		{
@@ -44,103 +48,186 @@ func TestCleanVerb(t *testing.T) {
 		},
 		{
 			desc:         "LIST should normally map to LIST",
-			initialVerb:  "LIST",
+			initialVerb:  request.MethodList,
 			request:      nil,
-			expectedVerb: "LIST",
+			expectedVerb: request.MethodList,
 		},
 		{
 			desc:        "LIST should be transformed to WATCH if we have the right query param on the request",
-			initialVerb: "LIST",
+			initialVerb: request.MethodList,
 			request: &http.Request{
-				Method: "GET",
+				Method: request.MethodGet,
 				URL: &url.URL{
 					RawQuery: "watch=true",
 				},
 			},
-			expectedVerb: "WATCH",
+			expectedVerb: request.MethodWatch,
 		},
 		{
 			desc:        "LIST isn't transformed to WATCH if we have query params that do not include watch",
-			initialVerb: "LIST",
+			initialVerb: request.MethodList,
 			request: &http.Request{
-				Method: "GET",
+				Method: request.MethodGet,
 				URL: &url.URL{
 					RawQuery: "blah=asdf&something=else",
 				},
 			},
-			expectedVerb: "LIST",
+			expectedVerb: request.MethodList,
 		},
 		{
 			// The above may seem counter-intuitive, but it actually is needed for cases like
 			// watching a single item, e.g.:
 			//  /api/v1/namespaces/foo/pods/bar?fieldSelector=metadata.name=baz&watch=true
 			desc:        "GET is transformed to WATCH if we have the right query param on the request",
-			initialVerb: "GET",
+			initialVerb: request.MethodGet,
 			request: &http.Request{
-				Method: "GET",
+				Method: request.MethodGet,
 				URL: &url.URL{
 					RawQuery: "watch=true",
 				},
 			},
-			expectedVerb: "WATCH",
+			expectedVerb: request.MethodWatch,
 		},
 		{
 			desc:          "LIST is transformed to WATCH for the old pattern watch",
-			initialVerb:   "LIST",
-			suggestedVerb: "WATCH",
+			initialVerb:   request.MethodList,
+			suggestedVerb: request.MethodWatch,
 			request: &http.Request{
-				Method: "GET",
+				Method: request.MethodGet,
 				URL: &url.URL{
 					RawQuery: "/api/v1/watch/pods",
 				},
 			},
-			expectedVerb: "WATCH",
+			expectedVerb: request.MethodWatch,
 		},
 		{
 			desc:          "LIST is transformed to WATCH for the old pattern watchlist",
-			initialVerb:   "LIST",
-			suggestedVerb: "WATCHLIST",
+			initialVerb:   request.MethodList,
+			suggestedVerb: request.MethodWatchList,
 			request: &http.Request{
-				Method: "GET",
+				Method: request.MethodGet,
 				URL: &url.URL{
 					RawQuery: "/api/v1/watch/pods",
 				},
 			},
-			expectedVerb: "WATCH",
+			expectedVerb: request.MethodWatch,
 		},
 		{
 			desc:         "WATCHLIST should be transformed to WATCH",
-			initialVerb:  "WATCHLIST",
+			initialVerb:  request.MethodWatchList,
 			request:      nil,
-			expectedVerb: "WATCH",
+			expectedVerb: request.MethodWatch,
 		},
 		{
 			desc:        "PATCH should be transformed to APPLY with the right content type",
-			initialVerb: "PATCH",
+			initialVerb: request.MethodPatch,
 			request: &http.Request{
 				Header: http.Header{
 					"Content-Type": []string{"application/apply-patch+yaml"},
 				},
 			},
-			expectedVerb: "APPLY",
+			expectedVerb: request.MethodApply,
 		},
 		{
 			desc:         "PATCH shouldn't be transformed to APPLY without the right content type",
-			initialVerb:  "PATCH",
+			initialVerb:  request.MethodPatch,
 			request:      nil,
-			expectedVerb: "PATCH",
+			expectedVerb: request.MethodPatch,
 		},
 		{
 			desc:         "WATCHLIST should be transformed to WATCH",
-			initialVerb:  "WATCHLIST",
+			initialVerb:  request.MethodWatchList,
 			request:      nil,
-			expectedVerb: "WATCH",
+			expectedVerb: request.MethodWatch,
 		},
 		{
 			desc:         "unexpected verbs should be designated as unknown",
 			initialVerb:  "notValid",
 			request:      nil,
 			expectedVerb: "other",
+		},
+		{
+			desc:        "Pod logs should be transformed to CONNECT",
+			initialVerb: request.MethodGet,
+			request: &http.Request{
+				Method: request.MethodGet,
+				URL: &url.URL{
+					RawQuery: "/api/v1/namespaces/default/pods/test-pod/log",
+				},
+			},
+			requestInfo: &request.RequestInfo{
+				Verb:              request.MethodGet,
+				Resource:          "pods",
+				IsResourceRequest: true,
+				Subresource:       "log",
+			},
+			expectedVerb: request.MethodConnect,
+		},
+		{
+			desc:        "Pod exec should be transformed to CONNECT",
+			initialVerb: request.MethodPost,
+			request: &http.Request{
+				Method: request.MethodPost,
+				URL: &url.URL{
+					RawQuery: "/api/v1/namespaces/default/pods/test-pod/exec?command=sh",
+				},
+				Header: map[string][]string{
+					"Connection": {"Upgrade"},
+					"Upgrade":    {"SPDY/3.1"},
+					"X-Stream-Protocol-Version": {
+						"v4.channel.k8s.io", "v3.channel.k8s.io", "v2.channel.k8s.io", "channel.k8s.io",
+					},
+				},
+			},
+			requestInfo: &request.RequestInfo{
+				Verb:              request.MethodPost,
+				Resource:          "pods",
+				IsResourceRequest: true,
+				Subresource:       "exec",
+			},
+			expectedVerb: request.MethodConnect,
+		},
+		{
+			desc:        "Pod portforward should be transformed to CONNECT",
+			initialVerb: request.MethodPost,
+			request: &http.Request{
+				Method: request.MethodPost,
+				URL: &url.URL{
+					RawQuery: "/api/v1/namespaces/default/pods/test-pod/portforward",
+				},
+				Header: map[string][]string{
+					"Connection": {"Upgrade"},
+					"Upgrade":    {"SPDY/3.1"},
+					"X-Stream-Protocol-Version": {
+						"v4.channel.k8s.io", "v3.channel.k8s.io", "v2.channel.k8s.io", "channel.k8s.io",
+					},
+				},
+			},
+			requestInfo: &request.RequestInfo{
+				Verb:              request.MethodPost,
+				Resource:          "pods",
+				IsResourceRequest: true,
+				Subresource:       "portforward",
+			},
+			expectedVerb: request.MethodConnect,
+		},
+		{
+			desc:        "Deployment scale should not be transformed to CONNECT",
+			initialVerb: request.MethodPut,
+			request: &http.Request{
+				Method: request.MethodPut,
+				URL: &url.URL{
+					RawQuery: "/apis/apps/v1/namespaces/default/deployments/test-1/scale",
+				},
+				Header: map[string][]string{},
+			},
+			requestInfo: &request.RequestInfo{
+				Verb:              request.MethodPut,
+				Resource:          "deployments",
+				IsResourceRequest: true,
+				Subresource:       "scale",
+			},
+			expectedVerb: request.MethodPut,
 		},
 	}
 	for _, tt := range testCases {
@@ -149,7 +236,7 @@ func TestCleanVerb(t *testing.T) {
 			if tt.request != nil {
 				req = tt.request
 			}
-			cleansedVerb := cleanVerb(tt.initialVerb, tt.suggestedVerb, req)
+			cleansedVerb := cleanVerb(tt.initialVerb, tt.suggestedVerb, req, tt.requestInfo)
 			if cleansedVerb != tt.expectedVerb {
 				t.Errorf("Got %s, but expected %s", cleansedVerb, tt.expectedVerb)
 			}
@@ -295,7 +382,7 @@ func TestRecordDroppedRequests(t *testing.T) {
 		{
 			desc: "list pods",
 			request: &http.Request{
-				Method: "GET",
+				Method: request.MethodGet,
 				URL: &url.URL{
 					RawPath: "/api/v1/pods",
 				},
@@ -317,7 +404,7 @@ func TestRecordDroppedRequests(t *testing.T) {
 		{
 			desc: "post pods",
 			request: &http.Request{
-				Method: "POST",
+				Method: request.MethodPost,
 				URL: &url.URL{
 					RawPath: "/api/v1/namespaces/foo/pods",
 				},
@@ -339,7 +426,7 @@ func TestRecordDroppedRequests(t *testing.T) {
 		{
 			desc: "dry-run patch job status",
 			request: &http.Request{
-				Method: "PATCH",
+				Method: request.MethodPatch,
 				URL: &url.URL{
 					RawPath:  "/apis/batch/v1/namespaces/foo/jobs/bar/status",
 					RawQuery: "dryRun=All",
@@ -379,6 +466,64 @@ func TestRecordDroppedRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 
+		})
+	}
+}
+
+func TestCleanListScope(t *testing.T) {
+	scenarios := []struct {
+		name          string
+		ctx           context.Context
+		opts          *metainternalversion.ListOptions
+		expectedScope string
+	}{
+		{
+			name: "empty scope",
+		},
+		{
+			name: "empty scope with empty request info",
+			ctx:  request.WithRequestInfo(context.TODO(), &request.RequestInfo{}),
+		},
+		{
+			name:          "namespace from ctx",
+			ctx:           request.WithNamespace(context.TODO(), "foo"),
+			expectedScope: "namespace",
+		},
+		{
+			name: "namespace from field selector",
+			opts: &metainternalversion.ListOptions{
+				FieldSelector: fields.ParseSelectorOrDie("metadata.namespace=foo"),
+			},
+			expectedScope: "namespace",
+		},
+		{
+			name:          "name from request info",
+			ctx:           request.WithRequestInfo(context.TODO(), &request.RequestInfo{Name: "bar"}),
+			expectedScope: "resource",
+		},
+		{
+			name: "name from field selector",
+			opts: &metainternalversion.ListOptions{
+				FieldSelector: fields.ParseSelectorOrDie("metadata.name=bar"),
+			},
+			expectedScope: "resource",
+		},
+		{
+			name:          "cluster scope request",
+			ctx:           request.WithRequestInfo(context.TODO(), &request.RequestInfo{IsResourceRequest: true}),
+			expectedScope: "cluster",
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			if scenario.ctx == nil {
+				scenario.ctx = context.TODO()
+			}
+			actualScope := CleanListScope(scenario.ctx, scenario.opts)
+			if actualScope != scenario.expectedScope {
+				t.Errorf("unexpected scope = %s, expected = %s", actualScope, scenario.expectedScope)
+			}
 		})
 	}
 }

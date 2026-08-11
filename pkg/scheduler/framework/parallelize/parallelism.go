@@ -21,17 +21,19 @@ import (
 	"math"
 
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 )
 
 // DefaultParallelism is the default parallelism used in scheduler.
 const DefaultParallelism int = 16
 
-// Parallelizer holds the parallelism for scheduler.
+// Parallelizer implements k8s.io/kube-scheduler/framework.Parallelizer helps run scheduling operations in parallel chunks where possible, to improve performance and CPU utilization.
+// It wraps logic of k8s.io/client-go/util/workqueue to run operations on multiple workers.
 type Parallelizer struct {
 	parallelism int
 }
 
-// NewParallelizer returns an object holding the parallelism.
+// NewParallelizer returns an object holding the parallelism (number of workers).
 func NewParallelizer(p int) Parallelizer {
 	return Parallelizer{parallelism: p}
 }
@@ -50,7 +52,28 @@ func chunkSizeFor(n, parallelism int) int {
 	return s
 }
 
+// numWorkersForChunkSize returns number of workers (goroutines)
+// that will be created in workqueue.ParallelizeUntil
+// for given parallelism, pieces and chunkSize values.
+func numWorkersForChunkSize(parallelism, pieces, chunkSize int) int {
+	chunks := (pieces + chunkSize - 1) / chunkSize
+	if chunks < parallelism {
+		return chunks
+	}
+	return parallelism
+}
+
 // Until is a wrapper around workqueue.ParallelizeUntil to use in scheduling algorithms.
-func (p Parallelizer) Until(ctx context.Context, pieces int, doWorkPiece workqueue.DoWorkPieceFunc) {
-	workqueue.ParallelizeUntil(ctx, p.parallelism, pieces, doWorkPiece, workqueue.WithChunkSize(chunkSizeFor(pieces, p.parallelism)))
+// A given operation will be a label that is recorded in the goroutine metric.
+func (p Parallelizer) Until(ctx context.Context, pieces int, doWorkPiece workqueue.DoWorkPieceFunc, operation string) {
+	chunkSize := chunkSizeFor(pieces, p.parallelism)
+	workers := numWorkersForChunkSize(p.parallelism, pieces, chunkSize)
+
+	goroutinesMetric := metrics.Goroutines.WithLabelValues(operation)
+	// Calling single Add with workers' count is more efficient than calling Inc or Dec per each work piece.
+	// This approach improves performance of some plugins (affinity, topology spreading) as well as preemption.
+	goroutinesMetric.Add(float64(workers))
+	defer goroutinesMetric.Add(float64(-workers))
+
+	workqueue.ParallelizeUntil(ctx, p.parallelism, pieces, doWorkPiece, workqueue.WithChunkSize(chunkSize))
 }

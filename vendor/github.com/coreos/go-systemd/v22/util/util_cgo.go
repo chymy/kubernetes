@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build cgo
+//go:build cgo
 
 package util
 
@@ -53,6 +53,7 @@ package util
 //   return (getsid(0) == getpid());
 // }
 import "C"
+
 import (
 	"fmt"
 	"syscall"
@@ -94,7 +95,7 @@ func getRunningSlice() (slice string, err error) {
 
 	ret := C.my_sd_pid_get_slice(sd_pid_get_slice, 0, &sl)
 	if ret < 0 {
-		err = fmt.Errorf("error calling sd_pid_get_slice: %v", syscall.Errno(-ret))
+		err = fmt.Errorf("error calling sd_pid_get_slice: %w", syscall.Errno(-ret))
 		return
 	}
 
@@ -138,7 +139,7 @@ func runningFromSystemService() (ret bool, err error) {
 		// user's login session
 		ret = C.am_session_leader() == 1
 	default:
-		err = fmt.Errorf("error calling sd_pid_get_owner_uid: %v", syscall.Errno(-errno))
+		err = fmt.Errorf("error calling sd_pid_get_owner_uid: %w", syscall.Errno(-errno))
 	}
 	return
 }
@@ -166,7 +167,7 @@ func currentUnitName() (unit string, err error) {
 
 	ret := C.my_sd_pid_get_unit(sd_pid_get_unit, 0, &u)
 	if ret < 0 {
-		err = fmt.Errorf("error calling sd_pid_get_unit: %v", syscall.Errno(-ret))
+		err = fmt.Errorf("error calling sd_pid_get_unit: %w", syscall.Errno(-ret))
 		return
 	}
 

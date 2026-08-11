@@ -22,10 +22,12 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/kubernetes/test/utils/ktesting"
+	"k8s.io/utils/cpuset"
 )
 
 func TestCPUAccumulatorFreeSockets(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := []struct {
 		description   string
 		topo          *topology.CPUTopology
@@ -35,31 +37,31 @@ func TestCPUAccumulatorFreeSockets(t *testing.T) {
 		{
 			"single socket HT, 1 socket free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			[]int{0},
 		},
 		{
 			"single socket HT, 0 sockets free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(1, 2, 3, 4, 5, 6, 7),
 			[]int{},
 		},
 		{
 			"dual socket HT, 2 sockets free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			[]int{0, 1},
 		},
 		{
 			"dual socket HT, 1 socket free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11),
 			[]int{1},
 		},
 		{
 			"dual socket HT, 0 sockets free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 2, 3, 4, 5, 6, 7, 8, 9, 11),
+			cpuset.New(0, 2, 3, 4, 5, 6, 7, 8, 9, 11),
 			[]int{},
 		},
 		{
@@ -114,7 +116,7 @@ func TestCPUAccumulatorFreeSockets(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			acc := newCPUAccumulator(tc.topo, tc.availableCPUs, 0)
+			acc := newCPUAccumulator(logger, tc.topo, tc.availableCPUs, 0, CPUSortingStrategyPacked)
 			result := acc.freeSockets()
 			sort.Ints(result)
 			if !reflect.DeepEqual(result, tc.expect) {
@@ -126,6 +128,7 @@ func TestCPUAccumulatorFreeSockets(t *testing.T) {
 }
 
 func TestCPUAccumulatorFreeNUMANodes(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := []struct {
 		description   string
 		topo          *topology.CPUTopology
@@ -135,31 +138,31 @@ func TestCPUAccumulatorFreeNUMANodes(t *testing.T) {
 		{
 			"single socket HT, 1 NUMA node free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			[]int{0},
 		},
 		{
 			"single socket HT, 0 NUMA Node free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(1, 2, 3, 4, 5, 6, 7),
 			[]int{},
 		},
 		{
 			"dual socket HT, 2 NUMA Node free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			[]int{0, 1},
 		},
 		{
 			"dual socket HT, 1 NUMA Node free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11),
 			[]int{1},
 		},
 		{
 			"dual socket HT, 0 NUMA node free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 2, 3, 4, 5, 6, 7, 8, 9, 11),
+			cpuset.New(0, 2, 3, 4, 5, 6, 7, 8, 9, 11),
 			[]int{},
 		},
 		{
@@ -214,7 +217,7 @@ func TestCPUAccumulatorFreeNUMANodes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			acc := newCPUAccumulator(tc.topo, tc.availableCPUs, 0)
+			acc := newCPUAccumulator(logger, tc.topo, tc.availableCPUs, 0, CPUSortingStrategyPacked)
 			result := acc.freeNUMANodes()
 			if !reflect.DeepEqual(result, tc.expect) {
 				t.Errorf("expected %v to equal %v", result, tc.expect)
@@ -224,6 +227,7 @@ func TestCPUAccumulatorFreeNUMANodes(t *testing.T) {
 }
 
 func TestCPUAccumulatorFreeSocketsAndNUMANodes(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := []struct {
 		description     string
 		topo            *topology.CPUTopology
@@ -263,7 +267,7 @@ func TestCPUAccumulatorFreeSocketsAndNUMANodes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			acc := newCPUAccumulator(tc.topo, tc.availableCPUs, 0)
+			acc := newCPUAccumulator(logger, tc.topo, tc.availableCPUs, 0, CPUSortingStrategyPacked)
 			resultNUMANodes := acc.freeNUMANodes()
 			if !reflect.DeepEqual(resultNUMANodes, tc.expectNUMANodes) {
 				t.Errorf("expected NUMA Nodes %v to equal %v", resultNUMANodes, tc.expectNUMANodes)
@@ -277,6 +281,7 @@ func TestCPUAccumulatorFreeSocketsAndNUMANodes(t *testing.T) {
 }
 
 func TestCPUAccumulatorFreeCores(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := []struct {
 		description   string
 		topo          *topology.CPUTopology
@@ -286,56 +291,56 @@ func TestCPUAccumulatorFreeCores(t *testing.T) {
 		{
 			"single socket HT, 4 cores free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			[]int{0, 1, 2, 3},
 		},
 		{
 			"single socket HT, 3 cores free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 4, 5, 6),
+			cpuset.New(0, 1, 2, 4, 5, 6),
 			[]int{0, 1, 2},
 		},
 		{
 			"single socket HT, 3 cores free (1 partially consumed)",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6),
 			[]int{0, 1, 2},
 		},
 		{
 			"single socket HT, 0 cores free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(),
+			cpuset.New(),
 			[]int{},
 		},
 		{
 			"single socket HT, 0 cores free (4 partially consumed)",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3),
+			cpuset.New(0, 1, 2, 3),
 			[]int{},
 		},
 		{
 			"dual socket HT, 6 cores free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			[]int{0, 2, 4, 1, 3, 5},
 		},
 		{
 			"dual socket HT, 5 cores free (1 consumed from socket 0)",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(2, 1, 3, 4, 5, 7, 8, 9, 10, 11),
+			cpuset.New(2, 1, 3, 4, 5, 7, 8, 9, 10, 11),
 			[]int{2, 4, 1, 3, 5},
 		},
 		{
 			"dual socket HT, 4 cores free (1 consumed from each socket)",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(2, 3, 4, 5, 8, 9, 10, 11),
+			cpuset.New(2, 3, 4, 5, 8, 9, 10, 11),
 			[]int{2, 4, 3, 5},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			acc := newCPUAccumulator(tc.topo, tc.availableCPUs, 0)
+			acc := newCPUAccumulator(logger, tc.topo, tc.availableCPUs, 0, CPUSortingStrategyPacked)
 			result := acc.freeCores()
 			if !reflect.DeepEqual(result, tc.expect) {
 				t.Errorf("expected %v to equal %v", result, tc.expect)
@@ -345,6 +350,7 @@ func TestCPUAccumulatorFreeCores(t *testing.T) {
 }
 
 func TestCPUAccumulatorFreeCPUs(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := []struct {
 		description   string
 		topo          *topology.CPUTopology
@@ -354,44 +360,44 @@ func TestCPUAccumulatorFreeCPUs(t *testing.T) {
 		{
 			"single socket HT, 8 cpus free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			[]int{0, 4, 1, 5, 2, 6, 3, 7},
 		},
 		{
 			"single socket HT, 5 cpus free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(3, 4, 5, 6, 7),
+			cpuset.New(3, 4, 5, 6, 7),
 			[]int{4, 5, 6, 3, 7},
 		},
 		{
 			"dual socket HT, 12 cpus free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			[]int{0, 6, 2, 8, 4, 10, 1, 7, 3, 9, 5, 11},
 		},
 		{
 			"dual socket HT, 11 cpus free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			cpuset.New(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			[]int{6, 2, 8, 4, 10, 1, 7, 3, 9, 5, 11},
 		},
 		{
 			"dual socket HT, 10 cpus free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
+			cpuset.New(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
 			[]int{2, 8, 4, 10, 1, 7, 3, 9, 5, 11},
 		},
 		{
 			"triple socket HT, 12 cpus free",
 			topoTripleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13),
+			cpuset.New(0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13),
 			[]int{12, 13, 0, 1, 2, 3, 6, 7, 8, 9, 10, 11},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			acc := newCPUAccumulator(tc.topo, tc.availableCPUs, 0)
+			acc := newCPUAccumulator(logger, tc.topo, tc.availableCPUs, 0, CPUSortingStrategyPacked)
 			result := acc.freeCPUs()
 			if !reflect.DeepEqual(result, tc.expect) {
 				t.Errorf("expected %v to equal %v", result, tc.expect)
@@ -401,6 +407,7 @@ func TestCPUAccumulatorFreeCPUs(t *testing.T) {
 }
 
 func TestCPUAccumulatorTake(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := []struct {
 		description     string
 		topo            *topology.CPUTopology
@@ -413,8 +420,8 @@ func TestCPUAccumulatorTake(t *testing.T) {
 		{
 			"take 0 cpus from a single socket HT, require 1",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
-			[]cpuset.CPUSet{cpuset.NewCPUSet()},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
+			[]cpuset.CPUSet{cpuset.New()},
 			1,
 			false,
 			false,
@@ -422,8 +429,8 @@ func TestCPUAccumulatorTake(t *testing.T) {
 		{
 			"take 0 cpus from a single socket HT, require 1, none available",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(),
-			[]cpuset.CPUSet{cpuset.NewCPUSet()},
+			cpuset.New(),
+			[]cpuset.CPUSet{cpuset.New()},
 			1,
 			false,
 			true,
@@ -431,8 +438,8 @@ func TestCPUAccumulatorTake(t *testing.T) {
 		{
 			"take 1 cpu from a single socket HT, require 1",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
-			[]cpuset.CPUSet{cpuset.NewCPUSet(0)},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
+			[]cpuset.CPUSet{cpuset.New(0)},
 			1,
 			true,
 			false,
@@ -440,8 +447,8 @@ func TestCPUAccumulatorTake(t *testing.T) {
 		{
 			"take 1 cpu from a single socket HT, require 2",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
-			[]cpuset.CPUSet{cpuset.NewCPUSet(0)},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
+			[]cpuset.CPUSet{cpuset.New(0)},
 			2,
 			false,
 			false,
@@ -449,8 +456,8 @@ func TestCPUAccumulatorTake(t *testing.T) {
 		{
 			"take 2 cpu from a single socket HT, require 4, expect failed",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2),
-			[]cpuset.CPUSet{cpuset.NewCPUSet(0), cpuset.NewCPUSet(1)},
+			cpuset.New(0, 1, 2),
+			[]cpuset.CPUSet{cpuset.New(0), cpuset.New(1)},
 			4,
 			false,
 			true,
@@ -458,16 +465,16 @@ func TestCPUAccumulatorTake(t *testing.T) {
 		{
 			"take all cpus one at a time from a single socket HT, require 8",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			[]cpuset.CPUSet{
-				cpuset.NewCPUSet(0),
-				cpuset.NewCPUSet(1),
-				cpuset.NewCPUSet(2),
-				cpuset.NewCPUSet(3),
-				cpuset.NewCPUSet(4),
-				cpuset.NewCPUSet(5),
-				cpuset.NewCPUSet(6),
-				cpuset.NewCPUSet(7),
+				cpuset.New(0),
+				cpuset.New(1),
+				cpuset.New(2),
+				cpuset.New(3),
+				cpuset.New(4),
+				cpuset.New(5),
+				cpuset.New(6),
+				cpuset.New(7),
 			},
 			8,
 			true,
@@ -477,7 +484,7 @@ func TestCPUAccumulatorTake(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			acc := newCPUAccumulator(tc.topo, tc.availableCPUs, tc.numCPUs)
+			acc := newCPUAccumulator(logger, tc.topo, tc.availableCPUs, tc.numCPUs, CPUSortingStrategyPacked)
 			totalTaken := 0
 			for _, cpus := range tc.takeCPUs {
 				acc.take(cpus)
@@ -509,6 +516,7 @@ func TestCPUAccumulatorTake(t *testing.T) {
 type takeByTopologyTestCase struct {
 	description   string
 	topo          *topology.CPUTopology
+	opts          StaticPolicyOptions
 	availableCPUs cpuset.CPUSet
 	numCPUs       int
 	expErr        string
@@ -520,70 +528,79 @@ func commonTakeByTopologyTestCases(t *testing.T) []takeByTopologyTestCase {
 		{
 			"take more cpus than are available from single socket with HT",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 2, 4, 6),
+			StaticPolicyOptions{},
+			cpuset.New(0, 2, 4, 6),
 			5,
-			"not enough cpus available to satisfy request",
-			cpuset.NewCPUSet(),
+			"not enough cpus available to satisfy request: requested=5, available=4",
+			cpuset.New(),
 		},
 		{
 			"take zero cpus from single socket with HT",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			StaticPolicyOptions{},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			0,
 			"",
-			cpuset.NewCPUSet(),
+			cpuset.New(),
 		},
 		{
 			"take one cpu from single socket with HT",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			StaticPolicyOptions{},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			1,
 			"",
-			cpuset.NewCPUSet(0),
+			cpuset.New(0),
 		},
 		{
 			"take one cpu from single socket with HT, some cpus are taken",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(1, 3, 5, 6, 7),
+			StaticPolicyOptions{},
+			cpuset.New(1, 3, 5, 6, 7),
 			1,
 			"",
-			cpuset.NewCPUSet(6),
+			cpuset.New(6),
 		},
 		{
 			"take two cpus from single socket with HT",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			StaticPolicyOptions{},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			2,
 			"",
-			cpuset.NewCPUSet(0, 4),
+			cpuset.New(0, 4),
 		},
 		{
 			"take all cpus from single socket with HT",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			StaticPolicyOptions{},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 			8,
 			"",
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
 		},
 		{
 			"take two cpus from single socket with HT, only one core totally free",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 6),
+			StaticPolicyOptions{},
+			cpuset.New(0, 1, 2, 3, 6),
 			2,
 			"",
-			cpuset.NewCPUSet(2, 6),
+			cpuset.New(2, 6),
 		},
 		{
 			"take a socket of cpus from dual socket with HT",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			StaticPolicyOptions{},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			6,
 			"",
-			cpuset.NewCPUSet(0, 2, 4, 6, 8, 10),
+			cpuset.New(0, 2, 4, 6, 8, 10),
 		},
 		{
 			"take a socket of cpus from dual socket with multi-numa-per-socket with HT",
 			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "0-79"),
 			40,
 			"",
@@ -592,6 +609,7 @@ func commonTakeByTopologyTestCases(t *testing.T) []takeByTopologyTestCase {
 		{
 			"take a NUMA node of cpus from dual socket with multi-numa-per-socket with HT",
 			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "0-79"),
 			20,
 			"",
@@ -600,6 +618,7 @@ func commonTakeByTopologyTestCases(t *testing.T) []takeByTopologyTestCase {
 		{
 			"take a NUMA node of cpus from dual socket with multi-numa-per-socket with HT, with 1 NUMA node already taken",
 			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "10-39,50-79"),
 			20,
 			"",
@@ -608,6 +627,7 @@ func commonTakeByTopologyTestCases(t *testing.T) []takeByTopologyTestCase {
 		{
 			"take a socket and a NUMA node of cpus from dual socket with multi-numa-per-socket with HT",
 			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "0-79"),
 			60,
 			"",
@@ -616,6 +636,7 @@ func commonTakeByTopologyTestCases(t *testing.T) []takeByTopologyTestCase {
 		{
 			"take a socket and a NUMA node of cpus from dual socket with multi-numa-per-socket with HT, a core taken",
 			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "1-39,41-79"), // reserve the first (phys) core (0,40)
 			60,
 			"",
@@ -625,19 +646,22 @@ func commonTakeByTopologyTestCases(t *testing.T) []takeByTopologyTestCase {
 }
 
 func TestTakeByTopologyNUMAPacked(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := commonTakeByTopologyTestCases(t)
 	testCases = append(testCases, []takeByTopologyTestCase{
 		{
 			"take one cpu from dual socket with HT - core from Socket 0",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
+			StaticPolicyOptions{},
+			cpuset.New(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
 			1,
 			"",
-			cpuset.NewCPUSet(2),
+			cpuset.New(2),
 		},
 		{
 			"allocate 4 full cores with 3 coming from the first NUMA node (filling it up) and 1 coming from the second NUMA node",
 			topoDualSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "0-11"),
 			8,
 			"",
@@ -646,23 +670,203 @@ func TestTakeByTopologyNUMAPacked(t *testing.T) {
 		{
 			"allocate 32 full cores with 30 coming from the first 3 NUMA nodes (filling them up) and 2 coming from the fourth NUMA node",
 			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{},
 			mustParseCPUSet(t, "0-79"),
 			64,
 			"",
 			mustParseCPUSet(t, "0-29,40-69,30,31,70,71"),
 		},
+		// Test cases for PreferAlignByUncoreCache
+		{
+			"take cpus from two full UncoreCaches and partial from a single UncoreCache",
+			topoUncoreSingleSocketNoSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "1-15"),
+			10,
+			"",
+			cpuset.New(1, 2, 4, 5, 6, 7, 8, 9, 10, 11),
+		},
+		{
+			"take one cpu from dual socket with HT - core from Socket 0",
+			topoDualSocketHT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			cpuset.New(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
+			1,
+			"",
+			cpuset.New(1),
+		},
+		{
+			"take first available UncoreCache from first socket",
+			topoUncoreDualSocketNoSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "0-15"),
+			4,
+			"",
+			cpuset.New(0, 1, 2, 3),
+		},
+		{
+			"take all available UncoreCache from first socket",
+			topoUncoreDualSocketNoSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "2-15"),
+			6,
+			"",
+			cpuset.New(2, 3, 4, 5, 6, 7),
+		},
+		{
+			"take first available UncoreCache from second socket",
+			topoUncoreDualSocketNoSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "8-15"),
+			4,
+			"",
+			cpuset.New(8, 9, 10, 11),
+		},
+		{
+			"take first available UncoreCache from available NUMA",
+			topoUncoreSingleSocketMultiNuma,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "3,4-8,12"),
+			2,
+			"",
+			cpuset.New(4, 5),
+		},
+		{
+			"take cpus from best available UncoreCache group of multi uncore cache single socket - SMT enabled",
+			topoUncoreSingleSocketSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "2-3,10-11,4-7,12-15"),
+			6,
+			"",
+			cpuset.New(4, 5, 6, 12, 13, 14),
+		},
+		{
+			"take cpus from multiple UncoreCache of single socket - SMT enabled",
+			topoUncoreSingleSocketSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "1-7,9-15"),
+			10,
+			"",
+			mustParseCPUSet(t, "4-7,12-15,1,9"),
+		},
 	}...)
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			result, err := takeByTopologyNUMAPacked(tc.topo, tc.availableCPUs, tc.numCPUs)
-			if tc.expErr != "" && err.Error() != tc.expErr {
+			strategy := CPUSortingStrategyPacked
+			if tc.opts.DistributeCPUsAcrossCores {
+				strategy = CPUSortingStrategySpread
+			}
+
+			result, err := takeByTopologyNUMAPacked(logger, tc.topo, tc.availableCPUs, tc.numCPUs, strategy, tc.opts.PreferAlignByUncoreCacheOption)
+			if tc.expErr != "" && err != nil && err.Error() != tc.expErr {
 				t.Errorf("expected error to be [%v] but it was [%v]", tc.expErr, err)
 			}
 			if !result.Equals(tc.expResult) {
 				t.Errorf("expected result [%s] to equal [%s]", result, tc.expResult)
 			}
 		})
+	}
+}
+
+func TestTakeByTopologyWithSpreadPhysicalCPUsPreferredOption(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+	testCases := []struct {
+		description   string
+		topo          *topology.CPUTopology
+		opts          StaticPolicyOptions
+		availableCPUs cpuset.CPUSet
+		numCPUs       int
+		expErr        string
+		expResult     cpuset.CPUSet
+	}{
+		{
+			"take a socket of cpus from single socket with HT, 3 cpus",
+			topoSingleSocketHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
+			3,
+			"",
+			cpuset.New(0, 1, 2),
+		},
+		{
+			"take a socket of cpus from dual socket with HT, 2 cpus",
+			topoDualSocketHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			2,
+			"",
+			cpuset.New(0, 2),
+		},
+		{
+			"take a socket of cpus from dual socket with HT, 3 cpus",
+			topoDualSocketHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			3,
+			"",
+			cpuset.New(0, 2, 4),
+		},
+		{
+			"take a socket of cpus from dual socket with HT, 6 cpus",
+			topoDualSocketHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			6,
+			"",
+			cpuset.New(0, 2, 4, 6, 8, 10),
+		},
+		{
+			"take cpus from dual socket with HT, 8 cpus",
+			topoDualSocketHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			8,
+			"",
+			cpuset.New(0, 2, 4, 6, 8, 10, 1, 3),
+		},
+		{
+			"take a socket of cpus from dual socket without HT, 2 cpus",
+			topoDualSocketNoHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			cpuset.New(0, 1, 2, 3, 4, 5, 6, 7),
+			2,
+			"",
+			cpuset.New(0, 1),
+		},
+		{
+			// DistributeCPUsAcrossCores doesn't care socket and numa ranking. such setting in test is transparent.
+			"take a socket of cpus from dual socket with multi numa per socket and HT, 12 cpus",
+			topoDualSocketMultiNumaPerSocketHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			mustParseCPUSet(t, "0-79"),
+			8,
+			"",
+			mustParseCPUSet(t, "0-7"),
+		},
+		{
+			"take a socket of cpus from quad socket four way with HT, 12 cpus",
+			topoQuadSocketFourWayHT,
+			StaticPolicyOptions{DistributeCPUsAcrossCores: true},
+			mustParseCPUSet(t, "0-287"),
+			12,
+			"",
+			mustParseCPUSet(t, "0-2,9-10,13-14,21-22,25-26,33"),
+		},
+	}
+
+	for _, tc := range testCases {
+		strategy := CPUSortingStrategyPacked
+		if tc.opts.DistributeCPUsAcrossCores {
+			strategy = CPUSortingStrategySpread
+		}
+		result, err := takeByTopologyNUMAPacked(logger, tc.topo, tc.availableCPUs, tc.numCPUs, strategy, tc.opts.PreferAlignByUncoreCacheOption)
+		if tc.expErr != "" && err.Error() != tc.expErr {
+			t.Errorf("testCase %q failed, expected error to be [%v] but it was [%v]", tc.description, tc.expErr, err)
+		}
+		if !result.Equals(tc.expResult) {
+			t.Errorf("testCase %q failed, expected result [%s] to equal [%s]", tc.description, result, tc.expResult)
+		}
 	}
 }
 
@@ -762,25 +966,26 @@ func commonTakeByTopologyExtendedTestCases(t *testing.T) []takeByTopologyExtende
 }
 
 func TestTakeByTopologyNUMADistributed(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	testCases := commonTakeByTopologyExtendedTestCases(t)
 	testCases = append(testCases, []takeByTopologyExtendedTestCase{
 		{
 			"take one cpu from dual socket with HT - core from Socket 0",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
+			cpuset.New(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
 			1,
 			1,
 			"",
-			cpuset.NewCPUSet(1),
+			cpuset.New(1),
 		},
 		{
 			"take one cpu from dual socket with HT - core from Socket 0 - cpuGroupSize 2",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
+			cpuset.New(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
 			1,
 			2,
 			"",
-			cpuset.NewCPUSet(2),
+			cpuset.New(2),
 		},
 		{
 			"allocate 13 full cores distributed across the first 2 NUMA nodes",
@@ -858,7 +1063,7 @@ func TestTakeByTopologyNUMADistributed(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			result, err := takeByTopologyNUMADistributed(tc.topo, tc.availableCPUs, tc.numCPUs, tc.cpuGroupSize)
+			result, err := takeByTopologyNUMADistributed(logger, tc.topo, tc.availableCPUs, tc.numCPUs, tc.cpuGroupSize, CPUSortingStrategyPacked, false)
 			if err != nil {
 				if tc.expErr == "" {
 					t.Errorf("unexpected error [%v]", err)

@@ -20,9 +20,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestMixinRestrictedPodSecurity(t *testing.T) {
@@ -65,7 +66,7 @@ func TestMixinRestrictedPodSecurity(t *testing.T) {
 	for _, pod := range restrictablePods {
 		t.Run(pod.Name, func(t *testing.T) {
 			p := pod // closure
-			assert.NoError(t, MixinRestrictedPodSecurity(&p))
+			require.NoError(t, MixinRestrictedPodSecurity(&p))
 			assert.Equal(t, GetRestrictedPodSecurityContext(), p.Spec.SecurityContext,
 				"Mixed in PodSecurityContext should equal the from-scratch PodSecurityContext")
 			assert.Equal(t, GetRestrictedContainerSecurityContext(), p.Spec.Containers[0].SecurityContext,
@@ -82,7 +83,7 @@ func TestMixinRestrictedPodSecurity(t *testing.T) {
 				Name:  "pause",
 				Image: "pause",
 				SecurityContext: &v1.SecurityContext{
-					Privileged: pointer.Bool(true),
+					Privileged: ptr.To(true),
 				},
 			}},
 		},

@@ -42,7 +42,6 @@ import (
 	"k8s.io/component-base/metrics/testutil"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/capabilities"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/test/integration/framework"
 	utiltest "k8s.io/kubernetes/test/utils"
 	podsecurityconfigloader "k8s.io/pod-security-admission/admission/api/load"
@@ -51,12 +50,6 @@ import (
 )
 
 func TestPodSecurity(t *testing.T) {
-	// Enable all feature gates needed to allow all fields to be exercised
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ProcMountType, true)()
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WindowsHostProcessContainers, true)()
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AppArmor, true)()
-	// Ensure the PodSecurity feature is enabled
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodSecurity, true)()
 	// Start server
 	server := startPodSecurityServer(t)
 	opts := podsecuritytest.Options{
@@ -78,12 +71,14 @@ func TestPodSecurity(t *testing.T) {
 func TestPodSecurityGAOnly(t *testing.T) {
 	// Disable all alpha and beta features
 	for k, v := range utilfeature.DefaultFeatureGate.DeepCopy().GetAll() {
-		if v.PreRelease == featuregate.Alpha || v.PreRelease == featuregate.Beta {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, k, false)()
+		if k == "AllAlpha" || k == "AllBeta" {
+			// Skip special features. When processed first, special features may
+			// erroneously disable other features.
+			continue
+		} else if v.PreRelease == featuregate.Alpha || v.PreRelease == featuregate.Beta {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, k, false)
 		}
 	}
-	// Ensure PodSecurity feature is enabled
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodSecurity, true)()
 	// Start server
 	server := startPodSecurityServer(t)
 
@@ -98,13 +93,9 @@ func TestPodSecurityGAOnly(t *testing.T) {
 }
 
 func TestPodSecurityWebhook(t *testing.T) {
-	// Enable all feature gates needed to allow all fields to be exercised
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ProcMountType, true)()
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WindowsHostProcessContainers, true)()
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AppArmor, true)()
-
 	// Start test API server.
-	capabilities.SetForTests(capabilities.Capabilities{AllowPrivileged: true})
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{AllowPrivileged: true})
 	testServer := kubeapiservertesting.StartTestServerOrDie(t, kubeapiservertesting.NewDefaultTestServerOptions(), []string{
 		"--anonymous-auth=false",
 		"--allow-privileged=true",
@@ -138,7 +129,8 @@ func TestPodSecurityWebhook(t *testing.T) {
 
 func startPodSecurityServer(t *testing.T) *kubeapiservertesting.TestServer {
 	// ensure the global is set to allow privileged containers
-	capabilities.SetForTests(capabilities.Capabilities{AllowPrivileged: true})
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{AllowPrivileged: true})
 
 	server := kubeapiservertesting.StartTestServerOrDie(t, kubeapiservertesting.NewDefaultTestServerOptions(), []string{
 		"--anonymous-auth=false",
@@ -203,6 +195,7 @@ func startPodSecurityWebhook(t *testing.T, testServer *kubeapiservertesting.Test
 		if err != nil {
 			return false, err
 		}
+		defer resp.Body.Close()
 		return resp.StatusCode == 200, nil
 	}); err != nil {
 		return "", err

@@ -29,7 +29,7 @@ import (
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	"k8s.io/kubernetes/pkg/registry/core/resourcequota"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // REST implements a RESTStorage for resource quotas.
@@ -40,9 +40,10 @@ type REST struct {
 // NewREST returns a RESTStorage object that will work against resource quotas.
 func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, *StatusREST, error) {
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &api.ResourceQuota{} },
-		NewListFunc:              func() runtime.Object { return &api.ResourceQuotaList{} },
-		DefaultQualifiedResource: api.Resource("resourcequotas"),
+		NewFunc:                   func() runtime.Object { return &api.ResourceQuota{} },
+		NewListFunc:               func() runtime.Object { return &api.ResourceQuotaList{} },
+		DefaultQualifiedResource:  api.Resource("resourcequotas"),
+		SingularQualifiedResource: api.Resource("resourcequota"),
 
 		CreateStrategy:      resourcequota.Strategy,
 		UpdateStrategy:      resourcequota.Strategy,

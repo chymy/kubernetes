@@ -17,32 +17,43 @@ limitations under the License.
 package job
 
 import (
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	batch "k8s.io/api/batch/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/component-base/metrics/testutil"
+	"k8s.io/klog/v2/ktesting"
+	"k8s.io/kubernetes/pkg/controller/job/metrics"
 )
 
 func TestUIDTrackingExpectations(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
 	tracks := []struct {
 		job         string
-		firstRound  []string
-		secondRound []string
+		firstRound  []types.UID
+		secondRound []types.UID
 	}{
 		{
 			job:         "foo",
-			firstRound:  []string{"a", "b", "c", "d"},
-			secondRound: []string{"e", "f"},
+			firstRound:  []types.UID{"a", "b", "c", "d"},
+			secondRound: []types.UID{"e", "f"},
 		},
 		{
 			job:         "bar",
-			firstRound:  []string{"x", "y", "z"},
-			secondRound: []string{"u", "v", "w"},
+			firstRound:  []types.UID{"x", "y", "z"},
+			secondRound: []types.UID{"u", "v", "w"},
 		},
 		{
 			job:         "baz",
-			firstRound:  []string{"w"},
-			secondRound: []string{"a"},
+			firstRound:  []types.UID{"w"},
+			secondRound: []types.UID{"a"},
 		},
 	}
 	expectations := newUIDTrackingExpectations()
@@ -55,7 +66,7 @@ func TestUIDTrackingExpectations(t *testing.T) {
 	for i := range tracks {
 		track := tracks[i]
 		go func(errID int) {
-			errs[errID] = expectations.expectFinalizersRemoved(track.job, track.firstRound)
+			errs[errID] = expectations.expectFinalizersRemoved(logger, track.job, track.firstRound)
 			wg.Done()
 		}(i)
 	}
@@ -70,7 +81,7 @@ func TestUIDTrackingExpectations(t *testing.T) {
 		uids := expectations.getSet(track.job)
 		if uids == nil {
 			t.Errorf("Set of UIDs is empty for job %s", track.job)
-		} else if diff := cmp.Diff(track.firstRound, uids.set.List()); diff != "" {
+		} else if diff := cmp.Diff(track.firstRound, sets.List(uids.set)); diff != "" {
 			t.Errorf("Unexpected keys for job %s (-want,+got):\n%s", track.job, diff)
 		}
 	}
@@ -79,16 +90,14 @@ func TestUIDTrackingExpectations(t *testing.T) {
 
 	for i, track := range tracks {
 		wg.Add(len(track.firstRound) + 1)
-		track := track
 		for _, uid := range track.firstRound {
-			uid := uid
 			go func() {
-				expectations.finalizerRemovalObserved(track.job, uid)
+				expectations.finalizerRemovalObserved(logger, track.job, uid)
 				wg.Done()
 			}()
 		}
 		go func(errID int) {
-			errs[errID] = expectations.expectFinalizersRemoved(track.job, track.secondRound)
+			errs[errID] = expectations.expectFinalizersRemoved(logger, track.job, track.secondRound)
 			wg.Done()
 		}(i)
 	}
@@ -104,8 +113,162 @@ func TestUIDTrackingExpectations(t *testing.T) {
 		uids := expectations.getSet(track.job)
 		if uids == nil {
 			t.Errorf("Set of UIDs is empty for job %s", track.job)
-		} else if diff := cmp.Diff(track.secondRound, uids.set.List()); diff != "" {
+		} else if diff := cmp.Diff(track.secondRound, sets.List(uids.set)); diff != "" {
 			t.Errorf("Unexpected keys for job %s (-want,+got):\n%s", track.job, diff)
 		}
+	}
+	for _, track := range tracks {
+		expectations.deleteExpectations(logger, track.job)
+		uids := expectations.getSet(track.job)
+		if uids != nil {
+			t.Errorf("Wanted expectations for job %s to be cleared, but they were not", track.job)
+		}
+	}
+}
+
+func TestRecordFinishedPodWithTrackingFinalizer(t *testing.T) {
+	metrics.Register()
+	cases := map[string]struct {
+		oldPod *v1.Pod
+		newPod *v1.Pod
+		want   string
+	}{
+		"new non-finished Pod with finalizer": {
+			newPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Finalizers: []string{batch.JobTrackingFinalizer},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodPending,
+				},
+			},
+			want: "",
+		},
+		"pod with finalizer fails": {
+			oldPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Finalizers: []string{batch.JobTrackingFinalizer},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+				},
+			},
+			newPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Finalizers: []string{batch.JobTrackingFinalizer},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodFailed,
+				},
+			},
+			want: `# HELP job_controller_terminated_pods_tracking_finalizer_total [BETA] The number of terminated pods (phase=Failed|Succeeded)\nthat have the finalizer batch.kubernetes.io/job-tracking\nThe event label can be "add" or "delete".
+# TYPE job_controller_terminated_pods_tracking_finalizer_total counter
+job_controller_terminated_pods_tracking_finalizer_total{event="add"} 1
+`,
+		},
+		"pod with finalizer succeeds": {
+			oldPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Finalizers: []string{batch.JobTrackingFinalizer},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+				},
+			},
+			newPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Finalizers: []string{batch.JobTrackingFinalizer},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodSucceeded,
+				},
+			},
+			want: `# HELP job_controller_terminated_pods_tracking_finalizer_total [BETA] The number of terminated pods (phase=Failed|Succeeded)\nthat have the finalizer batch.kubernetes.io/job-tracking\nThe event label can be "add" or "delete".
+# TYPE job_controller_terminated_pods_tracking_finalizer_total counter
+job_controller_terminated_pods_tracking_finalizer_total{event="add"} 1
+`,
+		},
+		"succeeded pod loses finalizer": {
+			oldPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Finalizers: []string{batch.JobTrackingFinalizer},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodSucceeded,
+				},
+			},
+			newPod: &v1.Pod{
+				Status: v1.PodStatus{
+					Phase: v1.PodSucceeded,
+				},
+			},
+			want: `# HELP job_controller_terminated_pods_tracking_finalizer_total [BETA] The number of terminated pods (phase=Failed|Succeeded)\nthat have the finalizer batch.kubernetes.io/job-tracking\nThe event label can be "add" or "delete".
+# TYPE job_controller_terminated_pods_tracking_finalizer_total counter
+job_controller_terminated_pods_tracking_finalizer_total{event="delete"} 1
+`,
+		},
+		"pod without finalizer removed": {
+			oldPod: &v1.Pod{
+				Status: v1.PodStatus{
+					Phase: v1.PodSucceeded,
+				},
+			},
+			want: "",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			metrics.TerminatedPodsTrackingFinalizerTotal.Reset()
+			recordFinishedPodWithTrackingFinalizer(tc.oldPod, tc.newPod)
+			if err := testutil.GatherAndCompare(legacyregistry.DefaultGatherer, strings.NewReader(tc.want), "job_controller_terminated_pods_tracking_finalizer_total"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func TestRecordJobPodFailurePolicyActions(t *testing.T) {
+	metrics.Register()
+
+	cases := map[string]struct {
+		input map[string]int
+		want  string
+	}{
+		"no actions": {
+			input: nil,
+			want:  "",
+		},
+		"single action": {
+			input: map[string]int{
+				"FailJob": 2,
+			},
+			want: `# HELP job_controller_pod_failures_handled_by_failure_policy_total [BETA] The number of failed Pods handled by failure policy with\n			respect to the failure policy action applied based on the matched\n			rule. Possible values of the action label correspond to the\n			possible values for the failure policy rule action, which are:\n			"FailJob", "Ignore" and "Count".
+# TYPE job_controller_pod_failures_handled_by_failure_policy_total counter
+job_controller_pod_failures_handled_by_failure_policy_total{action="FailJob"} 2
+`,
+		},
+		"multiple actions": {
+			input: map[string]int{
+				"FailJob": 2,
+				"Ignore":  3,
+				"Count":   1,
+			},
+			want: `# HELP job_controller_pod_failures_handled_by_failure_policy_total [BETA] The number of failed Pods handled by failure policy with\n			respect to the failure policy action applied based on the matched\n			rule. Possible values of the action label correspond to the\n			possible values for the failure policy rule action, which are:\n			"FailJob", "Ignore" and "Count".
+# TYPE job_controller_pod_failures_handled_by_failure_policy_total counter
+job_controller_pod_failures_handled_by_failure_policy_total{action="Count"} 1
+job_controller_pod_failures_handled_by_failure_policy_total{action="FailJob"} 2
+job_controller_pod_failures_handled_by_failure_policy_total{action="Ignore"} 3
+`,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			metrics.PodFailuresHandledByFailurePolicy.Reset()
+			recordJobPodFailurePolicyActions(tc.input)
+			if err := testutil.GatherAndCompare(legacyregistry.DefaultGatherer, strings.NewReader(tc.want), "job_controller_pod_failures_handled_by_failure_policy_total"); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }

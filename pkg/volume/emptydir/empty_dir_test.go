@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
 Copyright 2014 The Kubernetes Authors.
@@ -21,23 +20,30 @@ package emptydir
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/kubernetes/pkg/kubelet/util/swap"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	utiltesting "k8s.io/client-go/util/testing"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/mount-utils"
+	"k8s.io/utils/ptr"
 )
 
 // Construct an instance of a plugin, by name.
@@ -192,8 +198,7 @@ func doTestPlugin(t *testing.T, config pluginTestConfig) {
 	mounter, err := plug.(*emptyDirPlugin).newMounterInternal(volume.NewSpecFromVolume(spec),
 		pod,
 		physicalMounter,
-		&mountDetector,
-		volume.VolumeOptions{})
+		&mountDetector)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -312,7 +317,7 @@ func TestPluginBackCompat(t *testing.T) {
 		Name: "vol1",
 	}
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("poduid")}}
-	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{})
+	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -341,7 +346,7 @@ func TestMetrics(t *testing.T) {
 		Name: "vol1",
 	}
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID("poduid")}}
-	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{})
+	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
@@ -375,10 +380,11 @@ func TestMetrics(t *testing.T) {
 
 func TestGetHugePagesMountOptions(t *testing.T) {
 	testCases := map[string]struct {
-		pod            *v1.Pod
-		medium         v1.StorageMedium
-		shouldFail     bool
-		expectedResult string
+		pod                      *v1.Pod
+		medium                   v1.StorageMedium
+		shouldFail               bool
+		expectedResult           string
+		podLevelResourcesEnabled bool
 	}{
 		"ProperValues": {
 			pod: &v1.Pod{
@@ -607,10 +613,124 @@ func TestGetHugePagesMountOptions(t *testing.T) {
 			shouldFail:     true,
 			expectedResult: "",
 		},
+		"PodLevelResourcesSinglePageSize": {
+			podLevelResourcesEnabled: true,
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("hugepages-2Mi"): resource.MustParse("100Mi"),
+						},
+					},
+				},
+			},
+			medium:         v1.StorageMediumHugePages,
+			shouldFail:     false,
+			expectedResult: "pagesize=2Mi",
+		},
+		"PodLevelResourcesSinglePageSizeMediumPrefix": {
+			podLevelResourcesEnabled: true,
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("hugepages-2Mi"): resource.MustParse("100Mi"),
+						},
+					},
+				},
+			},
+			medium:         v1.StorageMediumHugePagesPrefix + "2Mi",
+			shouldFail:     false,
+			expectedResult: "pagesize=2Mi",
+		},
+		"PodLevelResourcesMultiPageSize": {
+			podLevelResourcesEnabled: true,
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("hugepages-1Gi"): resource.MustParse("2Gi"),
+							v1.ResourceName("hugepages-2Mi"): resource.MustParse("100Mi"),
+						},
+					},
+				},
+			},
+			medium:         v1.StorageMediumHugePages,
+			shouldFail:     true,
+			expectedResult: "",
+		},
+		"PodLevelResourcesMultiPageSizeMediumPrefix": {
+			podLevelResourcesEnabled: true,
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("hugepages-1Gi"): resource.MustParse("2Gi"),
+							v1.ResourceName("hugepages-2Mi"): resource.MustParse("100Mi"),
+						},
+					},
+				},
+			},
+			medium:         v1.StorageMediumHugePagesPrefix + "2Mi",
+			shouldFail:     false,
+			expectedResult: "pagesize=2Mi",
+		},
+		"PodAndContainerLevelResourcesMultiPageSizeHugePagesMedium": {
+			podLevelResourcesEnabled: true,
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("hugepages-1Gi"): resource.MustParse("2Gi"),
+						},
+					},
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceName("hugepages-2Mi"): resource.MustParse("100Mi"),
+								},
+							},
+						},
+					},
+				},
+			},
+			medium:         v1.StorageMediumHugePages,
+			shouldFail:     true,
+			expectedResult: "",
+		},
+		"PodAndContainerLevelResourcesMultiPageSizeHugePagesMediumPrefix": {
+			podLevelResourcesEnabled: true,
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Resources: &v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("hugepages-1Gi"): resource.MustParse("2Gi"),
+						},
+					},
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceName("hugepages-2Mi"): resource.MustParse("100Mi"),
+								},
+							},
+						},
+					},
+				},
+			},
+			medium:         v1.StorageMediumHugePagesPrefix + "2Mi",
+			shouldFail:     false,
+			expectedResult: "pagesize=2Mi",
+		},
 	}
 
 	for testCaseName, testCase := range testCases {
 		t.Run(testCaseName, func(t *testing.T) {
+			if testCase.podLevelResourcesEnabled {
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodLevelResources, true)
+			}
+
 			value, err := getPageSizeMountOption(testCase.medium, testCase.pod)
 			if testCase.shouldFail && err == nil {
 				t.Errorf("%s: Unexpected success", testCaseName)
@@ -634,7 +754,7 @@ func (md *testMountDetector) GetMountMedium(path string, requestedMedium v1.Stor
 }
 
 func TestSetupHugepages(t *testing.T) {
-	tmpdir, err := ioutil.TempDir("", "TestSetupHugepages")
+	tmpdir, err := os.MkdirTemp("", "TestSetupHugepages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,27 +1083,7 @@ func TestCalculateEmptyDirMemorySize(t *testing.T) {
 		nodeAllocatableMemory resource.Quantity
 		emptyDirSizeLimit     resource.Quantity
 		expectedResult        resource.Quantity
-		featureGateEnabled    bool
 	}{
-		"SizeMemoryBackedVolumesDisabled": {
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Resources: v1.ResourceRequirements{
-								Requests: v1.ResourceList{
-									v1.ResourceName("memory"): resource.MustParse("10Gi"),
-								},
-							},
-						},
-					},
-				},
-			},
-			nodeAllocatableMemory: resource.MustParse("16Gi"),
-			emptyDirSizeLimit:     resource.MustParse("1Gi"),
-			expectedResult:        resource.MustParse("0"),
-			featureGateEnabled:    false,
-		},
 		"EmptyDirLocalLimit": {
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
@@ -1001,7 +1101,6 @@ func TestCalculateEmptyDirMemorySize(t *testing.T) {
 			nodeAllocatableMemory: resource.MustParse("16Gi"),
 			emptyDirSizeLimit:     resource.MustParse("1Gi"),
 			expectedResult:        resource.MustParse("1Gi"),
-			featureGateEnabled:    true,
 		},
 		"PodLocalLimit": {
 			pod: &v1.Pod{
@@ -1020,7 +1119,6 @@ func TestCalculateEmptyDirMemorySize(t *testing.T) {
 			nodeAllocatableMemory: resource.MustParse("16Gi"),
 			emptyDirSizeLimit:     resource.MustParse("0"),
 			expectedResult:        resource.MustParse("10Gi"),
-			featureGateEnabled:    true,
 		},
 		"NodeAllocatableLimit": {
 			pod: &v1.Pod{
@@ -1039,13 +1137,11 @@ func TestCalculateEmptyDirMemorySize(t *testing.T) {
 			nodeAllocatableMemory: resource.MustParse("16Gi"),
 			emptyDirSizeLimit:     resource.MustParse("0"),
 			expectedResult:        resource.MustParse("16Gi"),
-			featureGateEnabled:    true,
 		},
 	}
 
 	for testCaseName, testCase := range testCases {
 		t.Run(testCaseName, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.SizeMemoryBackedVolumes, testCase.featureGateEnabled)()
 			spec := &volume.Spec{
 				Volume: &v1.Volume{
 					VolumeSource: v1.VolumeSource{
@@ -1060,5 +1156,328 @@ func TestCalculateEmptyDirMemorySize(t *testing.T) {
 				t.Errorf("%s: Unexpected result.  Expected %v, got %v", testCaseName, testCase.expectedResult.String(), result.String())
 			}
 		})
+	}
+}
+
+func TestTmpfsMountOptions(t *testing.T) {
+	subQuantity := resource.MustParse("123Ki")
+
+	doesStringArrayContainSubstring := func(strSlice []string, substr string) bool {
+		for _, s := range strSlice {
+			if strings.Contains(s, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	testCases := map[string]struct {
+		tmpfsNoswapSupported bool
+		sizeLimit            resource.Quantity
+	}{
+		"default bahavior": {},
+		"tmpfs noswap is supported": {
+			tmpfsNoswapSupported: true,
+		},
+		"size limit is non-zero": {
+			sizeLimit: subQuantity,
+		},
+		"tmpfs noswap is supported and size limit is non-zero": {
+			tmpfsNoswapSupported: true,
+			sizeLimit:            subQuantity,
+		},
+	}
+
+	for testCaseName, testCase := range testCases {
+		t.Run(testCaseName, func(t *testing.T) {
+			emptyDirObj := emptyDir{
+				sizeLimit: &testCase.sizeLimit,
+			}
+
+			options := emptyDirObj.generateTmpfsMountOptions(testCase.tmpfsNoswapSupported)
+
+			if testCase.tmpfsNoswapSupported && !doesStringArrayContainSubstring(options, swap.TmpfsNoswapOption) {
+				t.Errorf("tmpfs noswap option is expected when supported. options: %v", options)
+			}
+			if !testCase.tmpfsNoswapSupported && doesStringArrayContainSubstring(options, swap.TmpfsNoswapOption) {
+				t.Errorf("tmpfs noswap option is not expected when unsupported. options: %v", options)
+			}
+
+			if testCase.sizeLimit.IsZero() && doesStringArrayContainSubstring(options, "size=") {
+				t.Errorf("size is not expected when is zero. options: %v", options)
+			}
+			if expectedOption := fmt.Sprintf("size=%d", testCase.sizeLimit.Value()); !testCase.sizeLimit.IsZero() && !doesStringArrayContainSubstring(options, expectedOption) {
+				t.Errorf("size option is not expected when is zero. options: %v", options)
+			}
+		})
+	}
+}
+
+func TestResizeEphemeralVolume(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only supported on linux")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "emptydir_resize_test")
+	require.NoError(t, err, "failed to create temp dir")
+	defer os.RemoveAll(tmpDir) //nolint:errcheck
+
+	quantity200Mi := resource.MustParse("200Mi")
+	quantity0 := resource.MustParse("0")
+
+	tests := []struct {
+		name                 string
+		medium               v1.StorageMedium
+		isMountPoint         bool
+		currentMountSizeOpts []string
+		newSize              *resource.Quantity
+		expectError          bool
+		expectedMountAction  string
+		expectedMountOpts    []string
+	}{
+		{
+			name:                 "resize memory volume when mount point does not exist yet",
+			medium:               v1.StorageMediumMemory,
+			isMountPoint:         false,
+			currentMountSizeOpts: nil,
+			newSize:              &quantity200Mi,
+			expectError:          true,
+			expectedMountAction:  "",
+			expectedMountOpts:    nil,
+		},
+		{
+			name:                 "resize memory volume when mount already exists (remount/resize)",
+			medium:               v1.StorageMediumMemory,
+			isMountPoint:         true,
+			currentMountSizeOpts: []string{"size=104857600"}, // 100Mi
+			newSize:              &quantity200Mi,
+			expectError:          false,
+			expectedMountAction:  "mount",
+			expectedMountOpts:    []string{"remount", "size=209715200"},
+		},
+		{
+			name:                 "resize disk-backed volume should return error",
+			medium:               v1.StorageMediumDefault,
+			isMountPoint:         false,
+			currentMountSizeOpts: nil,
+			newSize:              &quantity200Mi,
+			expectError:          true,
+			expectedMountAction:  "",
+			expectedMountOpts:    nil,
+		},
+		{
+			name:                 "resize memory volume with nil newSize (error path)",
+			medium:               v1.StorageMediumMemory,
+			isMountPoint:         true,
+			currentMountSizeOpts: []string{"size=104857600"},
+			newSize:              nil,
+			expectError:          true,
+		},
+		{
+			name:                 "resize memory volume with zero newSize (error path)",
+			medium:               v1.StorageMediumMemory,
+			isMountPoint:         true,
+			currentMountSizeOpts: []string{"size=104857600"},
+			newSize:              &quantity0,
+			expectError:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plug := makePluginUnderTest(t, "kubernetes.io/empty-dir", tmpDir)
+			spec := &v1.Volume{
+				Name: "test-volume",
+				VolumeSource: v1.VolumeSource{
+					EmptyDir: &v1.EmptyDirVolumeSource{
+						Medium:    tt.medium,
+						SizeLimit: tt.newSize,
+					},
+				},
+			}
+
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID: types.UID("poduid"),
+				},
+			}
+
+			volumeSpec := volume.NewSpecFromVolume(spec)
+			mounterInstance, err := plug.NewMounter(volumeSpec, pod)
+			require.NoError(t, err)
+			volPath := mounterInstance.GetPath()
+
+			physicalMounter := plug.(*emptyDirPlugin).host.GetMounter().(*mount.FakeMounter)
+
+			if tt.isMountPoint {
+				physicalMounter.MountPoints = []mount.MountPoint{{Path: volPath, Opts: tt.currentMountSizeOpts}}
+				require.NoError(t, os.MkdirAll(volPath, 0750), "failed to create directory")
+			} else {
+				os.RemoveAll(volPath) //nolint:errcheck
+			}
+
+			resizablePlugin, ok := plug.(volume.ResizableEphemeralVolumePlugin)
+			require.True(t, ok, "plugin does not implement ResizableEphemeralVolumePlugin")
+
+			err = resizablePlugin.ResizeEphemeralVolume(volumeSpec, pod, tt.newSize)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			log := physicalMounter.GetLog()
+			if tt.expectedMountAction == "" {
+				require.Empty(t, log, "expected no mount actions")
+				return
+			}
+			require.Len(t, log, 1)
+			require.Equal(t, "mount", log[0].Action)
+
+			var targetMp *mount.MountPoint
+			for i := len(physicalMounter.MountPoints) - 1; i >= 0; i-- {
+				if physicalMounter.MountPoints[i].Path == volPath {
+					targetMp = &physicalMounter.MountPoints[i]
+					break
+				}
+			}
+			require.NotNil(t, targetMp, "expected a mount point at %s, but got none", volPath)
+			for _, expectedOpt := range tt.expectedMountOpts {
+				assert.Contains(t, targetMp.Opts, expectedOpt)
+			}
+		})
+	}
+}
+
+func TestEmptyDirVolumeMode(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EmptyDirVolumeMode, true)
+
+	testCases := []struct {
+		name         string
+		mode         *int32
+		expectedPerm os.FileMode
+		expectSticky bool
+	}{
+		{
+			name:         "mode 0750",
+			mode:         ptr.To[int32](0o750),
+			expectedPerm: os.FileMode(0o750),
+		},
+		{
+			name:         "mode 01777 with sticky bit",
+			mode:         ptr.To[int32](0o1777),
+			expectedPerm: os.FileMode(0o777),
+			expectSticky: true,
+		},
+		{
+			name:         "nil mode defaults to 0777",
+			mode:         nil,
+			expectedPerm: os.FileMode(0o777),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			basePath, err := utiltesting.MkTmpdir("emptydir_mode_test")
+			if err != nil {
+				t.Fatalf("can't make a temp dir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(basePath) })
+
+			plug := makePluginUnderTest(t, "kubernetes.io/empty-dir", basePath)
+
+			spec := &v1.Volume{
+				Name: "test-volume",
+				VolumeSource: v1.VolumeSource{
+					EmptyDir: &v1.EmptyDirVolumeSource{Mode: tc.mode},
+				},
+			}
+
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID: types.UID("poduid"),
+				},
+			}
+
+			mounter, err := plug.(*emptyDirPlugin).newMounterInternal(
+				volume.NewSpecFromVolume(spec),
+				pod,
+				mount.NewFakeMounter(nil),
+				&fakeMountDetector{},
+			)
+			if err != nil {
+				t.Fatalf("Failed to make a new Mounter: %v", err)
+			}
+
+			if err := mounter.SetUp(volume.MounterArgs{}); err != nil {
+				t.Fatalf("SetUp failed: %v", err)
+			}
+
+			volPath := mounter.GetPath()
+			fileinfo, err := os.Stat(volPath)
+			if err != nil {
+				t.Fatalf("Stat failed: %v", err)
+			}
+
+			if fileinfo.Mode().Perm() != tc.expectedPerm {
+				t.Errorf("expected permissions %v, got %v", tc.expectedPerm, fileinfo.Mode().Perm())
+			}
+
+			if tc.expectSticky {
+				if fileinfo.Mode()&os.ModeSticky == 0 {
+					t.Errorf("expected sticky bit to be set, got mode %v", fileinfo.Mode())
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyDirVolumeModeFeatureGateDisabled(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EmptyDirVolumeMode, false)
+
+	basePath, err := utiltesting.MkTmpdir("emptydir_mode_gate_test")
+	if err != nil {
+		t.Fatalf("can't make a temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(basePath) })
+
+	plug := makePluginUnderTest(t, "kubernetes.io/empty-dir", basePath)
+
+	mode := int32(0o750)
+	spec := &v1.Volume{
+		Name: "test-volume",
+		VolumeSource: v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{Mode: &mode},
+		},
+	}
+
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: types.UID("poduid"),
+		},
+	}
+
+	mounter, err := plug.(*emptyDirPlugin).newMounterInternal(
+		volume.NewSpecFromVolume(spec),
+		pod,
+		mount.NewFakeMounter(nil),
+		&fakeMountDetector{},
+	)
+	if err != nil {
+		t.Fatalf("Failed to make a new Mounter: %v", err)
+	}
+
+	if err := mounter.SetUp(volume.MounterArgs{}); err != nil {
+		t.Fatalf("SetUp failed: %v", err)
+	}
+
+	volPath := mounter.GetPath()
+	fileinfo, err := os.Stat(volPath)
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+
+	if fileinfo.Mode().Perm() != perm.Perm() {
+		t.Errorf("expected default permissions %v when feature gate is disabled, got %v", perm.Perm(), fileinfo.Mode().Perm())
 	}
 }

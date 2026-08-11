@@ -18,29 +18,36 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/generic"
+	"k8s.io/apiserver/pkg/registry/rest"
+	pkgstorage "k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	serviceapi "k8s.io/kubernetes/pkg/api/service"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
-	"k8s.io/kubernetes/pkg/features"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
+
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
 // svcStrategy implements behavior for Services
 type svcStrategy struct {
-	runtime.ObjectTyper
+	rest.DeclarativeValidation
 	names.NameGenerator
 }
 
 // Strategy is the default logic that applies when creating and updating Services
 // objects via the REST API.
-var Strategy = svcStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
+var Strategy = svcStrategy{rest.DeclarativeValidation{Scheme: legacyscheme.Scheme}, names.SimpleNameGenerator}
 
 // NamespaceScoped is true for services.
 func (svcStrategy) NamespaceScoped() bool {
@@ -81,89 +88,43 @@ func (svcStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object
 func (svcStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	service := obj.(*api.Service)
 	allErrs := validation.ValidateServiceCreate(service)
-	allErrs = append(allErrs, validation.ValidateConditionalService(service, nil)...)
 	return allErrs
 }
 
 // WarningsOnCreate returns warnings for the creation of the given object.
-func (svcStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string { return nil }
+func (svcStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
+	return serviceapi.GetWarningsForService(obj.(*api.Service), nil)
+}
 
 // Canonicalize normalizes the object after validation.
 func (svcStrategy) Canonicalize(obj runtime.Object) {
 }
 
-func (svcStrategy) AllowCreateOnUpdate() bool {
+func (svcStrategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return true
 }
 
 func (strategy svcStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	allErrs := validation.ValidateServiceUpdate(obj.(*api.Service), old.(*api.Service))
-	allErrs = append(allErrs, validation.ValidateConditionalService(obj.(*api.Service), old.(*api.Service))...)
 	return allErrs
 }
 
 // WarningsOnUpdate returns warnings for the given update.
 func (svcStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
-	return nil
+	return serviceapi.GetWarningsForService(obj.(*api.Service), old.(*api.Service))
 }
 
-func (svcStrategy) AllowUnconditionalUpdate() bool {
+func (svcStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return true
 }
 
 // dropServiceDisabledFields drops fields that are not used if their associated feature gates
 // are not enabled.  The typical pattern is:
-//     if !utilfeature.DefaultFeatureGate.Enabled(features.MyFeature) && !myFeatureInUse(oldSvc) {
-//         newSvc.Spec.MyFeature = nil
-//     }
-func dropServiceDisabledFields(newSvc *api.Service, oldSvc *api.Service) {
-
-	if !utilfeature.DefaultFeatureGate.Enabled(features.MixedProtocolLBService) {
-		if !serviceConditionsInUse(oldSvc) {
-			newSvc.Status.Conditions = nil
-		}
-		if !loadBalancerPortsInUse(oldSvc) {
-			for i := range newSvc.Status.LoadBalancer.Ingress {
-				newSvc.Status.LoadBalancer.Ingress[i].Ports = nil
-			}
-		}
-	}
-
-	// Clear InternalTrafficPolicy if not enabled
-	if !utilfeature.DefaultFeatureGate.Enabled(features.ServiceInternalTrafficPolicy) {
-		if !serviceInternalTrafficPolicyInUse(oldSvc) {
-			newSvc.Spec.InternalTrafficPolicy = nil
-		}
-	}
-}
-
-// returns true when the svc.Status.Conditions field is in use.
-func serviceConditionsInUse(svc *api.Service) bool {
-	if svc == nil {
-		return false
-	}
-	return svc.Status.Conditions != nil
-}
-
-// returns true when the svc.Status.LoadBalancer.Ingress.Ports field is in use.
-func loadBalancerPortsInUse(svc *api.Service) bool {
-	if svc == nil {
-		return false
-	}
-	for _, ing := range svc.Status.LoadBalancer.Ingress {
-		if ing.Ports != nil {
-			return true
-		}
-	}
-	return false
-}
-
-func serviceInternalTrafficPolicyInUse(svc *api.Service) bool {
-	if svc == nil {
-		return false
-	}
-	return svc.Spec.InternalTrafficPolicy != nil
-}
+//
+//	if !utilfeature.DefaultFeatureGate.Enabled(features.MyFeature) && !myFeatureInUse(oldSvc) {
+//	    newSvc.Spec.MyFeature = nil
+//	}
+func dropServiceDisabledFields(newSvc *api.Service, oldSvc *api.Service) {}
 
 type serviceStatusStrategy struct {
 	svcStrategy
@@ -188,6 +149,8 @@ func (serviceStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpat
 func (serviceStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newService := obj.(*api.Service)
 	oldService := old.(*api.Service)
+
+	dropServiceStatusDisabledFields(newService, oldService)
 	// status changes are not allowed to update spec
 	newService.Spec = oldService.Spec
 }
@@ -199,8 +162,56 @@ func (serviceStatusStrategy) ValidateUpdate(ctx context.Context, obj, old runtim
 
 // WarningsOnUpdate returns warnings for the given update.
 func (serviceStatusStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
-	return nil
+	svc := obj.(*api.Service)
+	var warnings []string
+
+	if len(svc.Status.LoadBalancer.Ingress) > 0 {
+		fieldPath := field.NewPath("status", "loadBalancer", "ingress")
+		for i, ingress := range svc.Status.LoadBalancer.Ingress {
+			if len(ingress.IP) > 0 {
+				warnings = append(warnings, utilvalidation.GetWarningsForIP(fieldPath.Index(i), ingress.IP)...)
+			}
+		}
+	}
+
+	return warnings
 }
+
+// GetAttrs returns labels and fields of a given object for filtering purposes.
+func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
+	service, ok := obj.(*api.Service)
+	if !ok {
+		return nil, nil, fmt.Errorf("not a service")
+	}
+	return service.Labels, SelectableFields(service), nil
+}
+
+// Matcher returns a selection predicate for a given label and field selector.
+func Matcher(label labels.Selector, field fields.Selector) pkgstorage.SelectionPredicate {
+	return pkgstorage.SelectionPredicate{
+		Label:    label,
+		Field:    field,
+		GetAttrs: GetAttrs,
+	}
+}
+
+// SelectableFields returns a field set that can be used for filter selection
+func SelectableFields(service *api.Service) fields.Set {
+	objectMetaFieldsSet := generic.ObjectMetaFieldsSet(&service.ObjectMeta, true)
+	serviceSpecificFieldsSet := fields.Set{
+		"spec.clusterIP": service.Spec.ClusterIP,
+		"spec.type":      string(service.Spec.Type),
+	}
+	return generic.MergeFieldsSets(objectMetaFieldsSet, serviceSpecificFieldsSet)
+}
+
+// dropServiceStatusDisabledFields drops fields that are not used if their associated feature gates
+// are not enabled.  The typical pattern is:
+//
+//	if !utilfeature.DefaultFeatureGate.Enabled(features.MyFeature) && !myFeatureInUse(oldSvc) {
+//	    newSvc.Status.MyFeature = nil
+//	}
+func dropServiceStatusDisabledFields(newSvc *api.Service, oldSvc *api.Service) {}
 
 func sameStringSlice(a []string, b []string) bool {
 	if len(a) != len(b) {
@@ -290,8 +301,8 @@ func dropTypeDependentFields(newSvc *api.Service, oldSvc *api.Service) {
 
 	// If a user is switching to a type that doesn't need ExternalTrafficPolicy
 	// AND they did not change this field, it is safe to drop it.
-	if needsExternalTrafficPolicy(oldSvc) && !needsExternalTrafficPolicy(newSvc) && sameExternalTrafficPolicy(oldSvc, newSvc) {
-		newSvc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyType("")
+	if serviceapi.ExternallyAccessible(oldSvc) && !serviceapi.ExternallyAccessible(newSvc) && sameExternalTrafficPolicy(oldSvc, newSvc) {
+		newSvc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicy("")
 	}
 
 	// NOTE: there are other fields like `selector` which we could wipe.
@@ -365,7 +376,7 @@ func needsHCNodePort(svc *api.Service) bool {
 	if svc.Spec.Type != api.ServiceTypeLoadBalancer {
 		return false
 	}
-	if svc.Spec.ExternalTrafficPolicy != api.ServiceExternalTrafficPolicyTypeLocal {
+	if svc.Spec.ExternalTrafficPolicy != api.ServiceExternalTrafficPolicyLocal {
 		return false
 	}
 	return true
@@ -387,10 +398,6 @@ func sameLoadBalancerClass(oldSvc, newSvc *api.Service) bool {
 		return true // both are nil
 	}
 	return *oldSvc.Spec.LoadBalancerClass == *newSvc.Spec.LoadBalancerClass
-}
-
-func needsExternalTrafficPolicy(svc *api.Service) bool {
-	return svc.Spec.Type == api.ServiceTypeNodePort || svc.Spec.Type == api.ServiceTypeLoadBalancer
 }
 
 func sameExternalTrafficPolicy(oldSvc, newSvc *api.Service) bool {

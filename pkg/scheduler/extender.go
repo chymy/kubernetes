@@ -19,6 +19,7 @@ package scheduler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	restclient "k8s.io/client-go/rest"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
+	fwk "k8s.io/kube-scheduler/framework"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
@@ -48,7 +50,7 @@ type HTTPExtender struct {
 	weight           int64
 	client           *http.Client
 	nodeCacheCapable bool
-	managedResources sets.String
+	managedResources sets.Set[string]
 	ignorable        bool
 }
 
@@ -83,7 +85,7 @@ func makeTransport(config *schedulerapi.Extender) (http.RoundTripper, error) {
 }
 
 // NewHTTPExtender creates an HTTPExtender object.
-func NewHTTPExtender(config *schedulerapi.Extender) (framework.Extender, error) {
+func NewHTTPExtender(config *schedulerapi.Extender) (fwk.Extender, error) {
 	if config.HTTPTimeout.Duration.Nanoseconds() == 0 {
 		config.HTTPTimeout.Duration = time.Duration(DefaultExtenderTimeout)
 	}
@@ -96,7 +98,7 @@ func NewHTTPExtender(config *schedulerapi.Extender) (framework.Extender, error) 
 		Transport: transport,
 		Timeout:   config.HTTPTimeout.Duration,
 	}
-	managedResources := sets.NewString()
+	managedResources := sets.New[string]()
 	for _, r := range config.ManagedResources {
 		managedResources.Insert(string(r.Name))
 	}
@@ -112,36 +114,6 @@ func NewHTTPExtender(config *schedulerapi.Extender) (framework.Extender, error) 
 		managedResources: managedResources,
 		ignorable:        config.Ignorable,
 	}, nil
-}
-
-// Equal is used to check if two extenders are equal
-// ignoring the client field, exported for testing
-func Equal(e1, e2 *HTTPExtender) bool {
-	if e1.extenderURL != e2.extenderURL {
-		return false
-	}
-	if e1.preemptVerb != e2.preemptVerb {
-		return false
-	}
-	if e1.prioritizeVerb != e2.prioritizeVerb {
-		return false
-	}
-	if e1.bindVerb != e2.bindVerb {
-		return false
-	}
-	if e1.weight != e2.weight {
-		return false
-	}
-	if e1.nodeCacheCapable != e2.nodeCacheCapable {
-		return false
-	}
-	if !e1.managedResources.Equal(e2.managedResources) {
-		return false
-	}
-	if e1.ignorable != e2.ignorable {
-		return false
-	}
-	return true
 }
 
 // Name returns extenderURL to identify the extender.
@@ -165,7 +137,7 @@ func (h *HTTPExtender) SupportsPreemption() bool {
 func (h *HTTPExtender) ProcessPreemption(
 	pod *v1.Pod,
 	nodeNameToVictims map[string]*extenderv1.Victims,
-	nodeInfos framework.NodeInfoLister,
+	nodeInfos fwk.NodeInfoLister,
 ) (map[string]*extenderv1.Victims, error) {
 	var (
 		result extenderv1.ExtenderPreemptionResult
@@ -208,7 +180,7 @@ func (h *HTTPExtender) ProcessPreemption(
 // such as UIDs and names, to object pointers.
 func (h *HTTPExtender) convertToVictims(
 	nodeNameToMetaVictims map[string]*extenderv1.MetaVictims,
-	nodeInfos framework.NodeInfoLister,
+	nodeInfos fwk.NodeInfoLister,
 ) (map[string]*extenderv1.Victims, error) {
 	nodeNameToVictims := map[string]*extenderv1.Victims{}
 	for nodeName, metaVictims := range nodeNameToMetaVictims {
@@ -238,10 +210,10 @@ func (h *HTTPExtender) convertToVictims(
 // and extender, i.e. when the pod is not found in nodeInfo.Pods.
 func (h *HTTPExtender) convertPodUIDToPod(
 	metaPod *extenderv1.MetaPod,
-	nodeInfo *framework.NodeInfo) (*v1.Pod, error) {
-	for _, p := range nodeInfo.Pods {
-		if string(p.Pod.UID) == metaPod.UID {
-			return p.Pod, nil
+	nodeInfo fwk.NodeInfo) (*v1.Pod, error) {
+	for _, p := range nodeInfo.GetPods() {
+		if string(p.GetPod().UID) == metaPod.UID {
+			return p.GetPod(), nil
 		}
 	}
 	return nil, fmt.Errorf("extender: %v claims to preempt pod (UID: %v) on node: %v, but the pod is not found on that node",
@@ -276,18 +248,18 @@ func convertToMetaVictims(
 // unresolvable.
 func (h *HTTPExtender) Filter(
 	pod *v1.Pod,
-	nodes []*v1.Node,
-) (filteredList []*v1.Node, failedNodes, failedAndUnresolvableNodes extenderv1.FailedNodesMap, err error) {
+	nodes []fwk.NodeInfo,
+) (filteredList []fwk.NodeInfo, failedNodes, failedAndUnresolvableNodes extenderv1.FailedNodesMap, err error) {
 	var (
 		result     extenderv1.ExtenderFilterResult
 		nodeList   *v1.NodeList
 		nodeNames  *[]string
-		nodeResult []*v1.Node
+		nodeResult []fwk.NodeInfo
 		args       *extenderv1.ExtenderArgs
 	)
-	fromNodeName := make(map[string]*v1.Node)
+	fromNodeName := make(map[string]fwk.NodeInfo)
 	for _, n := range nodes {
-		fromNodeName[n.Name] = n
+		fromNodeName[n.Node().Name] = n
 	}
 
 	if h.filterVerb == "" {
@@ -297,13 +269,13 @@ func (h *HTTPExtender) Filter(
 	if h.nodeCacheCapable {
 		nodeNameSlice := make([]string, 0, len(nodes))
 		for _, node := range nodes {
-			nodeNameSlice = append(nodeNameSlice, node.Name)
+			nodeNameSlice = append(nodeNameSlice, node.Node().Name)
 		}
 		nodeNames = &nodeNameSlice
 	} else {
 		nodeList = &v1.NodeList{}
 		for _, node := range nodes {
-			nodeList.Items = append(nodeList.Items, *node)
+			nodeList.Items = append(nodeList.Items, *node.Node())
 		}
 	}
 
@@ -317,11 +289,11 @@ func (h *HTTPExtender) Filter(
 		return nil, nil, nil, err
 	}
 	if result.Error != "" {
-		return nil, nil, nil, fmt.Errorf(result.Error)
+		return nil, nil, nil, errors.New(result.Error)
 	}
 
 	if h.nodeCacheCapable && result.NodeNames != nil {
-		nodeResult = make([]*v1.Node, len(*result.NodeNames))
+		nodeResult = make([]fwk.NodeInfo, len(*result.NodeNames))
 		for i, nodeName := range *result.NodeNames {
 			if n, ok := fromNodeName[nodeName]; ok {
 				nodeResult[i] = n
@@ -332,9 +304,10 @@ func (h *HTTPExtender) Filter(
 			}
 		}
 	} else if result.Nodes != nil {
-		nodeResult = make([]*v1.Node, len(result.Nodes.Items))
+		nodeResult = make([]fwk.NodeInfo, len(result.Nodes.Items))
 		for i := range result.Nodes.Items {
-			nodeResult[i] = &result.Nodes.Items[i]
+			nodeResult[i] = framework.NewNodeInfo()
+			nodeResult[i].SetNode(&result.Nodes.Items[i])
 		}
 	}
 
@@ -344,7 +317,7 @@ func (h *HTTPExtender) Filter(
 // Prioritize based on extender implemented priority functions. Weight*priority is added
 // up for each such priority function. The returned score is added to the score computed
 // by Kubernetes scheduler. The total score is used to do the host selection.
-func (h *HTTPExtender) Prioritize(pod *v1.Pod, nodes []*v1.Node) (*extenderv1.HostPriorityList, int64, error) {
+func (h *HTTPExtender) Prioritize(pod *v1.Pod, nodes []fwk.NodeInfo) (*extenderv1.HostPriorityList, int64, error) {
 	var (
 		result    extenderv1.HostPriorityList
 		nodeList  *v1.NodeList
@@ -355,7 +328,7 @@ func (h *HTTPExtender) Prioritize(pod *v1.Pod, nodes []*v1.Node) (*extenderv1.Ho
 	if h.prioritizeVerb == "" {
 		result := extenderv1.HostPriorityList{}
 		for _, node := range nodes {
-			result = append(result, extenderv1.HostPriority{Host: node.Name, Score: 0})
+			result = append(result, extenderv1.HostPriority{Host: node.Node().Name, Score: 0})
 		}
 		return &result, 0, nil
 	}
@@ -363,13 +336,13 @@ func (h *HTTPExtender) Prioritize(pod *v1.Pod, nodes []*v1.Node) (*extenderv1.Ho
 	if h.nodeCacheCapable {
 		nodeNameSlice := make([]string, 0, len(nodes))
 		for _, node := range nodes {
-			nodeNameSlice = append(nodeNameSlice, node.Name)
+			nodeNameSlice = append(nodeNameSlice, node.Node().Name)
 		}
 		nodeNames = &nodeNameSlice
 	} else {
 		nodeList = &v1.NodeList{}
 		for _, node := range nodes {
-			nodeList.Items = append(nodeList.Items, *node)
+			nodeList.Items = append(nodeList.Items, *node.Node())
 		}
 	}
 
@@ -402,7 +375,7 @@ func (h *HTTPExtender) Bind(binding *v1.Binding) error {
 		return err
 	}
 	if result.Error != "" {
-		return fmt.Errorf(result.Error)
+		return errors.New(result.Error)
 	}
 	return nil
 }
@@ -410,6 +383,16 @@ func (h *HTTPExtender) Bind(binding *v1.Binding) error {
 // IsBinder returns whether this extender is configured for the Bind method.
 func (h *HTTPExtender) IsBinder() bool {
 	return h.bindVerb != ""
+}
+
+// IsPrioritizer returns whether this extender is configured for the Prioritize method.
+func (h *HTTPExtender) IsPrioritizer() bool {
+	return h.prioritizeVerb != ""
+}
+
+// IsFilter returns whether this extender is configured for the Filter method.
+func (h *HTTPExtender) IsFilter() bool {
+	return h.filterVerb != ""
 }
 
 // Helper function to send messages to the extender
